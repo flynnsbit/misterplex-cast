@@ -1,6 +1,6 @@
 # Subtitles burn-in plan (Phase 4)
 
-> Not the rc4 PlexOB path. Subtitles are not supported on PlexOB. This note is a plan for an older decode path.
+> Not the PlexOB path. Subtitles are not supported on PlexOB. This note is a plan for an older decode path.
 
 Goal: readable captions on CRT/LCD without a full on-OSD subtitle renderer.
 
