@@ -1,0 +1,1 @@
+set_global_assignment -name SDC_FILE ../fit/variants/q1b/mpx_cdc_hold_targeted.sdc

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "decode_stub_pred_only",
+      "owner": "tests/unit/test_p3_idct_rtl_sim.sh",
+      "why": "Fault-injection drops residuals; recon_sig must go red so the product 0x3b gate is meaningful.",
+      "required_substrings": [
+        "FAIL decode_stub RTL sim: recon_sig got 0x0 want 0x3b"
+      ]
+    },
+    {
+      "id": "p3_intra_mb0_negative",
+      "owner": "tests/unit/test_p3_intra_mb0_verilator.py",
+      "why": "Negative-direction RTL perturbation must fail the MB0 exact reconstruction checker.",
+      "required_substrings": [
+        "P3 intra MB0 Verilator exact check FAILED:",
+        "mismatches"
+      ]
+    },
+    {
+      "id": "p3_intra_frame_negative",
+      "owner": "tests/unit/test_p3_intra_frame_verilator.py",
+      "why": "Negative-direction RTL perturbation must fail the frame-wide exact reconstruction checker.",
+      "required_substrings": [
+        "P3 intra frame-wide Verilator exact check FAILED: failures=8 mb_exact=292/300"
+      ]
+    },
+    {
+      "id": "h264_inter_pred_bad_round",
+      "owner": "tests/unit/test_p3_inter_rtl_sim.sh",
+      "why": "Bad qpel/chroma rounding fault must fail the motion-compensation golden.",
+      "required_substrings": [
+        "FAIL h264_inter_pred RTL: luma qpel frac mismatch"
+      ]
+    },
+    {
+      "id": "h264_inter_pred_bad_part_mv",
+      "owner": "tests/unit/test_p3_inter_rtl_sim.sh",
+      "why": "Bad partition motion-vector selection fault must fail the partition golden.",
+      "required_substrings": [
+        "FAIL h264_inter_pred RTL: partition MV case mismatch"
+      ]
+    },
+    {
+      "id": "h264_p_slice_modes_swap_16x8",
+      "owner": "tests/unit/test_h264_p_slice_modes_rtl_sim.sh",
+      "why": "Swapped 16x8 P-slice partition fault must fail the mode/geometry golden.",
+      "required_substrings": [
+        "FAIL p-slice mode P_L0_16x8 part_mode got=2 want=1",
+        "FAIL p-slice mode P_L0_16x8 mb_part_w got=8 want=16",
+        "FAIL p-slice mode P_L0_16x8 mb_part_h got=16 want=8",
+        "h264 P-slice mode RTL check FAILED: failures=1"
+      ]
+    },
+    {
+      "id": "stream_path_inter_bad_pixel",
+      "owner": "tests/unit/test_p3_inter_stream_path_rtl_sim.sh",
+      "why": "Bad inter diagnostic pixel fault must fail the integrated stream_path inter golden.",
+      "required_substrings": [
+        "FAIL stream_path inter diag pixel: x=16 y=4 band=0 got=0xe87b want=0x1784",
+        "FAIL stream_path inter RTL: missing green inter diagnostic band 0",
+        "FAIL stream_path inter RTL: missing green inter diagnostic band 1",
+        "FAIL stream_path inter RTL: missing green inter diagnostic band 2",
+        "FAIL stream_path inter RTL: missing green inter diagnostic band 3"
+      ]
+    }
+  ]
+}

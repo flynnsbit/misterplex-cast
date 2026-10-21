@@ -1,0 +1,89 @@
+{
+  "id": "v0.2.0-glass-baseline",
+  "title": "HDMI glass floor pair (verified play + content identity)",
+  "validated_utc": "2026-08-11T17:45:55Z",
+  "release_era": "v0.2.0 published 2026-07-26 (G-VID1 core)",
+  "role": "REGRESSION_FLOOR",
+  "note": "Floor for eyes-on glass. Newer misterplexd+Plex.rbf must match or beat these gates; they need not use the same md5s. Mismatched modern daemon on this RBF can rainbow while pfps still ticks — always test as a pair.",
+  "pair": {
+    "rbf_md5": "dfebf2bfd08dd70b473b587dd7e81848",
+    "rbf_md5_prefix": "dfebf2bf",
+    "rbf_label": "Plex.GOODBASELINE / v0.2.0 cores/Plex.rbf / G-VID1",
+    "daemon_md5": "7cd10b4d438c714a9b8c4766dc982d59",
+    "daemon_md5_prefix": "7cd10b4d",
+    "daemon_label": "v0.2.0 bin/misterplexd",
+    "artifact_dir": "release_artifacts/v0.2.0-glass-baseline"
+  },
+  "device_paths": {
+    "rbf_live": "/media/fat/_Utility/Plex.rbf",
+    "rbf_pin": "/media/fat/_Utility/Plex.GOODBASELINE.dfebf2bf.rbf",
+    "daemon_live": "/media/fat/misterplex/bin/misterplexd",
+    "daemon_pin": "/media/fat/misterplex_v2/bin/misterplexd.GOODBASELINE.7cd10b4d"
+  },
+  "conf": {
+    "PRESENT": "fpga",
+    "PRESENT_accept": ["fpga", "both"],
+    "DECODE": "320x240",
+    "STREAM": "0",
+    "IDLE_SCREEN": "logo",
+    "DISPLAY_RES": "240p",
+    "CONTENT_RES": "240p"
+  },
+  "present_path": {
+    "log_markers": ["RGB→F1", "PRESENT=fpga", "frame_tx ok via DDR"],
+    "min_pfps": 8.0,
+    "scale": "320x240 FOAR+pad (host RGB path, not FOAR multi-yuv 624)"
+  },
+  "content": {
+    "local_mp4": "/media/fat/Games/Plex/MiSTerPlex B6 RealGlass 720x480 24fps 300s (2026).mp4",
+    "api": "GET :3005/player/playback/playMedia?key=<url-encoded-path>"
+  },
+  "gates": {
+    "idle": {
+      "description": "Clean orange Plex chevron on dark field (two intentional colors)",
+      "min_orange_px_1280x720": 8000,
+      "mean_luma_min": 10,
+      "mean_luma_max": 80,
+      "reject_colorbar_like": true
+    },
+    "play": {
+      "description": "Recognizable B6 RealGlass landscape + OCR overlay; frame change during play",
+      "warmup_frames": 25,
+      "min_unique_coarse_means": 8,
+      "min_motion_mean_delta": 3.0,
+      "reject_rainbow_noise": true,
+      "reject_colorbar": true,
+      "min_mean_luma": 25
+    },
+    "seek": {
+      "optional": true,
+      "offsets_ms": [60000, 180000],
+      "min_cross_seek_delta": 10.0
+    }
+  },
+  "known_false_passes": [
+    "modern daemon 7b28268c + dfebf2bf @640 FOAR yuv420p: pfps>0 but HDMI rainbow/noise",
+    "softc23 4482b8a5 @640: DDR path unavailable has_frame=0",
+    "colorbar frozen frames with timeline advancing",
+    "MacroSilicon first ~15 frames solid black (warmup) treated as product black"
+  ],
+  "features_present": [
+    "Companion :3005 playMedia for local MP4",
+    "PRESENT=fpga RGB→DDR F1 host present",
+    "MrAudio 48 kHz",
+    "Idle logo chevron",
+    "PMS resolve / cast basic",
+    "Decode bank 320x240"
+  ],
+  "features_absent_vs_recent": [
+    "v0.3.0 playback-controls core (41adb98c) and packaging pin",
+    "v0.4.0 multi-res ladder (480p/720p banks, WEAK_BITRATE ladder)",
+    "FOAR multi-yuv coded 624x480 geometry + ddrFrameGeometryForPresentedSize",
+    "STREAM hybrid / host recon F1 skip-RGB product path",
+    "softc freckle UV fabric ladder (softc10–24)",
+    "OSD local .mpx → PLXP path-play (unfitted feature branch)",
+    "Fabric H.264 product decode (H5 / residual sticky 0x14 still open)",
+    "Cast timeline token / scrubber fixes (Aug 8 ship/v0.4.0)",
+    "720p present wire / PLXD product discovery"
+  ]
+}

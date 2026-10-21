@@ -1,0 +1,158 @@
+{
+  "source": {
+    "path": "tests/fixtures/p3_multinal/wcap_residual14_idr_plus_p.264",
+    "sha256": "9f58c3f92a6c9cacc86d2b58c275329445017f328b54206fcdcef5de4b1a5b62",
+    "bytes": 9060
+  },
+  "decoder": {
+    "command_argv": [
+      "ffmpeg",
+      "-v",
+      "error",
+      "-y",
+      "-skip_loop_filter",
+      "all",
+      "-i",
+      "tests/fixtures/p3_multinal/wcap_residual14_idr_plus_p.264",
+      "-an",
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "yuv420p",
+      "tests/fixtures/p3_frame_planes/wcap_residual14_idr_plus_p_i420.yuv"
+    ],
+    "command": "ffmpeg -v error -y -skip_loop_filter all -i tests/fixtures/p3_multinal/wcap_residual14_idr_plus_p.264 -an -f rawvideo -pix_fmt yuv420p tests/fixtures/p3_frame_planes/wcap_residual14_idr_plus_p_i420.yuv",
+    "h264_loop_filter_ffmpeg": "-skip_loop_filter all",
+    "input_format": "Annex-B H.264",
+    "h264_loop_filter": "disabled",
+    "output_format": "rawvideo",
+    "ffprobe_version": "ffprobe version n8.1.2 Copyright (c) 2007-2026 the FFmpeg developers",
+    "pix_fmt": "yuv420p",
+    "ffmpeg_version": "ffmpeg version n8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+    "loop_filter": "skip_loop_filter=all"
+  },
+  "format": "misterplex.p3.frame_planes_golden.v1",
+  "geometry": {
+    "planes": [
+      {
+        "plane": "Y",
+        "width": 320,
+        "height": 240,
+        "stride": 320
+      },
+      {
+        "plane": "U",
+        "width": 160,
+        "height": 120,
+        "stride": 160
+      },
+      {
+        "plane": "V",
+        "width": 160,
+        "height": 120,
+        "stride": 160
+      }
+    ],
+    "display_width": 320,
+    "coded_width": 320,
+    "coded_height": 240,
+    "colorspace": "I420_NATIVE",
+    "display_height": 240
+  },
+  "provenance": {
+    "rgb_roundtrip": false,
+    "presentation_border_or_pillar_mask": false,
+    "rgb565_roundtrip": false,
+    "source_domain": "decoded H.264 planes",
+    "colorspace": "I420_NATIVE",
+    "pixel_format": "I420/YUV420p planar 8-bit 4:2:0",
+    "h264_loop_filter": "disabled"
+  },
+  "sequence_manifest": {
+    "path": "tests/fixtures/p3_multinal/wcap_residual14_idr_plus_p_sequence_v1.json",
+    "format": "misterplex.p3.nal_sequence.v1",
+    "sha256": "f6477a7016ce72a632215bb62732d055bb60a00348d627ceedc32f0fcd9a12b8",
+    "bytes": 2243
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "frame_num": 0,
+      "slice_kind": "I",
+      "nal_index": 3,
+      "nal_type": 5,
+      "planes": [
+        {
+          "plane": "Y",
+          "width": 320,
+          "height": 240,
+          "stride": 320,
+          "offset": 0,
+          "bytes": 76800,
+          "sha256": "b9a53498a2679730481c64cc29f37cca715a1c346676b60a45b4407a418c61aa"
+        },
+        {
+          "plane": "U",
+          "width": 160,
+          "height": 120,
+          "stride": 160,
+          "offset": 76800,
+          "bytes": 19200,
+          "sha256": "c4ed563691a312cf2980520bf6f16de0b1df4091e1cebb8c4205d0ea58bff60a"
+        },
+        {
+          "plane": "V",
+          "width": 160,
+          "height": 120,
+          "stride": 160,
+          "offset": 96000,
+          "bytes": 19200,
+          "sha256": "447250e7b31f7849a279f200d76bf07540b083579abcfbd92ae18d3b7a2ce149"
+        }
+      ]
+    },
+    {
+      "frame_index": 1,
+      "frame_num": 1,
+      "slice_kind": "P",
+      "nal_index": 4,
+      "nal_type": 1,
+      "planes": [
+        {
+          "plane": "Y",
+          "width": 320,
+          "height": 240,
+          "stride": 320,
+          "offset": 115200,
+          "bytes": 76800,
+          "sha256": "e2d8833eadd0f58489e63b5b94ecc866400ed330abbdc5e109d894fc2f6b0e75"
+        },
+        {
+          "plane": "U",
+          "width": 160,
+          "height": 120,
+          "stride": 160,
+          "offset": 192000,
+          "bytes": 19200,
+          "sha256": "1aad2a36a9a6e76e2349207b8eb72f15a2cc39a4edef67b444105617579de3b6"
+        },
+        {
+          "plane": "V",
+          "width": 160,
+          "height": 120,
+          "stride": 160,
+          "offset": 211200,
+          "bytes": 19200,
+          "sha256": "8260c59012acfe3ee27de235a888f43f455573c7da76b26013fc658672f17bb5"
+        }
+      ]
+    }
+  ],
+  "plane_blob": {
+    "frame_bytes": 115200,
+    "path": "tests/fixtures/p3_frame_planes/wcap_residual14_idr_plus_p_i420.yuv",
+    "layout": "I420 planar per frame: Y then U then V",
+    "sha256": "82aaafc0ed7c46851ec7f9d36a4db07d3fd229e540d9d5597220054a9f958b61",
+    "bytes": 230400
+  }
+}

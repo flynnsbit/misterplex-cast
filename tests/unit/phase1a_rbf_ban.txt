@@ -1,0 +1,30 @@
+# Phase 1a + historical RBF luck-reload ban list.
+# One hex prefix per line (md5 or sha256 prefix8 is enough to ABORT).
+# Soft-skip ≠ PASS. Glass FAIL ≠ product. Do not drop historical rows.
+# Play/deploy may source tests/unit/test_phase1a_rbf_ban.sh later.
+
+# fit17 living glass FAIL (orange chevron; KEEP fit17b-ss20.jpg)
+4bb74dc4
+285b7ca0
+
+# fit16 living glass FAIL (orange chevron; KEEP fit16-ss16.jpg)
+da54cbb6
+2b2c1eeb
+
+# fit15 living glass FAIL (black+OSD; KEEP fit15b-ss16.jpg)
+01aabf3d
+fad71435
+
+# fit14 living glass FAIL (idle chevron; KEEP fit14-ss8.jpg)
+de1847f3
+718fddae
+
+# fit13 / fake-fit14 assemble-copy (black glass; parsed GOP12 ≠ pixels)
+6faba2ac
+
+# Historical residual/WIDE thrash bans (AGENTS.md) — do not drop
+8832824e
+75da8bb1
+4d6ee356
+4deaf6cc
+dabdaeb0

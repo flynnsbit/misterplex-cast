@@ -1,0 +1,57 @@
+# On-card AirPlay helper (linux/gcast/ffmpeg and linux/gcast/ffprobe)
+
+This program is separate from the LGPL libav linked into bin/misterplexd.
+ffmpeg links libx264. ffprobe is the same FFmpeg 8.1.2 and OpenSSL 3.0.15,
+with the same decoders, demuxers, and protocols, and without libx264:
+probe does not encode.
+
+The complete corresponding source for this helper is attached as assets to
+the MisterPlex rc5 release:
+https://github.com/flynnsbit/misterplex-cast/releases/tag/rc5
+It is available on request from the distributor. On request we will provide
+the same source on a physical medium for three years from this release, for
+no more than the cost of distribution.
+GPL-2.0 text: licenses/rbf/GPL-2.
+
+The rc5 release assets are these files:
+
+- ffmpeg-8.1.2.tar.xz
+- ffmpeg-8.1.2.tar.xz.asc
+- x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.bz2
+- openssl-3.0.15.tar.gz
+- build_gcast_ffmpeg.sh (the repository file scripts/build_gcast_ffmpeg.sh)
+- build_arm_airplay.sh (the repository file scripts/build_arm_airplay.sh; it builds the static OpenSSL)
+- SHA256SUMS
+- MD5SUMS
+
+openssl-3.0.15.tar.gz is statically linked into both ffmpeg and ffprobe.
+
+Upstream, with the sha256 of the source tarball named above:
+
+- FFmpeg 8.1.2: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+  sha256 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+- x264 0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee: https://code.videolan.org/videolan/x264
+  archive https://code.videolan.org/videolan/x264/-/archive/0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.bz2
+  sha256 f05c59f2e83d494c36307025dca2d3afc6b4d185f3a3453d06cc4fecd7094057
+- OpenSSL 3.0.15: https://github.com/openssl/openssl/releases/download/openssl-3.0.15/openssl-3.0.15.tar.gz
+  also https://www.openssl.org/source/openssl-3.0.15.tar.gz
+  sha256 23c666d0edf20f14249b3d8f0368acaee9ab585b09e1de82107c66e1f3ec9533
+- scripts/build_gcast_ffmpeg.sh: https://github.com/flynnsbit/misterplex-cast/releases/tag/rc5 (asset build_gcast_ffmpeg.sh)
+- scripts/build_arm_airplay.sh: https://github.com/flynnsbit/misterplex-cast/releases/tag/rc5 (asset build_arm_airplay.sh)
+
+x264 is GPL-2.0-or-later, not GPL-2.0 alone. OpenSSL 3.0.15 is under the
+Apache License 2.0. The license text is licenses/gcast-ffmpeg/Apache-2.0.txt.
+FFmpeg's configure requires --enable-version3 when --enable-gpl is combined
+with OpenSSL 3, so the helper ffmpeg binary is GPL-3.0-or-later. The GPL-3.0
+text is licenses/uxplay/LICENSE. ffprobe is LGPL-2.1-or-later with OpenSSL
+(no --enable-gpl). The LGPL-2.1 text is licenses/ffmpeg/COPYING.LGPLv2.1.
+
+Configure lines are in scripts/build_gcast_ffmpeg.sh:
+
+- x264 0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee:
+  ./configure --host=arm-none-linux-gnueabihf --cross-prefix=arm-none-linux-gnueabihf- --enable-static --disable-cli --disable-opencl --disable-asm
+- FFmpeg 8.1.2 ffmpeg:
+  --enable-gpl --enable-version3 --enable-libx264 --enable-openssl --enable-static --disable-shared
+- FFmpeg 8.1.2 ffprobe (no libx264):
+  --enable-openssl --enable-static --disable-shared --disable-ffmpeg
+  (neither configure passes --disable-ffprobe)

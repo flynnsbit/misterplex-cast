@@ -1,0 +1,19 @@
+Mozilla CA certificate bundle, extracted by curl's mk-ca-bundle.
+
+Source: https://curl.se/ca/cacert.pem
+Extract notes: https://curl.se/docs/caextract.html
+Mozilla certdata.txt:
+https://raw.githubusercontent.com/mozilla-firefox/firefox/refs/heads/release/security/nss/lib/ckfw/builtins/certdata.txt
+
+Certificate data from Mozilla as of: Fri Sep 25 03:12:01 2026 GMT
+Fetched into this tree: 2026-10-19
+mk-ca-bundle.pl 1.33
+mk-ca-bundle SHA256: beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb
+File SHA256: a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+Roots: 121
+License: MPL-2.0 (Mozilla certdata.txt)
+
+package_release.sh copies cacert.pem to linux/misterplex-cacert.pem.
+On the card that path is /media/fat/linux/misterplex-cacert.pem.
+mpx::caBundlePath() tries $MPX_CA_BUNDLE, then that file, then
+/etc/ssl/certs/ca-certificates.crt.

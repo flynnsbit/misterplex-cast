@@ -1,0 +1,10 @@
+Source-only FPGA tree.
+combo 23872a353 lane/owenb-combo-a-e11-e2-f1030-1017
+s9 9106498eb00838cdc2169287b85ebdd5472b27c4 lane/owenb-hpoly-s9
+s9 wins where both commits have the same path.
+Skipped build outputs: remote_out, output_files, db, rbf, rpt, logs, ELF.
+Overlaps (s9 kept):
+fpga/PlexOB_480p/build_plexob_480p.sh
+fpga/PlexOB_480p/vendor/H264.qsf
+fpga/PlexOB_480p/vendor/h264/emu.sv
+fpga/PlexOB_480p/vendor/sys/ascal.vhd

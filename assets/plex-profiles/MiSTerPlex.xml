@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Client name="MiSTerPlex">
+  <!-- MiSTerPlex 480p hardware-decode profile; see docs/pms-baseline-profile.md
+       for install, restore, rollback, and delivered-SPS evidence. -->
+  <TranscodeTargets>
+    <VideoProfile protocol="http" container="mpegts" codec="h264" audioCodec="aac" context="streaming">
+      <!-- Force x264 into the narrow subset the FPGA decoder is scoped for:
+           Baseline/CAVLC, no B-slices, one reference, no weighted P prediction,
+           no 8x8 DCT, and no sub-macroblock inter partitions. -->
+      <Setting name="VideoEncodeFlags" value="-profile:v baseline -level 3.0 -x264opts cabac=0:bframes=0:ref=1:weightp=0:8x8dct=0:partitions=none:keyint=50:min-keyint=25:scenecut=0" />
+      <Setting name="SubtitleSize" value="100" />
+    </VideoProfile>
+    <MusicProfile container="mp3" codec="mp3" />
+    <PhotoProfile container="jpeg" />
+  </TranscodeTargets>
+
+  <!-- Intentionally no broad DirectPlayProfiles: MiSTerPlex should use the
+       constrained transcode target unless/until the hardware decoder supports
+       the source codec/profile directly. -->
+
+  <CodecProfiles>
+    <VideoCodec name="*">
+      <Limitations>
+        <UpperBound name="video.width" value="640" isRequired="true" />
+        <UpperBound name="video.height" value="480" isRequired="true" />
+        <UpperBound name="video.frameRate" value="30" isRequired="true" />
+        <UpperBound name="video.bitDepth" value="8" isRequired="true" />
+      </Limitations>
+    </VideoCodec>
+    <VideoCodec name="h264">
+      <Limitations>
+        <Match name="video.profile" list="baseline" isRequired="true" />
+        <UpperBound name="video.level" value="30" isRequired="true" />
+        <UpperBound name="video.refFrames" value="1" isRequired="true" />
+      </Limitations>
+    </VideoCodec>
+    <VideoAudioCodec name="aac">
+      <Limitations>
+        <UpperBound name="audio.channels" value="2" isRequired="true" />
+      </Limitations>
+    </VideoAudioCodec>
+  </CodecProfiles>
+
+  <TranscodeTargetProfiles>
+    <VideoTranscodeTarget protocol="http" context="streaming">
+      <VideoCodec name="h264">
+        <Limitations>
+          <Match name="video.profile" list="baseline" onlyTranscodes="true" isRequired="true" />
+          <UpperBound name="video.level" value="30" onlyTranscodes="true" isRequired="true" />
+          <UpperBound name="video.refFrames" value="1" onlyTranscodes="true" isRequired="true" />
+        </Limitations>
+      </VideoCodec>
+      <VideoAudioCodec name="aac">
+        <Limitations>
+          <UpperBound name="audio.channels" value="2" onlyTranscodes="true" isRequired="true" />
+        </Limitations>
+      </VideoAudioCodec>
+    </VideoTranscodeTarget>
+  </TranscodeTargetProfiles>
+</Client>

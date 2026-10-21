@@ -1,0 +1,192 @@
+{
+  "_comment": [
+    "AUTHORITATIVE PLX mailbox offset/address/magic registry.",
+    "Frame-store mailboxes are OFFSETS on the build's PLX page (mailbox_abi_spec.hpp; page per present_core class in plx_page.hpp, class per build row in fpga_build_ids.hpp). DIAG and the 0x30140000 ring family are absolute.",
+    "Both RTL (SystemVerilog) and ARM (C++) sides MUST match this file.",
+    "test_rtl_invariants.py gates against it; a mismatch is a hard fail.",
+    "Adding a new mailbox: append here, then implement both sides.",
+    "NEVER duplicate an offset, address or magic \u2014 the gate rejects collisions."
+  ],
+  "mailboxes": [
+    {
+      "name": "PLXS",
+      "purpose": "DDR status (core\u2192HPS)",
+      "magic": "0x504C5853",
+      "rtl_file": "rtl/ddr_frame_store.sv",
+      "rtl_addr_param": "MAILBOX_PHYS",
+      "rtl_magic_param": "MAGIC_S",
+      "arm_addr_const": "kDdrStatusMailboxOff",
+      "arm_magic_const": "kDdrStatusMailboxMagic",
+      "layout": {
+        "31:0": "magic",
+        "47:32": "status_osd[15:0]",
+        "63:48": "mbox_seq[15:0]"
+      },
+      "page_offset": "0x100"
+    },
+    {
+      "name": "PLXI",
+      "purpose": "Input command (core\u2192HPS)",
+      "magic": "0x504C5849",
+      "rtl_file": "rtl/ddr_frame_store.sv",
+      "rtl_addr_param": "INPUT_MAILBOX_PHYS",
+      "rtl_magic_param": "MAGIC_I",
+      "arm_addr_const": "kInputMailboxOff",
+      "arm_magic_const": "kInputMailboxMagic",
+      "layout": {
+        "31:0": "magic",
+        "39:32": "cmd_rdata[7:0]",
+        "47:40": "imbox_cmd_seq[7:0]",
+        "63:48": "imbox_seq[15:0]"
+      },
+      "page_offset": "0x108"
+    },
+    {
+      "name": "PLXM",
+      "purpose": "SDRAM memtest (core\u2192HPS)",
+      "magic": "0x504C584D",
+      "rtl_file": "rtl/ddr_frame_store.sv",
+      "rtl_addr_param": "SDRAM_MAILBOX_PHYS",
+      "rtl_magic_param": "MAGIC_M",
+      "arm_addr_const": "kMemtestMailboxOff",
+      "arm_magic_const": "kMemtestMailboxMagic",
+      "layout": {
+        "31:0": "magic",
+        "39:32": "sdram_mbox_seq[7:0]",
+        "63:40": "sdram_status[23:0]"
+      },
+      "page_offset": "0x110"
+    },
+    {
+      "name": "PLXF",
+      "purpose": "Frame store status (core\u2192HPS)",
+      "magic": "0x504C5846",
+      "rtl_file": "rtl/ddr_frame_store.sv",
+      "rtl_addr_param": "FRAME_MAILBOX_PHYS",
+      "rtl_magic_param": "MAGIC_F",
+      "arm_addr_const": "kUnderrunMailboxOff",
+      "arm_magic_const": "kUnderrunMailboxMagic",
+      "layout": {
+        "31:0": "magic",
+        "39:32": "frame_mbox_seq[7:0]",
+        "47:40": "debug_state[7:0]",
+        "63:48": "underrun_count[15:0]"
+      },
+      "page_offset": "0x118"
+    },
+    {
+      "name": "SDRAM_DIAG",
+      "purpose": "SDRAM diagnostic (core\u2192HPS, no magic, raw layout)",
+      "address": "0x3007F120",
+      "magic": null,
+      "rtl_file": "rtl/ddram_frame_rd.sv",
+      "rtl_addr_param": "MEMTEST_DIAG_MAILBOX_PHYS",
+      "rtl_magic_param": null,
+      "arm_addr_const": null,
+      "arm_magic_const": null,
+      "layout": {
+        "63:0": "sdram_diag_word (raw diagnostic)"
+      }
+    },
+    {
+      "name": "PLXD",
+      "purpose": "Bank-release display-bank ACK (core\u2192HPS)",
+      "magic": "0x504C5844",
+      "rtl_file": "rtl/ddr_frame_store.sv",
+      "rtl_addr_param": "BANK_MAILBOX_PHYS",
+      "rtl_magic_param": "MAGIC_D",
+      "arm_addr_const": "kBankReleaseMailboxOff",
+      "arm_magic_const": "kBankReleaseMailboxMagic",
+      "layout": {
+        "31:0": "magic",
+        "33:32": "free_bank_mask[1:0]",
+        "34": "disp_bank",
+        "35": "swap_pending",
+        "47:36": "reserved",
+        "63:48": "frames_done[15:0]"
+      },
+      "page_offset": "0x128"
+    },
+    {
+      "name": "PLXJ",
+      "purpose": "Source-aspect commit ACK (core\u2192HPS)",
+      "page_offset": "0x130",
+      "magic": "0x504C584A",
+      "rtl_file": "rtl/ddr_frame_store.sv",
+      "rtl_addr_param": "ASPECT_ACK_PHYS",
+      "rtl_magic_param": "MAGIC_J",
+      "arm_addr_const": "kPlxjOff",
+      "arm_magic_const": "kPlxjMagic",
+      "layout": {
+        "31:0": "magic",
+        "43:32": "dar_x",
+        "55:44": "dar_y",
+        "63:56": "token"
+      }
+    },
+    {
+      "name": "PLXK",
+      "purpose": "DDR doorbell (HPS\u2192core)",
+      "magic": "0x504C584B",
+      "rtl_file": "rtl/ddram_frame_rd.sv",
+      "rtl_addr_param": null,
+      "rtl_magic_param": null,
+      "arm_addr_const": null,
+      "arm_magic_const": "kDdrDoorbellMagic",
+      "layout": {
+        "31:0": "magic",
+        "32": "bank",
+        "34:33": "format",
+        "63:35": "seq + flags"
+      },
+      "per_build": "FS_DOORBELL = the daemon layout doorbell_phys; the PLX page on every present_core class except the no-macro one (doorbell 0x300FF000)"
+    }
+  ],
+  "bitstream_ring": {
+    "_comment": "Bitstream ring control mailboxes at 0x30140000+, separate address space",
+    "PLXB_CTRL": {
+      "address": "0x30140000",
+      "magic": "0x504C5842"
+    },
+    "PLXR_READ": {
+      "address": "0x30140008",
+      "magic": "0x504C5852"
+    },
+    "PLXE_ERR": {
+      "address": "0x30140010",
+      "magic": "0x504C5845"
+    },
+    "PLXN_REC": {
+      "address": "0x30100000",
+      "magic": "0x504C584E"
+    },
+    "PLXT_ST0": {
+      "address": "0x30140018",
+      "magic": "0x504C5854"
+    },
+    "PLXU_ST1": {
+      "address": "0x30140020",
+      "magic": "0x504C5855"
+    },
+    "PLXV_ST2": {
+      "address": "0x30140028",
+      "magic": "0x504C5856"
+    },
+    "PLXW_ST3": {
+      "address": "0x30140030",
+      "magic": "0x504C5857"
+    },
+    "PLXY_ST4": {
+      "address": "0x30140038",
+      "magic": "0x504C5859"
+    },
+    "PLXZ_ST5": {
+      "address": "0x30140040",
+      "magic": "0x504C585A"
+    },
+    "PLXQ_ST6": {
+      "address": "0x30140048",
+      "magic": "0x504C5851"
+    }
+  }
+}

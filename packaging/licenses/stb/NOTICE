@@ -1,0 +1,13 @@
+Vendored in host/libmisterplex/plexui/third_party and linked into bin/misterplexd.
+The headers state public domain. The opening lines of each file:
+
+/* stb_image - v2.30 - public domain image loader - http://nothings.org/stb
+                                  no warranty implied; use at your own risk
+
+/* stb_image_resize2 - v2.18 - public domain image resizing
+
+   by Jeff Roberts (v2) and Jorge L Rodriguez
+   http://github.com/nothings/stb
+
+// stb_truetype.h - v1.26 - public domain
+// authored from 2009-2021 by Sean Barrett / RAD Game Tools

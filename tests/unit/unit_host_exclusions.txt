@@ -1,0 +1,45 @@
+# unit-host exclusions (wR 2026-10-06, the canon port of unit-host-restore f89baa89 + f178f3c9 + e767adc1).
+# One line per unit-unlocked recipe command that make unit-host does NOT run: <command> | <class> | <reason>.
+# test_unit_host_coverage.py: every unit-unlocked command is in unit-host-unlocked (same order) or here;
+# every line here names a unit-unlocked command. Classes: a = absent source or feature on canon;
+# c = pre-existing FAIL on the batch tip ac7f4027 (identical bytes); rtl-sim / rtl-tooling = not a host step.
+# Evidence: the make -k -i unit-unlocked run of 2026-10-06 and slot job cls-rerun 1368917 (review 11:43).
+bash $(ROOT)/tests/unit/test_io_ack_follow_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+bash $(ROOT)/tests/unit/test_bitstream_bit_feeder_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+bash $(ROOT)/tests/unit/test_bitstream_to_exp_golomb_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+bash $(ROOT)/tests/unit/test_annexb_rbsp_exp_golomb_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+bash $(ROOT)/tests/unit/test_audio_session.sh | a | Verilator bench whose sources are absent on canon: scripts/generate_audio_session_abi.py, rtl/audio_session_mailbox.sv, rtl/audio_session_ddr_mux.sv, tests/rtl/audio_session_tb*
+python3 $(ROOT)/tests/unit/test_fpga_audio_routing.py | a | the restored test was dropped (26b05aee): its bench tests/rtl/fpga_audio_routing_tb.sv and native_de RTL are absent
+bash $(ROOT)/tests/unit/test_ddr_bitstream_reader_transport.sh | a | Verilator bench whose sources are absent on canon: scripts/generate_audio_session_abi.py, tests/rtl/ddr_bitstream_reader_transport_tb*
+bash $(ROOT)/tests/unit/test_fpga_video_audio_feedback.sh | a | Verilator bench whose source tests/rtl/fpga_video_audio_feedback_tb.sv is absent on canon
+bash $(ROOT)/tests/unit/test_fpga_playback_overlay.sh | a | Verilator bench whose sources rtl/playback_overlay_plane.sv and tests/rtl/playback_overlay_plane_tb.cpp are absent on canon
+bash $(ROOT)/tests/unit/test_pms_baseline_live_gate.sh | a | needs pms_baseline_probe --probe-contract, a 3115dbdc probe mode canon's tools/pms_baseline_probe.cpp lacks
+$(ROOT)/tests/unit/test_h264_multinal_stream_path.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+python3 $(ROOT)/tests/unit/test_bench_rtl_filelists.py | rtl-tooling | the bench RTL file-list check (a Verilator module scan of every bench list)
+$(ROOT)/tests/unit/test_present_geom_params_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_present_720p_store_wire_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+python3 $(ROOT)/tests/unit/test_p3_intra_mb0_verilator.py | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+python3 $(ROOT)/tests/unit/test_h264_intra_nb_ctx_verilator.py | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+python3 $(ROOT)/tests/unit/test_p3_intra_frame_verilator.py | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_p3_inter_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_p3_dpb_mc_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_h264_p_slice_modes_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_p3_inter_stream_path_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_rtl_invariants.sh | c | RTL/Quartus-subset invariants; the remaining FAILs (stride, fence, paintIdle, release_artifacts, catch-must-log) are on the RTL ticket list (T-RTL-INVARIANTS-CANON)
+$(ROOT)/tests/unit/test_sdram_startup_verilator.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_sdram_dq_turnaround_verilator.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_h264_cavlc_residual_verilator.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_level_width_verilator.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_stream_path_recon_integration.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_stream_path_full_frame_compare.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_p3_idct_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_p3_deblock_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_p3_stream_path_recon_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_stream_path_deblock_integration.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+bash $(ROOT)/tests/unit/test_stream_path_ddr_ring_integration.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_ddr_frame_store_warm_reset.sh | c | RTL sim; pre-existing on the batch tip ac7f4027: 'equal-token refresh after accept got r=96 want~217' (slot run cls-rerun 1368917)
+python3 $(ROOT)/tests/unit/test_rtl_lint_stubs.py | a | restored from another lineage (582a5020): its Intel PLL stubs do not match canon's sys/pll_hdmi_0002.v (PINNOTFOUND outclk, reconfig_*; no fractional_vco_multiplier)
+$(ROOT)/scripts/rtl_lint.py | c | RTL lint; pre-existing on ac7f4027: ddr_frame_store.sv:645 WIDTHTRUNC 3 > baseline 0 (identical block on both commits)
+$(ROOT)/tests/unit/test_h264_syntax_primitives_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_h264_sps_geometry_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step
+$(ROOT)/tests/unit/test_h264_baseline_syntax_rtl_sim.sh | rtl-sim | RTL/Verilator simulation: the rtl-sim lane, not a host step

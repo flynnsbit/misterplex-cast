@@ -1,0 +1,388 @@
+{
+  "title": "P720 THREE-LANE LOCK 33.1776 payload/dir \u2014 labels: ideal port util NOT sustainable DDR; reader CLOSED; controller contention OPEN (rd-duck)",
+  "product_config": {
+    "PRESENT_MULTI_PIXEL": true,
+    "PRESENT_PX_PER_CLK": 2,
+    "clk_sys_hz": 20000000,
+    "clk_pix_hz": 29700000,
+    "clk_ddr_hz": 90000000,
+    "clk_sys_overclock": false,
+    "clk_ratio_sys_to_ddr": "20:90",
+    "reason_no_clksys24": "STA Fmax 23.17 MHz; clk_sys@24 fails margin (w-clock)"
+  },
+  "geometry": {
+    "coded_w": 1280,
+    "coded_h": 720,
+    "fps": 24,
+    "i420_bytes_per_frame": 1382400,
+    "ddr_beat_bytes": 8,
+    "beats_per_frame_i420_payload_only": 172800
+  },
+  "headline": {
+    "name": "i420_full_frame_direction_MBps",
+    "value": 33.1776,
+    "unit": "MB/s",
+    "formula": "i420_bytes_per_frame * fps / 1e6 = 1382400 * 24 / 1e6",
+    "domain": "frame-store I420 PAYLOAD average, one direction. Ideal math only. NOT total controller traffic; NOT measured sustainable DDR BW.",
+    "B_per_clk_sys_avg": 1.65888,
+    "formula_B_per_clk": "33.1776e6 / clk_sys_hz",
+    "B_per_clk_sys_avg_FORBIDDEN_USES": [
+      "FIFO width sizing",
+      "datapath width sizing",
+      "linefill burst rate",
+      "instantaneous DDRAM port demand"
+    ],
+    "solves_for": "payload_RATE_MBps_average_one_direction"
+  },
+  "companion": {
+    "steady_RW_MBps": 66.3552,
+    "formula": "2 * 33.1776",
+    "w_mem_ideal_rw_payload_beats": 345600,
+    "formula_rw_beats": "2 * beats_per_frame_i420_payload_only",
+    "ddr_native_peak_B_per_beat": 8,
+    "ddr_peak_MBps_at_90MHz": 720.0,
+    "controller_payload_fraction_of_8B_beats": 0.09216,
+    "formula_fraction": "66.3552 / 720.0",
+    "B_per_clk_ddr_avg_payload_RW": 0.73728,
+    "formula_B_per_clk_ddr": "66.3552e6 / clk_ddr_hz",
+    "note": "64-bit DDRAM beat width @90 MHz peak 720 MB/s",
+    "ddr_peak_MBps_at_90MHz_label": "ideal 64-bit port peak arithmetic (90e6*8) \u2014 NOT measured sustainable DDR BW",
+    "steady_RW_MBps_label": "2x frame-store I420 payload average \u2014 NOT total controller traffic (excludes pipe->heap, memcpy src reads, decode/ref, contention)",
+    "controller_payload_fraction_of_8B_beats_label": "ideal port utilization of payload R+W only (66.3552/720) \u2014 not measured load"
+  },
+  "interface_peaks_separate_from_headline": {
+    "note": "rd-duck: keep peaks separate from payload averages. Do NOT collapse into 1.65888.",
+    "ppc2_store_to_present_RGB_B_per_accepted_sys_group": {
+      "value": 6,
+      "formula": "PPC * 3 = 2 RGB pixels * 3 bytes",
+      "domain": "store\u2192present accepted sys group during DE (post-CSC RGB)"
+    },
+    "ppc2_i420_amortized_source_B_per_active_2px_group": {
+      "value": 3,
+      "formula": "2 * 1.5 I420 bytes/px = 3 B per active 2-pixel group",
+      "domain": "amortized unique I420 source for 2 output pixels (linebuf-served)"
+    },
+    "present_linebuf_i420_equiv_B_per_clk_sys_DE": {
+      "value": 3.0,
+      "formula": "PPC * 1.5 = 2 * 1.5",
+      "reason_not_ddr_headline": "I420-equivalent of unique pixels served from LINE BUFFERS during DE, not DDRAM beats/clk. Hits skip DDR (rd_miss_now).",
+      "sources": [
+        "fpga/Plex_MiSTer/rtl/ddr_frame_store.sv:331 rd_miss_now (hit \u2192 no DDR)",
+        "fpga/Plex_MiSTer/rtl/ddr_frame_store.sv:77 Y_LINE_QWORDS=CODED_W/8",
+        "fpga/Plex_MiSTer/rtl/ddr_frame_store.sv:168 line_buf_ram yram"
+      ]
+    }
+  },
+  "optional_not_headline": {
+    "present_linebuf_i420_equiv_B_per_clk_sys_DE": {
+      "value": 3.0,
+      "formula": "PPC * 1.5 = 2 * 1.5",
+      "reason_not_ddr_headline": "I420-equivalent of unique pixels served from LINE BUFFERS during DE, not DDRAM beats/clk. Hits skip DDR (rd_miss_now).",
+      "sources": [
+        "fpga/Plex_MiSTer/rtl/ddr_frame_store.sv:331 rd_miss_now (hit \u2192 no DDR)",
+        "fpga/Plex_MiSTer/rtl/ddr_frame_store.sv:77 Y_LINE_QWORDS=CODED_W/8",
+        "fpga/Plex_MiSTer/rtl/ddr_frame_store.sv:168 line_buf_ram yram"
+      ]
+    }
+  },
+  "NACK_history": {
+    "scaler_3p0_as_ddr_headline": "REJECTED by w-clock; w-scaler ACK 2026-08-03 \u2014 demoted to optional_not_headline / interface_peaks"
+  },
+  "blackout_prefetch": {
+    "t_line_us_ppc2_20M_1280": 32.0,
+    "cover_lines_8_us": 256.0,
+    "cover_lines_16_us": 512.0,
+    "model_blackout_us": 500.0,
+    "multi_line_floor": 16,
+    "note": "latency cover, not average BW"
+  },
+  "proof_gap": {
+    "status": "READER_CLOSED_HPS_WRITE_AND_TCOPY_OPEN",
+    "fabric_bw_closed": false,
+    "reader_steady_delta": {
+      "status": "CLOSED",
+      "owner": "w-clock",
+      "source_tip": "w-clock-720p-sv@f992a5b7",
+      "tb": "tests/unit/test_ddr_frame_store_720p_ppc2_bus.sh",
+      "recipe": "MULTI+PPC2+LINE16+PHYS 0x30180000+clk_sys:clk_ddr 20:90",
+      "measurement": "steady frames_done delta (prep excluded)",
+      "G0": {
+        "payload_beats": 173120,
+        "ideal_payload": 172800,
+        "overhead_beats_doorbell": 9689,
+        "total_rd_beats": 182809,
+        "ddr_cycles": 2784152,
+        "budget_ddr_24fps": 3750000,
+        "max_burst": 128,
+        "note": "payload ideal+320; under budget"
+      },
+      "G1_stall": {
+        "payload_beats": 173120,
+        "rd_blocked": 1248,
+        "busy_cycles": 797290,
+        "note": "beam-locked wall; stall via busy/blocked not longer frame"
+      },
+      "w_scaler_ack": "ACK reader proof; brought TB onto w-scaler-720win for local reconfirm",
+      "w_scaler_local_reconfirm": {
+        "cmd": "bash tests/unit/test_ddr_frame_store_720p_ppc2_bus.sh",
+        "true_rc": 0,
+        "DUT": "tip scalar ddr_frame_store (no PX_PER_CLK; N-wide ports deferred to present-ppc)",
+        "scan": "rd_x steps by 2 (PPC2 group alignment)",
+        "G0_match_w_clock": {
+          "payload_beats": 173120,
+          "doorbell_beats": 9689,
+          "total_rd_beats": 182809,
+          "ddr_cycles": 2784152,
+          "budget_ddr_24fps": 3750000
+        },
+        "G1_match_w_clock": {
+          "payload_beats": 173120,
+          "rd_blocked": 1248,
+          "busy_cycles": 797290
+        },
+        "note": "Numbers bit-identical to w-clock published G0/G1 on scalar DUT"
+      }
+    },
+    "still_open": [
+      "hps_write_concurrent (w-mem) \u2014 concurrent HPS /dev/mem WRITE on same controller",
+      "T_copy_e2e (w-path/parent) \u2014 serial 14.978 ms; overlap unproven; fabric DMA not built \u2014 NOT reader beat delta",
+      "hardware_contention OPEN after TB (rd-duck) \u2014 real-reader cannot prove shared HPS controller envelope"
+    ],
+    "headline_assumption": "33.1776 is payload average; real reader measured ~173120 payload beats/frame (+320 vs ideal) + doorbell overhead",
+    "w_scaler_position": "reader_steady_delta CLOSED (payload demand). Refusal to claim fabric/controller closure CORRECT (rd-duck). hps_write_concurrent + T_copy_e2e + hardware_contention OPEN.",
+    "reader_beat_delta_gap": "CLOSED",
+    "fabric_bw_closed_means": "False because hps_write_concurrent OPEN and/or full R+W controller budget unowned. reader_steady_delta is CLOSED \u2014 never report as unproven reader gap.",
+    "hps_write_concurrent": "OPEN",
+    "T_copy_e2e": "OPEN"
+  },
+  "agreed_by": [
+    "w-clock",
+    "w-scaler",
+    "w-mem",
+    "w-path"
+  ],
+  "audit_ack": [
+    "rd-duck",
+    "w-clock-reader-proof",
+    "rd-duck-label-correction"
+  ],
+  "pending_ack": [],
+  "parent_correction_sweep118": {
+    "overclaim_withdrawn": "ARM is no longer the constraint \u2014 TOO STRONG (parent Sweep 118)",
+    "still_true": "busy-spin fixed: 49.0% idle / decode 1.3x deployed durable",
+    "not_true": "ARM retired from critical path",
+    "correct_status": "end-to-end overlap remains unproven"
+  },
+  "arm_cpu_time_NOT_a_rate": {
+    "note": "w-path/rd-duck/parent: payload RATE and CPU TIME COST are not interchangeable. State which term you solve for.",
+    "frame_budget_ms_24fps": 41.666666666666664,
+    "formula_budget": "1000/24",
+    "T_decode_ms_sweep116": 32.705,
+    "formula_decode": "6541 ms / 200 frames",
+    "decode_headroom_ms": 8.961666666666666,
+    "formula_headroom": "41.666666666666664 - 32.705",
+    "C_arm_MiBps": 88.0,
+    "C_arm_unit": "MiB/s uncached-bank copy throughput",
+    "T_copy_arm_ms": 14.978,
+    "formula_T_copy": "1382400 / (88.0 * 1024*1024) * 1000",
+    "serial_deficit_ms": 6.016333333333334,
+    "formula_deficit": "T_copy_arm_ms - decode_headroom_ms",
+    "meaning": "720p24 does NOT close e2e if decode and sendDdrFrame /dev/mem copy are serial",
+    "closure_paths": {
+      "a_overlap": "UNPROVEN. Requires same-window idle+decode. Do NOT assume free core from 49% at-rest.",
+      "b_dma_publication": "KernelDma/WC retires uncached publication memcpy only (not full pixel touch elimination). Needs SG+coherency.",
+      "b_fabric_direct_reader": "PREFERRED strategic: fabric reads decode output at dynamic base; avoids source\u2192bank mover R+W.",
+      "disprefer_source_to_bank_mover": true
+    },
+    "w_scaler_scope": "present_content_window retires ARM swscale only \u2014 NOT T_copy_arm. Fabric already reads DDR on present; strategic (b) fabric DMA is WRITE side (w-mem/w-path). present-ppc still MANDATORY for MULTI+PPC=2.",
+    "solves_for": "CPU_TIME_ms_per_frame_copy",
+    "T_copy_arm_ms_full_float": 14.98135653409091,
+    "rounding_note": "Parent published 14.978; full float ~14.981356. Gate allows 0.01 ms.",
+    "idle_pct_sweep116_note": "49% idle is AT REST before decode (busyfix.sh order). NOT concurrent free core. Do not use for overlap (a) budgeting."
+  },
+  "reference_numbers_one_set": {
+    "R_req_720p24_MBps_per_dir": 33.1776,
+    "combined_payload_MBps": 66.3552,
+    "B_per_clk_sys_avg_per_dir": 1.65888,
+    "PPC2_present_RGB_B_per_group": 6,
+    "T_copy_arm_ms": 14.978,
+    "C_arm_MiBps": 88.0,
+    "source": "parent Sweep 118 + rd-duck + w-path joint; w-scaler ACK",
+    "T_dpb_P16x16_ref_fetch_ms_720p_at_20MHz": 108.54,
+    "dpb_fetch_B_per_partition": 603,
+    "note_dpb": "rd-duck: one-byte DPB fetch structural; not interchangeable with R_req or T_copy_arm"
+  },
+  "real_reader_proof": {
+    "status": "CLOSED",
+    "owner": "w-clock",
+    "source_tip": "w-clock-720p-sv@f992a5b7",
+    "tb": "tests/unit/test_ddr_frame_store_720p_ppc2_bus.sh",
+    "recipe": "MULTI+PPC2+LINE16+PHYS 0x30180000+clk_sys:clk_ddr 20:90",
+    "measurement": "steady frames_done delta (prep excluded)",
+    "G0": {
+      "payload_beats": 173120,
+      "ideal_payload": 172800,
+      "overhead_beats_doorbell": 9689,
+      "total_rd_beats": 182809,
+      "ddr_cycles": 2784152,
+      "budget_ddr_24fps": 3750000,
+      "max_burst": 128,
+      "note": "payload ideal+320; under budget"
+    },
+    "G1_stall": {
+      "payload_beats": 173120,
+      "rd_blocked": 1248,
+      "busy_cycles": 797290,
+      "note": "beam-locked wall; stall via busy/blocked not longer frame"
+    },
+    "w_scaler_ack": "ACK reader proof; brought TB onto w-scaler-720win for local reconfirm",
+    "w_scaler_local_reconfirm": {
+      "cmd": "bash tests/unit/test_ddr_frame_store_720p_ppc2_bus.sh",
+      "true_rc": 0,
+      "DUT": "tip scalar ddr_frame_store (no PX_PER_CLK; N-wide ports deferred to present-ppc)",
+      "scan": "rd_x steps by 2 (PPC2 group alignment)",
+      "G0_match_w_clock": {
+        "payload_beats": 173120,
+        "doorbell_beats": 9689,
+        "total_rd_beats": 182809,
+        "ddr_cycles": 2784152,
+        "budget_ddr_24fps": 3750000
+      },
+      "G1_match_w_clock": {
+        "payload_beats": 173120,
+        "rd_blocked": 1248,
+        "busy_cycles": 797290
+      },
+      "note": "Numbers bit-identical to w-clock published G0/G1 on scalar DUT"
+    }
+  },
+  "claim_split": {
+    "reader_steady_delta": {
+      "status": "CLOSED",
+      "owner": "w-clock",
+      "also": "w-scaler local reconfirm true rc=0 @ 8ca3d529/7cf2640a",
+      "tb": "tests/unit/test_ddr_frame_store_720p_ppc2_bus.sh",
+      "G0": "payload=173120 door=9689 total=182809 ddr_cy=2784152<3750000",
+      "proves": "reader beat demand + assumed stall tolerance; payload and door counted separately",
+      "does_not_prove": "shared HPS controller supply under concurrent write; hardware contention"
+    },
+    "hps_write_concurrent": {
+      "status": "OPEN",
+      "owner": "w-mem"
+    },
+    "T_copy_e2e": {
+      "status": "OPEN",
+      "owner": "w-path/parent",
+      "note": "T_copy_arm 14.978 ms CPU time; path (a) overlap unproven; path (b) fabric DMA not built \u2014 NOT reader beat delta"
+    },
+    "do_not_say": [
+      "fabric BW proof_gap still OPEN (unsplit)",
+      "reader beat delta unproven",
+      "assign reader closure to w-mem+w-osd"
+    ],
+    "hardware_contention": {
+      "status": "OPEN",
+      "note": "remains open after real-reader TB; host writes not RTL-master beats"
+    }
+  },
+  "three_lane_lock": {
+    "status": "LOCKED",
+    "quote_for_parent": "Agreed (w-mem \u2295 w-clock \u2295 w-scaler): 33.1776 MB/s per full-frame direction @24 I420 1280\u00d7720 (1.65888 B/clk_sys avg). Steady R+W 66.3552 MB/s. PPC=2 does not multiply frame DDR bytes. 3.0 B/clk is linebuf DE consume, not DDR.",
+    "w_mem_tip": "integ/fab-720p-product-v2 @ 211e0325",
+    "rtl_contract": "fpga/Plex_MiSTer/rtl/plex_720p_bw_contract.svh",
+    "cite_table": "Memory/lab/agents/AGREED_BW_720P_THREE_LANE_REPLY.md",
+    "NACK": [
+      "3.0 as DDR headline",
+      "~4.66 as headline",
+      "~93 MB/s as headline"
+    ],
+    "host_appendix": "w-path: T_copy_arm=14.978 ms/f @ C_arm=88 MiB/s; serial_deficit\u22486.016 ms/f; R_req=33.1776 MB/s is payload RATE not CPU time. Userspace PL330 lab-only."
+  },
+  "rd_duck_label_correction": {
+    "status": "BINDING",
+    "payload_averages_mean": "33.1776/dir, 66.3552 R+W, 0.73728 B/clk_ddr, 0.09216 of 8B beats are frame-store PAYLOAD / ideal 64-bit-port utilization ONLY",
+    "FORBIDDEN_labels": [
+      "720 MB/s measured sustainable DDR bandwidth",
+      "66.3552 total controller traffic",
+      "real-reader TB proves shared HPS controller will supply the envelope"
+    ],
+    "additional_traffic_not_in_headline": [
+      "pipe->heap",
+      "memcpy source reads",
+      "decode/reference traffic"
+    ],
+    "real_reader_tb_proves": [
+      "reader beat demand (payload + door/mailbox overhead, counted separately)",
+      "tolerance to an ASSUMED stall envelope (G1)"
+    ],
+    "real_reader_tb_cannot_prove": [
+      "host writes as RTL-master beats (they are not)",
+      "shared HPS controller supplies the stall envelope under contention",
+      "hardware contention closed"
+    ],
+    "hardware_contention": "OPEN after TB",
+    "w_scaler_refusal_to_claim_closure": "CORRECT"
+  },
+  "host_lane_ack": {
+    "lane": "w-path",
+    "solves_for": "T_copy_arm_ms (publication memcpy CPU TIME) and R_req payload RATE; not fabric B/clk; not free-core-during-decode",
+    "ack_w_scaler": "present_content_window retires ARM swscale only \u2014 NOT T_copy_arm. Strategic (b) fabric DMA is WRITE side (w-mem + w-path joint).",
+    "product_copy_site": "arm/misterplexd/fpga_spi.cpp sendDdrFrame memcpy",
+    "lab_dma": "pl330_mem2mem.hpp + ddr_pl330_ingest_bench (LAB ONLY; no unbind)",
+    "product_dma_targets": [
+      "KernelDma dmaengine client",
+      "fabric fetch (preferred)"
+    ],
+    "serial_deficit_ms_pin": 6.016,
+    "tip": "lab main f00fec54+",
+    "rd_duck_ack": "Accepted: idle-before-decode; DMA\u2260never-touch; prefer fabric reader; fit blockers = nostub AND w-osd."
+  },
+  "rd_duck_idle_sampling_correction": {
+    "status": "BINDING",
+    "claim_withdrawn": "budget free core during decode from Sweep116 49% idle",
+    "evidence": "Memory/scratch/busyfix.sh:70 idle_pct then :71 decode \u2014 sequential, not same-window",
+    "kIdlePctSweep116AtRest": 49.0,
+    "concurrent_with_decode": false,
+    "required_for_overlap_budget": "same-window /proc/stat + wait4 during decode"
+  },
+  "rd_duck_dma_scope_correction": {
+    "status": "BINDING",
+    "too_strong_claim": "fabric DMA and ARM never touches frame",
+    "narrow_true_claim": "DMA can retire uncached publication memcpy only after pinned contiguous/SG + cache-coherency contract",
+    "still_writes_pixels": "software decode/rawvideo pipe still writes a source buffer",
+    "prefer": "dynamic-base direct fabric reader",
+    "disprefer": "source\u2192bank mover (adds read+write traffic)"
+  },
+  "fit_release_blockers": {
+    "status": "BOTH_REQUIRED_UNLESS_PARENT_RESOLVES",
+    "blockers": [
+      "w-nostub reclaim (decode_stub strip / ALM M10K)",
+      "w-osd full 1280x720 real-reader @20:90 with injected stalls"
+    ],
+    "count": 2
+  },
+  "fabric_dpb_one_byte_fetch": {
+    "owner_note": "rd-duck UPDATED + w-path pin; source h264_dpb.sv issue_idx 0..440/0..80",
+    "solves_for": "fabric_byte_cycles_and_ms_at_clk_sys \u2014 NOT entropy-frontend-only framing",
+    "luma_fetch_B_per_part": 441,
+    "chroma_fetch_B_per_plane": 81,
+    "fetch_B_per_partition": 603,
+    "part_wh_narrows_fetch": false,
+    "part_wh_note": "lat_part_w_lo/h_lo observed only for lint/future; not used to narrow issue_idx",
+    "mb_count_720p": 3600,
+    "P16x16_ref_fetch_cycles_720p": 2170800,
+    "formula_cycles": "603 * 3600",
+    "clk_sys_Hz": 20000000,
+    "P16x16_ref_fetch_ms_at_20MHz": 108.54,
+    "formula_ms": "2170800 / 20e6 * 1000",
+    "I420_write_byte_cycles_720p": 1382400,
+    "I420_write_ms_at_20MHz": 69.12,
+    "meets_24fps_at_20MHz": false,
+    "deadline_24_ms": 41.666666666666664,
+    "stub_dpb_mem_proves_720p": false,
+    "stub_dpb_note": "decode_stub dpb_mem[17:0] @ FRAME 640x480 \u2192 256KiB alias; not 720p DPB proof",
+    "PRODUCT_NO_STUB_removes_branch": true,
+    "remaining_work_entropy_frontend_only": false,
+    "w_path_ack": "Feed path still required; DPB wide/burst redesign is a hard 720p fabric blocker alongside entropy. Do not frame remaining work as entropy-only."
+  }
+}

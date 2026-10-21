@@ -1,0 +1,15 @@
+{
+  "format": "misterplex.p3.nal_sequence.v1",
+  "source": {"path": "wcap_residual14_idr_plus_p.264", "bytes": 9060, "sha256": "9f58c3f92a6c9cacc86d2b58c275329445017f328b54206fcdcef5de4b1a5b62"},
+  "profile": {"profile_idc": 66, "level_idc": 30, "max_num_ref_frames": 1, "entropy_cabac": false, "baseline_cavlc_only": true},
+  "frame": {"coded_width": 320, "coded_height": 240, "display_width": 320, "display_height": 240, "mb_width": 20, "mb_height": 15, "crop_right_px": 0},
+  "sequence": {"nal_count": 5, "vcl": 2, "idr": 1, "non_idr": 1, "i_slices": 1, "p_slices": 1, "requires_idle_between_vcl": true, "ioctl_injection": "assert ioctl_download, pulse ioctl_wr once per byte on ioctl_dout, deassert ioctl_download after final byte"},
+  "nals": [
+    {"index": 0, "offset": 0, "start_code_bytes": 4, "header_offset": 4, "payload_offset": 5, "end": 26, "bytes": 26, "nal_type": 7, "nal_type_name": "sps"},
+    {"index": 1, "offset": 26, "start_code_bytes": 4, "header_offset": 30, "payload_offset": 31, "end": 35, "bytes": 9, "nal_type": 8, "nal_type_name": "pps"},
+    {"index": 2, "offset": 35, "start_code_bytes": 3, "header_offset": 38, "payload_offset": 39, "end": 656, "bytes": 621, "nal_type": 6, "nal_type_name": "sei"},
+    {"index": 3, "offset": 656, "start_code_bytes": 3, "header_offset": 659, "payload_offset": 660, "end": 6751, "bytes": 6095, "nal_type": 5, "nal_type_name": "idr_vcl", "vcl_index": 0, "slice_type": 7, "slice_kind": "I", "frame_num": 0, "first_mb_in_slice": 0, "return_to_idle_before_next_vcl_required": true},
+    {"index": 4, "offset": 6751, "start_code_bytes": 4, "header_offset": 6755, "payload_offset": 6756, "end": 9060, "bytes": 2309, "nal_type": 1, "nal_type_name": "non_idr_vcl", "vcl_index": 1, "slice_type": 5, "slice_kind": "P", "frame_num": 1, "first_mb_in_slice": 0, "return_to_idle_before_next_vcl_required": true}
+  ],
+  "checks": {"min_two_nals": true, "has_i_slice": true, "has_p_slice": true, "geometry_explicit_no_640_assumption": true, "rtl_stream_path_idle_check": "tests/unit/test_h264_multinal_stream_path.sh verifies this byte stream through ioctl_download/ioctl_wr/ioctl_dout, observes slice_hdr_parser ST_IDLE between VCLs, and requires an IDR parse followed by a P-slice parse."}
+}

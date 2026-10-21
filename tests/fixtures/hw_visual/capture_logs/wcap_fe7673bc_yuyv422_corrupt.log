@@ -1,0 +1,17 @@
+[in#0/video4linux2,v4l2 @ 0x562403787940] Dequeued v4l2 buffer contains corrupted data (1843200 bytes).
+Input #0, video4linux2,v4l2, from '/dev/video4':
+  Duration: N/A, start: 250216.552466, bitrate: 147456 kb/s
+  Stream #0:0: Video: rawvideo (YUY2 / 0x32595559), yuyv422, 1280x720, 147456 kb/s, 10 fps, 10 tbr, 1000k tbn, start 250216.552466
+Stream mapping:
+  Stream #0:0 -> #0:0 (rawvideo (native) -> png (native))
+Press [q] to stop, [?] for help
+Output #0, image2, to 'build/hw-fe7673bc-padded.png':
+  Metadata:
+    encoder         : Lavf62.12.102
+  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 1280x720, q=2-31, 200 kb/s, 10 fps, 10 tbn
+    Metadata:
+      encoder         : Lavc62.28.102 png
+[image2 @ 0x56240378a100] The specified filename 'build/hw-fe7673bc-padded.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0x56240378a100] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 0x56240378a000] video:1378KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.2 q=-0.0 Lsize=N/A time=00:00:06.50 bitrate=N/A speed=1.03x elapsed=0:00:06.30    

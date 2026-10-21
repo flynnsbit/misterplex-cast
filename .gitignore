@@ -1,0 +1,71 @@
+build/
+*.o
+*.rbf
+output_files/
+db/
+incremental_db/
+*.qws
+*.bak
+.DS_Store
+*.sof
+*.jic
+*.done
+*.smsg
+*.summary
+*.rpt
+*.pin
+*.pof
+*.jdi
+*.sld
+c5_pin_model_dump.txt
+dist/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# Lab evidence / captures (not shipped)
+captures/
+releases/
+remote_out/
+
+# Versioned release payloads are intentionally tracked so release packages are
+# reproducible from a fresh clone and cannot pick up stale local bitstreams.
+!release_artifacts/
+!release_artifacts/**
+
+# Local lab notes and evidence (never shipped, may contain lab data). Both
+# forms, because "Memory" may be a symlink and "Memory/" matches only a real
+# directory.
+Memory
+Memory/
+
+# Local scratch and build logs. Both forms: dir and symlink.
+.agent-work
+.agent-work/
+
+# HDMI capture output (multi-GB .mkv). Both forms: dir and symlink.
+avsync_hdmi_out
+avsync_hdmi_out/
+
+# --- Local scratch in a checkout --------------------------------------------
+# None of these are source. They are listed so `git add -A` cannot sweep them in.
+.copilot-session/
+.copilot-w-*/
+.scratch-archive/
+.scratch-w-*/
+.session-w-*.txt
+.cpu_a_*
+.worktrees/
+MisterPlex-wt-*/
+artifacts/
+node_modules/
+# Editor backup copies of source files
+*.bak-*
+# Local status files, never at the repo root
+misterplex-agent-*.txt
+# Numbered HDMI capture frame dumps (v1/f_001.png ...)
+/v[0-9]/
+
+# Site-specific scan tokens (tests/unit/test_no_private_data.sh)
+.private-denylist

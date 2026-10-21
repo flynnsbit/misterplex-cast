@@ -1,0 +1,32 @@
+# Resident Plex.rbf md5 → expected daemon-adopted DECODE geometry.
+# Used by scripts/check_core_conf_geometry.sh.
+# Columns (TAB-separated): md5_hex  geometry  note
+# Unknown md5 MUST soft-skip (rc=77), never silent-pass.
+# bank1 yuv420p/rgb565 @ 0x40000 align: 320x240→0x30040000; 624/640x480→0x30080000
+07f54d9f8f0eda2fe75d9cc314f6de54	640x480	Plex_480p gold (v0.9.0-pre)
+4d6efef954acf7b33747f35ac2878c1b	320x240	Plex_240p15 gold (v0.9.0-pre)
+61db00e7d54efad7c1a456b127b798bd	640x480	Plex_480i gold (v0.9.0-pre)
+0eea3580a5a0dacf60bf65c50499bcc9	1280x720	Plex_720p24 L4 lab remux-PCM (v0.9.0-pre)
+41adb98c7a630b541091c22ce291be68	320x240	v0.3.0 product (release_artifacts/v0.3.0/Plex.rbf)
+a7ffca105fc8f50c084e49a0a27b7db4	1280x720	cut-b product-map (remote_out/cutb-product-map/Plex.rbf @ 89b52531 FullComp)
+cceb58e7d6fc5bfda91af918d110e79e	1280x720	product tip QSF FRAME_W=1280 FRAME_H=720 (PRODUCT_NO_STUB=1); parent-settled live RBF
+234448a7320e5666b3f0f0ffdad7b561	1280x720	sticky pending_ready_c cutb-sticky-ready tip 64bccaae
+75065b0c62ece83c007dfc34690c2aa7	1280x720	# A/B pre-sched-reg MEAN~175 class
+a13a9079eaa44d552965eaa7cba53e1e	1280x720	cutb-r1-hr1d H-R1d SCHED_RECORD_ATOMIC sole; tip 6cc1e643; NEW_MD5 from harvest/CUTB/remote_out
+cff9081317ebdc7293c7dbe0f0f282a0	1280x720	cutb-r1-diag DIAG I1/I2 MPLEX_DIAG_TAG_RCA=1; tip 89abb26c/3a0579e1; DIAG≠product PASS
+e3fd6c65bbbf2e107f10300e33e60c16	1280x720	cutb-r1-linecam WANT_Y_GRAY_STABLE_HOLD product DIAG=0; tip 1bd8e6af; NEW_MD5 from harvest/CUTB/remote_out
+dcc949c9935361d7765f6239ae3d571d	1280x720	cutb-r1-curwin LINECAM_CUR_WINDOW_FIRST product DIAG=0 tip 5127c8a6
+a641e13f313917282e84e105c1487bf9	1280x720	cutb-r1-holdlast LINECAM_WANT_Y_HOLD_LAST tip 3f21d9d8 freeze 343f9245 DIAG=0 (sole NOT H-R1e)
+9ee4ecab71209214c2f32bbb996e0bee	1280x720	cutb-r1-hr1e H-R1e M1 tip 8446b252 BUILD_OK=NO STA HARD_FAIL setup-0.11 — DO NOT PRODUCT DEPLOY
+e59c9aeb60a96ba1298bae0faebb97fb	1280x720	cutb-r1-hr1e-m1b H-R1e M1b tip 787e75ea BUILD_OK=NO STA HARD_FAIL setup-0.249 — DO NOT PRODUCT DEPLOY
+7581bdd1ea5c649a92a6f8e09dcf9c7d	1280x720	cutb-r1-m1b-clean H-R1e_M1b tip 51622397 BUILD_OK=NO TIMING_RED — DO NOT PRODUCT DEPLOY
+37238747e12408cf8056ac6eb1ca6546	1280x720	cutb-r1-diag-i3 DIAG_I3 instrument tip 21ae3d19 DIAG≠product PASS BUILD_OK=NO — DO_NOT_DEPLOY
+ea494df3732d92002e8cd4300739cb8e	1280x720	cutb-r1-m2-wrap M2_WRAP_PREFETCH tip ce6d07eb BUILD_OK=NO TIMING_RED — DO NOT PRODUCT DEPLOY
+629366461485988721a3a040e80c15c4	1280x720	cutb-r1-m2b-wrap M2b TIMING_RED setup=-0.200 BUILD_OK=NO tip 72eb45e5; DO_NOT_PRODUCT_DEPLOY
+6dd0ed7c2acd19a4e6158019978319e9	1280x720	cutb-r1-diag-i3b DIAG_I3b sequential minmax tip fef0e6da DIAG≠product PASS BUILD_OK setup+0.290
+ea95286204fb70ff10d28bbca60f69b5	1280x720	cutb-r1-lead-k2 FILL_WINDOW_LEAD_K2 tip 5f23c55e BUILD_OK=NO TIMING_RED setup-0.163 — DO NOT PRODUCT DEPLOY
+4f2b02203ccf0663d0ecd461a6a3e8a4	1280x720	cutb-r1-inv-disp INVALIDATE_DISP_ON_BUF_FLIP tip 222946be BUILD_OK setup+0.459 product residual
+078bbd1ae11fb01f311952642f139ceb	1280x720	cutb-r1-opt1-prireg OPT-1 tip 3fd92f05 BUILD_OK setup+0.18 product residual
+797ae4cb6c579e0efa619efd79ee6b56	1280x720	cutb-r1-underrun-epoch tip 43c7b2a0 BUILD_OK setup+0.348
+918899a70dcd14eaefa475ce91663694	1280x720	cutb-r1-yel-b-uvphase tip 1ba0f589 BUILD_OK
+ec0f05a7292382dab4c1747c13e47141	1280	720	cutb-r1-yel-a-cpri

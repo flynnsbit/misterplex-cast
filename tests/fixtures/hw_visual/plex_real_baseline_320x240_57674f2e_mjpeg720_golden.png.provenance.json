@@ -1,0 +1,31 @@
+{
+  "artifact_scope": "legacy rollback evidence only; not valid for current YUV420 frame-store artifacts",
+  "bitstream": "tests/fixtures/p3_host_recon/plex_real_baseline_320x240_1f.264",
+  "capture": {
+    "device": "/dev/video4",
+    "framerate": 60,
+    "input_format": "mjpeg",
+    "video_size": "1280x720"
+  },
+  "color": {
+    "matrix": "bt601",
+    "range": "full"
+  },
+  "geometry": {
+    "compare_box": [
+      11,
+      0,
+      160,
+      120
+    ],
+    "content_height": 240,
+    "content_width": 320,
+    "presented_height": 480,
+    "presented_width": 640
+  },
+  "pixel_format": "rgb565",
+  "schema": "misterplex.hw_visual_golden.v1",
+  "source_rbf_label": "rollback-57674f2e legacy RGB565 frame-store core",
+  "source_rbf_md5": "57674f2e4c11551898275e99bd4c3067",
+  "source_type": "hardware_capture"
+}

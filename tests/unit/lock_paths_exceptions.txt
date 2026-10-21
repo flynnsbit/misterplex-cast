@@ -1,0 +1,16 @@
+# T-DAEMON-LOCK-SHARED T5 exceptions (review 23:59, 00:00). Its md5 is pinned in
+# test_lock_paths_needle.py (EXCEPTIONS_MD5): changing this file needs that pin changed too.
+# KNOWN-RED: reported, not failing, until its ticket lands (then the line goes and the entry
+# goes with it). GUARDED-ALLOW: allowed only while the guard block md5 matches.
+# TOOTH-ALLOW: an L-5 refusal tooth that must pass /tmp to prove the exit 2 (never excuses an L-1 unlink).
+# (@self = the commit that adds the entry)
+# kind file:line@reviewed-sha line-md5 guard-lines guard-md5 ticket
+KNOWN-RED scripts/deploy_plex_core.sh:67@4b8e2f8c d0064790c5e8b770f728264f1751c8d1 - - F-DEPLOY-SPI-UNLINK
+KNOWN-RED tests/hw/test_ddr_frame.sh:27@4b8e2f8c ef8c6a67f909292c5fc207789d2c00f2 - - F-DEPLOY-SPI-UNLINK
+KNOWN-RED tests/hw/test_f3_idct_mb0.sh:38@4b8e2f8c ef8c6a67f909292c5fc207789d2c00f2 - - F-DEPLOY-SPI-UNLINK
+KNOWN-RED tests/hw/test_f3_residual.sh:18@4b8e2f8c ef8c6a67f909292c5fc207789d2c00f2 - - F-DEPLOY-SPI-UNLINK
+GUARDED-ALLOW scripts/misterplexd-boot.sh:131@f5c63abb c50366c3b5ed5c6b053c4d3161bdd3eb 123-134 268281bbcf31301587f21bd5e29fccd7 F-BOOT-LOCK-TOCTOU
+GUARDED-ALLOW scripts/misterplexd-boot-mast.sh:224@f5c63abb c50366c3b5ed5c6b053c4d3161bdd3eb 216-227 268281bbcf31301587f21bd5e29fccd7 F-BOOT-LOCK-TOCTOU
+TOOTH-ALLOW tests/unit/test_lock_paths.sh:73@self 0c19d408d7c9a1f2c25113512a108a70 - - T-DAEMON-LOCK-SHARED-n1-refusal
+TOOTH-ALLOW tests/unit/test_lock_paths.sh:74@self 96d7a85ef1b88313a5ceb31dc4f7c88e - - T-DAEMON-LOCK-SHARED-n1-refusal
+TOOTH-ALLOW tests/unit/test_lock_paths.sh:76@self b8c6445e95d8dabbdf5bcabb826ebb20 - - T-DAEMON-LOCK-SHARED-n1-refusal

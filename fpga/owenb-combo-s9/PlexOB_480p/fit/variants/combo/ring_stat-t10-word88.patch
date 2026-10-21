@@ -1,0 +1,28 @@
+--- a/h264/ring_stat.sv
++++ b/h264/ring_stat.sv
+@@ -84,12 +84,14 @@
+     localparam logic [6:0] IN_W0 = RI_IN_WORD[6:0];
+     assign in_go = (bs == B_IDLE) && !frame_now && in_req && (st_free >= 7'd24);
+ 
+-    localparam logic [5:0] S_A = RI_STAT_A, S_B = RI_STAT_B, S_C = RI_STAT_C, S_LAST = RI_NSTAT - 1;   // sized, not cast (Quartus 17)
++    // MPX word 0x58 is one group of 8 (0x58-0x5F) before words 24-31, so seq_tail stays last.
++    localparam logic [5:0] S_A = RI_STAT_A, S_B = RI_STAT_B, S_C = RI_STAT_C, S_D = 6'd48, S_LAST = 6'd55;
+     always_comb begin
+         if (s < S_A)      k = {1'b0, s};
+         else if (s < S_B) k = {1'b0, s} + 7'd16;           // 24..31 -> 40..47
+         else if (s < S_C) k = {1'b0, s} + 7'd48;           // 32..39 -> 80..87 (0.10)
+-        else              k = {1'b0, s} - 7'd16;           // 40..47 -> 24..31
++        else if (s < S_D) k = {1'b0, s} + 7'd48;           // 40..47 -> 88..95
++        else              k = {1'b0, s} - 7'd24;           // 48..55 -> 24..31
+     end
+     // the clk_mem / clk_dec words are all below 64 (ring_layout.py checks it): the masks are 64 bits
+     wire is_mem = !k[6] && RI_MEM_WORDS[k[5:0]];
+@@ -120,7 +122,7 @@
+             if (frame && bs != B_IDLE) frame_p <= 1'b1;
+             case (bs)
+                 B_IDLE: if (frame_now) begin
+-                    if (st_free >= 7'd48) begin frame_p <= 1'b0; seq <= seq + 32'd1; s <= '0; bs <= B_FETCH; end
++                    if (st_free >= 7'd56) begin frame_p <= 1'b0; seq <= seq + 32'd1; s <= '0; bs <= B_FETCH; end
+                     else begin
+                         frame_p <= 1'b1;                         // wait for the room (the engine drains it)
+                         if (frame && frame_p) n_skips <= n_skips + 32'd1;   // a frame lost: one already waited

@@ -1,0 +1,5 @@
+media: want_inproc=1 prefetched=0 url_local=0
+misterplexd: PLAY http://127.0.0.1:9324/video/:/transcode/universal/start.mp4?videoResolution=1280x720&path=%2Flibrary%2Fmetadata%2F40868
+media: inproc_decode=1 libav=8.1.2 wxh=1280x720 pix=yuv420p
+media: spawnAudioOnly second HTTP
+media: frames=900 vfps=24.0 pfps=24.0 audio_s=37.64 wall_s=42.95 audio=on clock=av-lock av_drift_ms=-5500 drops=0 hw_fps=24.00 hw_match=1 decode=1280x720 pipe=inproc

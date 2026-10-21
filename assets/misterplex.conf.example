@@ -1,0 +1,167 @@
+# MiSTerPlex settings → /media/fat/linux/misterplex.conf
+# After edits, reboot, or:
+#   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh stop
+#   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh start
+# Do not use killall. The program ignores SIGTERM.
+
+# Fallback core prefix. The program pins this value; a different line is ignored.
+MPX_LEGACY_CORE_PREFIX=999800cf
+
+# --- PMS (multi-server) ---
+# Default / fallback base (first in list). Cast playMedia address= still wins when present.
+# Set this to your Plex Media Server, for example:
+# PLEX_BASE=http://YOUR-PLEX-SERVER:32400
+# Optional: comma-separated additional servers (or use multiple PLEX_BASE= lines).
+# PLEX_SERVERS=http://SERVER-A:32400,http://SERVER-B:32400
+# Optional home server when several are signed in: a name or address. Unset uses the first.
+# PLEX_HOME=
+# PLEX_BASE=http://ANOTHER-PLEX-SERVER:32400
+# PLEX_HOST=YOUR-PLEX-SERVER
+# Optional static token (cast often supplies transient X-Plex-Token)
+# PLEX_TOKEN=
+
+# Optional AirPlay helper on another computer. Leave unset to use the
+# on-card helper at 127.0.0.1:18781. 192.0.2.10 is a documentation example.
+# GCAST_XCODE=http://192.0.2.10:18780
+
+# --- Legacy Plex.rbf only (not used by PlexOB) ---
+# PlexOB does not offer 240p and does not use an SDRAM board. The settings
+# below are for the fallback Plex.rbf core. Leave them unless you are on that core.
+
+# --- Decode / present (Phase 2 transitional ARM path) ---
+# Optional external ffmpeg for legacy subprocess paths. Playback uses libav
+# inside misterplexd. This package does not ship a standalone ffmpeg program.
+# FFMPEG=
+# DECODE bank size when OSD_CONTROL=0 (or before first OSD sample). Product tiers:
+#   320x240 (240p), 640x480 (480p bank / 624 coded), 1280x720 (720p).
+# With OSD_CONTROL=1 the core menu O[5:4] (240p/480p/720p) wins per play and can
+# live-retarget the PMS weak ladder mid-session (stop → re-resolve → resume).
+DECODE=1280x720
+# PMS universal transcode profile names match product labels:
+# TRANSCODE_PROFILE=240p   # 320x240 baseline @1M
+# TRANSCODE_PROFILE=480p   # 640x480 baseline @2.5M
+# TRANSCODE_PROFILE=720p   # 1280x720 main@L3.1 @20M
+TRANSCODE_PROFILE=720p
+# Legacy per-field overrides (kept for lab experiments):
+# WEAK_RES=1280x720
+# WEAK_BITRATE=20000
+# PRESENT=fb0|fpga|both — product glass uses fpga (DDR frame store).
+PRESENT=fpga
+# PRESENT_MEM is a fallback-core memory policy. PlexOB uses DDRAM only and
+# does not need an SDRAM board. 240p is not a PlexOB mode.
+# PRESENT_MEM=auto
+# STREAM=1  # annex-B → host I-recon F1 + F3 (Phase 3.3i product path)
+# Prefer direct H.264 Part when STREAM=1 (avoids High/CABAC universal for recon).
+# High/CABAC: sticky skip from PPS entropy flag (no residual walk per IDR).
+# STREAM_SKIP_RGB=auto  # skip heavy RGB only when PRESENT=fpga (audio + recon from start)
+# STREAM_SKIP_RGB=0     # always FFmpeg RGB (CABAC fallback / PRESENT=both keeps RGB anyway)
+# PRESENT=both always keeps FFmpeg RGB for continuous fb0 regardless of STREAM_SKIP_RGB.
+
+# --- Phase 4 UX ---
+# AUTO_NEXT=1  # on media EOF, play next playQueue item when bound (default on)
+# AUTO_NEXT=0
+# --- Match source Hz / Content FPS (Phase 4) ---
+# Plex.rbf does NOT yet implement Groovy-style CmdSwitchres modeline swaps.
+# On each play, misterplexd reads PMS videoFrameRate/frameRate and logs a Content
+# FPS hint (12/24/30/60). Set OSD **Content FPS** to match for 3:2 / 2:2 cadence.
+# SOURCE_FPS=auto → use PMS metadata; 24|30|60|12 forces; off disables hint.
+# MATCH_SOURCE_HZ=on logs target Hz but still uses cadence (switchres TODO).
+# See docs/match-source-hz.md.
+MATCH_SOURCE_HZ=off
+SOURCE_FPS=auto
+
+# --- A/V lipsync (post vsync present) ---
+# FFmpeg adelay (ms) on the product dual-pipe path. Default 0 = no intentional lag.
+# Positive delays audio content vs video (voice-ahead / lips-late → try 20–60 eyes-on).
+# Leave AUDIO_DELAY_MS at 0 unless you are measuring lipsync on your own set.
+# AUDIO_DELAY_MS=0
+
+# --- A/V pacing (present loop) ---
+# Video is paced against the audio master clock using the EXACT content rate parsed
+# from PMS (Stream@frameRate), forced into the FFmpeg chain as fps=<num>/<den> so the
+# frame index and content time can never diverge. Leave these alone unless measuring.
+#
+# AV_PRESENT_LEAD_MS: how early a frame may be shown vs the master clock (default 40).
+# AV_PRESENT_LEAD_MS=40
+#
+# AV_RESYNC_DROP_MS: drift past which a late frame is dropped to catch up. 0 disables
+# dropping (video then only ever lags on a decode stall). Default 80.
+# AV_RESYNC_DROP_MS=80
+#
+# AV_CONTENT_FPS: override the detected content rate. "auto" (default) uses PMS.
+# Accepts "24000/1001", "23.976", "25". Only for debugging bad metadata.
+# AV_CONTENT_FPS=auto
+
+# AUDIO_CLOCK_PPM: starting point for the audio feed-rate servo, in ppm off a
+# nominal 48 kHz. You should not need to touch this.
+#
+# /dev/MrAudio is a 512 KB DMA ring with NO backpressure, so any mismatch
+# between how fast we feed and how fast the FPGA plays integrates into the ring
+# depth forever. The daemon now reads the driver's read pointer and servos the
+# feed rate to hold ~100 ms of buffer, so a wrong value here is corrected within
+# seconds rather than drifting lipsync all episode.
+#
+# -638 is the measured clock error of the Plex core (it plays slightly SLOWER
+# than nominal). It is only used verbatim as a fallback, if the ring depth
+# cannot be read at all.
+#
+# The previous value here was +685, from an HDMI-capture calibration taken when
+# video paced off bytes *submitted*. A ring filling up and a fast playback clock
+# are indistinguishable under that clock, so the calibration folded one into the
+# other and got the sign wrong.
+AUDIO_CLOCK_PPM=-638
+
+# --- Playback input -----------------------------------------------------------
+#
+# The Plex core publishes keyboard/controller playback commands through a DDR
+# mailbox; the daemon polls that mailbox only (no HPS<->FPGA SPI bus access).
+# Skip defaults follow common media remote behavior: Right/SkipForward = +30s,
+# Left/SkipBack = -10s. Use SKIP_MS to make both directions symmetric, or set
+# the directional keys independently.
+# SKIP_MS=30000
+# SKIP_FORWARD_MS=30000
+# SKIP_BACK_MS=10000
+
+# --- OSD menu controls (Plex core CONF_STR v8) --------------------------------
+#
+# OSD_CONTROL: let the core's OSD menu (F12) drive playback settings live. The
+# daemon polls status[15:0] ~4x/s and applies A/V offset, auto-resync, audio
+# clock trim, idle screen, and content resolution (O[5:4]: 240p/480p/720p).
+# Content-res changes while playing restart the session at the same offset so
+# PMS re-encodes to the new weak ladder (no on-device scale when sizes match).
+#
+# The daemon NEVER writes these bits. Main_MiSTer owns the OSD word and persists
+# it to /media/fat/config/Plex_v*.CFG; a daemon-side write fights Main's shadow
+# copy and makes the value flap. Read-only polling is the whole contract.
+#
+# REQUIRES a v3+ Plex.rbf for A/V knobs; content-res 720p rung needs v8 CONF_STR
+# (O[5:4]). v7 O[4]-only still maps 240p/480p. Set OSD_CONTROL=0 on pre-v3 cores.
+OSD_CONTROL=1
+#
+# AV_OFFSET_MS: constant audio-vs-video trim applied inside the pacing loop (NOT
+# an ffmpeg adelay), so the OSD can change it mid-playback. Positive = present
+# video later = audio appears earlier. The OSD exposes -160..+140 ms in 20 ms
+# steps; this conf value is the power-on default and is not limited to that grid.
+# AV_OFFSET_MS=0
+#
+# IDLE_SCREEN: what to show when nothing is playing. The FPGA frame store and
+# /dev/fb0 both latch the LAST frame written, so without this the final frame of
+# the previous video stays on screen forever (a CRT burn-in risk).
+#   logo        centred Plex-style chevron on a near-black field (default)
+#   black       flat black
+#   screensaver chevron drifting slowly to avoid burn-in
+#   lastframe   legacy behaviour — leave the last video frame up
+# IDLE_SCREEN=logo
+#
+# MPX_GATE_ERROR_SCREEN: when the FPGA decoder cannot take a stream and no ladder
+# helper can play it either, the daemon stops the play and paints the reason
+# ("Can't play here: ...") in place of the idle screen until the next play, a
+# stop, or a core change.
+#   on   paint the reason (default)
+#   off  log-only: the play still stops with the same error; nothing is painted
+# MPX_GATE_ERROR_SCREEN=on
+
+# Subtitles are not supported on PlexOB. SUBTITLES and SUBTITLE_STREAM apply
+# only if the fallback Plex.rbf core is the one that is playing.
+# SUBTITLES=off
+# SUBTITLE_STREAM=0

@@ -1,0 +1,105 @@
+{
+  "thresholds": {
+    "max_cycles_per_mb": 320.0,
+    "max_cycles_per_frame": 96000.0,
+    "max_cycles_total": 192000,
+    "min_budget_margin_ratio": 8.0,
+    "stages": {
+      "parse_cavlc": {
+        "max_cycles_per_mb": 15.0
+      },
+      "diagnostic_paint": {
+        "max_cycles_per_mb": 305.0
+      }
+    }
+  },
+  "target": {
+    "fps": 25.0,
+    "clock_source": "fpga/Plex_MiSTer/rtl/pll/pll_0002.v outclk_0 = 20.000000 MHz; fpga/Plex_MiSTer/Plex.sv connects stream_path.clk(clk_sys)",
+    "stream_path_clock_hz": 20000000
+  },
+  "source_sha256": "9f58c3f92a6c9cacc86d2b58c275329445017f328b54206fcdcef5de4b1a5b62",
+  "format": "misterplex.decode_throughput_ratchet.v1",
+  "mechanism": "Measured from tests/unit/test_stream_path_full_frame_compare.sh with FULL_FRAME_BITSTREAM=tests/fixtures/p3_multinal/wcap_residual14_idr_plus_p.264. Per-stage cycle accounting via stub_busy/fs_wr_reset/fs_swap phase transitions.",
+  "stage_coverage": [
+    {
+      "name": "stream_path_total_current",
+      "status": "measured",
+      "cycles_per_mb": 266.825,
+      "note": "Includes ioctl byte feed, Annex-B scanner/SPS/PPS/slice parse, current intra reconstruction path, and diagnostic frame emission in the existing full-frame RTL simulation."
+    },
+    {
+      "name": "parse_cavlc_dequant_idct_intra_breakdown",
+      "status": "unknown",
+      "cycles_per_mb": null,
+      "note": "Existing simulation reports aggregate cycles and MB0 trace, not separate per-stage cycle counters."
+    },
+    {
+      "name": "inter_mc_dpb_deblock_product_writeback",
+      "status": "unknown",
+      "cycles_per_mb": null,
+      "note": "Inter correctness, DPB fetch, deblock, and product DDR writeback are not fully represented by this ratchet yet."
+    },
+    {
+      "name": "parse_cavlc",
+      "status": "measured",
+      "cycles_per_mb": null,
+      "note": "Annex-B parse, SPS/PPS/slice header, CAVLC residual decode. Populated from sim stage_cycles."
+    },
+    {
+      "name": "dequant_idct",
+      "status": "measured",
+      "cycles_per_mb": 0.0,
+      "note": "Zero clock cycles. Combinational modules."
+    },
+    {
+      "name": "intra_pred",
+      "status": "measured",
+      "cycles_per_mb": 0.0,
+      "note": "Zero additional clock cycles. DC Intra_4x4 prediction is combinational."
+    },
+    {
+      "name": "diagnostic_paint",
+      "status": "measured",
+      "cycles_per_mb": null,
+      "note": "NOT PRODUCTION. decode_stub diagnostic paint."
+    },
+    {
+      "name": "mc_interpolation",
+      "status": "not_implemented",
+      "cycles_per_mb": null,
+      "budget_allocated": 250,
+      "note": "NOT IMPLEMENTED. Budget allocation: 250 cycles/MB (no adjacent-MB overlap). See 624x480 ratchet for detailed reasoning."
+    },
+    {
+      "name": "deblock",
+      "status": "not_implemented",
+      "cycles_per_mb": null,
+      "budget_allocated": 100,
+      "note": "NOT IMPLEMENTED. Budget allocation: 100 cycles/MB."
+    },
+    {
+      "name": "ddr_write",
+      "status": "not_implemented",
+      "cycles_per_mb": null,
+      "budget_allocated": 50,
+      "note": "NOT IMPLEMENTED. Budget allocation: 50 cycles/MB."
+    },
+    {
+      "name": "injection_overhead",
+      "status": "measured",
+      "cycles_per_mb": null,
+      "note": "TESTBENCH ARTIFACT. ioctl byte-by-byte injection."
+    }
+  ],
+  "measured_baseline": {
+    "cycles_per_mb": 266.825,
+    "budget_cycles_per_frame": 800000.0,
+    "budget_cycles_per_mb": 2666.6666666667,
+    "budget_margin_ratio": 9.9940660241,
+    "mbs_per_frame": 300,
+    "cycles_per_frame": 80047.5,
+    "frames": 2,
+    "cycles_total": 160095
+  }
+}

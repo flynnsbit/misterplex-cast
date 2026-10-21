@@ -1,0 +1,14 @@
+fnv64 0xdd4a5359e63e0fae
+dirty 10 170 300 60
+pixel 0 0 0x0000
+pixel 9 169 0x6c15
+pixel 10 170 0x3a29
+pixel 32 190 0xfd84
+pixel 56 181 0xef7e
+pixel 26 212 0xfd84
+pixel 31 212 0xef7e
+pixel 32 214 0xef7e
+pixel 160 214 0x31e8
+pixel 294 214 0x30a1
+pixel 309 229 0x3a09
+pixel 319 239 0x6fe2

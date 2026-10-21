@@ -1,0 +1,1 @@
+status has_frame=1 has_audio=0 has_stream=1 underrun=0 has_idr=1 stub_busy=0 sps_valid=1 pps_valid=1 nalu=4 last_nal=0x65 slice_type=7 mb0=0 qp=25 res_ok=1 res_tc=8 res_t1=3 res_dc=-24 res_csum=20 recon_sig=83 recon_dbg=0x18 ddr_busy=0 sps=320x240 bytes_in=4

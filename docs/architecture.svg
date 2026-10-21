@@ -1,0 +1,404 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="3160" viewBox="0 0 2400 3160" font-family="DejaVu Sans, sans-serif">
+<rect x="0" y="0" width="2400" height="3160" rx="0" fill="white" stroke="none" stroke-width="0"/>
+<text x="1200.0" y="52.0" font-size="38" font-weight="bold" fill="#0b1d3a" text-anchor="middle">MisterPlex: system block diagram (rc5 · PlexOB core)</text>
+<text x="1200.0" y="88.0" font-size="20" fill="#333333" text-anchor="middle">Plex, AirPlay and YouTube casting on MiSTer DE10-Nano · ARM daemon feeds the PlexOB H.264 core through shared DDR3 (no SDRAM board) · Cyclone V 5CSEBA6 · 41,033 / 41,910 ALMs (97.9%)</text>
+<rect x="30" y="130" width="330" height="890" rx="16" fill="#FAFAFA" stroke="#777777" stroke-width="2.2"/>
+<text x="46.0" y="158.0" font-size="22" font-weight="bold" fill="#222222" text-anchor="start">Senders</text>
+<text x="46.0" y="180.0" font-size="17" fill="#333333" text-anchor="start">LAN / internet</text>
+<rect x="45" y="200" width="300" height="125" rx="10" fill="#F2F2F2" stroke="#222222" stroke-width="2"/>
+<text x="195.0" y="248.5" font-size="22" font-weight="bold" fill="#111111" text-anchor="middle">Plex app / Web</text>
+<text x="195.0" y="274.5" font-size="16" fill="#333333" text-anchor="middle">casts to the player</text>
+<text x="195.0" y="295.5" font-size="16" fill="#333333" text-anchor="middle">(GDM + companion)</text>
+<rect x="45" y="345" width="300" height="125" rx="10" fill="#F2F2F2" stroke="#222222" stroke-width="2"/>
+<text x="195.0" y="393.5" font-size="22" font-weight="bold" fill="#111111" text-anchor="middle">Plex Media Server</text>
+<text x="195.0" y="419.5" font-size="16" fill="#333333" text-anchor="middle">library · HLS / https</text>
+<text x="195.0" y="440.5" font-size="16" fill="#333333" text-anchor="middle">server list via plex.tv</text>
+<rect x="45" y="490" width="300" height="125" rx="10" fill="#F2F2F2" stroke="#222222" stroke-width="2"/>
+<text x="195.0" y="538.5" font-size="22" font-weight="bold" fill="#111111" text-anchor="middle">iPhone / iPad / Mac</text>
+<text x="195.0" y="564.5" font-size="16" fill="#333333" text-anchor="middle">AirPlay video by URL</text>
+<text x="195.0" y="585.5" font-size="16" fill="#333333" text-anchor="middle">(no screen mirroring)</text>
+<rect x="45" y="635" width="300" height="150" rx="10" fill="#F2F2F2" stroke="#222222" stroke-width="2"/>
+<text x="195.0" y="685.5" font-size="22" font-weight="bold" fill="#111111" text-anchor="middle">YouTube app</text>
+<text x="195.0" y="711.5" font-size="16" fill="#333333" text-anchor="middle">cast or TV-code pairing</text>
+<text x="195.0" y="732.5" font-size="16" fill="#333333" text-anchor="middle">streams from YouTube</text>
+<text x="195.0" y="753.5" font-size="16" fill="#333333" text-anchor="middle">servers (https)</text>
+<rect x="45" y="830" width="300" height="125" rx="10" fill="#F2F2F2" stroke="#222222" stroke-width="2"/>
+<text x="195.0" y="878.5" font-size="22" font-weight="bold" fill="#111111" text-anchor="middle">Pad / keyboard</text>
+<text x="195.0" y="904.5" font-size="16" fill="#333333" text-anchor="middle">on the MiSTer&#x27;s USB</text>
+<text x="195.0" y="925.5" font-size="16" fill="#333333" text-anchor="middle">(read by Main_MiSTer)</text>
+<rect x="380" y="130" width="1990" height="890" rx="16" fill="#F4F4F4" stroke="#777777" stroke-width="2.2"/>
+<text x="396.0" y="162.0" font-size="24" font-weight="bold" fill="#111111" text-anchor="start">MiSTer ARM / HPS (Linux)</text>
+<rect x="400" y="176" width="1475" height="830" rx="10" fill="#E6E6E6" stroke="#333333" stroke-width="1.6"/>
+<text x="418.0" y="208.0" font-size="23" font-weight="bold" fill="#111111" text-anchor="start">misterplexd · cast + playback daemon (one static ARM binary)</text>
+<text x="420.0" y="244.0" font-size="18" font-weight="bold" fill="#444444" text-anchor="start">Cast receivers</text>
+<text x="915.0" y="244.0" font-size="18" font-weight="bold" fill="#444444" text-anchor="start">Sessions + playback</text>
+<text x="1395.0" y="244.0" font-size="18" font-weight="bold" fill="#444444" text-anchor="start">Core + system</text>
+<rect x="420" y="260" width="455" height="120" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="647.5" y="306.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Plex companion</text>
+<text x="647.5" y="332.0" font-size="16" fill="#333333" text-anchor="middle">GDM discovery + HTTP player (:3005)</text>
+<text x="647.5" y="353.0" font-size="16" fill="#333333" text-anchor="middle">play queue → Plex resolve → PMS stream</text>
+<rect x="420" y="410" width="455" height="140" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="647.5" y="445.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">AirPlay receiver (UxPlay)</text>
+<text x="647.5" y="471.0" font-size="15" fill="#333333" text-anchor="middle">AirPlay works on the MiSTer by itself;</text>
+<text x="647.5" y="492.0" font-size="15" fill="#333333" text-anchor="middle">a helper on a computer is optional</text>
+<text x="647.5" y="513.0" font-size="15" fill="#333333" text-anchor="middle">H.264 ≤ 720p30 passes straight through</text>
+<text x="647.5" y="534.0" font-size="15" fill="#333333" text-anchor="middle">audio: RAOP + spectrum screen · no mirroring</text>
+<rect x="420" y="560" width="455" height="140" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="647.5" y="605.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">YouTube receiver</text>
+<text x="647.5" y="631.5" font-size="15" fill="#333333" text-anchor="middle">Lounge channel over verified HTTPS</text>
+<text x="647.5" y="652.5" font-size="15" fill="#333333" text-anchor="middle">DIAL + SSDP answered only while Lounge is up</text>
+<text x="647.5" y="673.5" font-size="15" fill="#333333" text-anchor="middle">TV-code pairing · reconnect backoff 1 → 30 s</text>
+<rect x="420" y="730" width="455" height="255" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="647.5" y="801.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">yt-dlp resolver</text>
+<text x="647.5" y="827.5" font-size="16" fill="#333333" text-anchor="middle">1. progressive H.264 ≤ 720p, ≤ 30 fps</text>
+<text x="647.5" y="848.5" font-size="16" fill="#333333" text-anchor="middle">2. DASH H.264 ≤ 720p, ≤ 30 fps</text>
+<text x="647.5" y="869.5" font-size="16" fill="#333333" text-anchor="middle">    + m4a audio (two URLs)</text>
+<text x="647.5" y="890.5" font-size="16" fill="#333333" text-anchor="middle">https formats only (no HLS)</text>
+<text x="647.5" y="911.5" font-size="16" fill="#333333" text-anchor="middle">bundled; unpacked at first boot</text>
+<text x="647.5" y="932.5" font-size="16" fill="#333333" text-anchor="middle">daily update (update_ytdlp.sh)</text>
+<rect x="915" y="260" width="450" height="120" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1140.0" y="306.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Session arbiter</text>
+<text x="1140.0" y="332.0" font-size="15" fill="#333333" text-anchor="middle">one owner: Plex | AirPlay | YouTube</text>
+<text x="1140.0" y="353.0" font-size="15" fill="#333333" text-anchor="middle">new play stops old · Stop always stops</text>
+<rect x="915" y="410" width="450" height="190" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1140.0" y="459.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Player (libav, static)</text>
+<text x="1140.0" y="485.5" font-size="16" fill="#333333" text-anchor="middle">demux HLS / https (OpenSSL TLS)</text>
+<text x="1140.0" y="506.5" font-size="16" fill="#333333" text-anchor="middle">video → H.264 access units (Annex B)</text>
+<text x="1140.0" y="527.5" font-size="16" fill="#333333" text-anchor="middle">audio → 48 kHz s16 stereo PCM</text>
+<text x="1140.0" y="548.5" font-size="16" fill="#333333" text-anchor="middle">records written through h264ring</text>
+<text x="1140.0" y="569.5" font-size="16" fill="#333333" text-anchor="middle">(owenb hps/ client, MIT)</text>
+<rect x="915" y="630" width="450" height="140" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1140.0" y="675.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">plexui controller</text>
+<text x="1140.0" y="701.5" font-size="16" fill="#333333" text-anchor="middle">Browse Plex on the TV</text>
+<text x="1140.0" y="722.5" font-size="16" fill="#333333" text-anchor="middle">pad / keyboard from the core input region</text>
+<text x="1140.0" y="743.5" font-size="16" fill="#333333" text-anchor="middle">Back returns to home</text>
+<rect x="915" y="800" width="450" height="185" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1140.0" y="857.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">OSD renderer</text>
+<text x="1140.0" y="883.5" font-size="16" fill="#333333" text-anchor="middle">ready screen: Plex | AirPlay | YouTube</text>
+<text x="1140.0" y="904.5" font-size="16" fill="#333333" text-anchor="middle">(only cast types that are up)</text>
+<text x="1140.0" y="925.5" font-size="16" fill="#333333" text-anchor="middle">cast bar, toasts, error screens</text>
+<text x="1140.0" y="946.5" font-size="16" fill="#333333" text-anchor="middle">opaque library page over idle bars</text>
+<rect x="1395" y="260" width="460" height="150" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1625.0" y="300.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Core gate</text>
+<text x="1625.0" y="326.0" font-size="15" fill="#333333" text-anchor="middle">CORENAME must be PlexOB</text>
+<text x="1625.0" y="347.0" font-size="15" fill="#333333" text-anchor="middle">build ID read from ring word 88</text>
+<text x="1625.0" y="368.0" font-size="15" fill="#333333" text-anchor="middle">only the shipped PlexOB build plays;</text>
+<text x="1625.0" y="389.0" font-size="15" fill="#333333" text-anchor="middle">stock H264 + retired IDs refused</text>
+<rect x="1395" y="430" width="460" height="130" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1625.0" y="481.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Clock rescue</text>
+<text x="1625.0" y="507.0" font-size="16" fill="#333333" text-anchor="middle">wrong clock at boot →</text>
+<text x="1625.0" y="528.0" font-size="16" fill="#333333" text-anchor="middle">RTC, then SNTP, then HTTPS Date</text>
+<rect x="1395" y="580" width="460" height="110" rx="10" fill="#FFF7F7" stroke="#B03030" stroke-width="2.4" stroke-dasharray="10,6"/>
+<text x="1625.0" y="631.5" font-size="20" font-weight="bold" fill="#7A1F1F" text-anchor="middle">OSD Send Home (virtual pad)</text>
+<text x="1625.0" y="657.5" font-size="16" fill="#7A1F1F" text-anchor="middle">returns home · not yet checked on a TV</text>
+<rect x="1395" y="710" width="460" height="120" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1625.0" y="756.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">DDR window (/dev/mem)</text>
+<text x="1625.0" y="782.0" font-size="15" fill="#333333" text-anchor="middle">maps ring control page + 8 MiB ring</text>
+<text x="1625.0" y="803.0" font-size="15" fill="#333333" text-anchor="middle">never maps the core&#x27;s idle FB</text>
+<rect x="1910" y="176" width="440" height="335" rx="10" fill="#E6E6E6" stroke="#333333" stroke-width="1.6"/>
+<text x="2130.0" y="277.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Boot hook</text>
+<text x="2130.0" y="303.0" font-size="15" fill="#333333" text-anchor="middle">user-startup.sh → misterplexd-boot-rc3.sh</text>
+<text x="2130.0" y="324.0" font-size="15" fill="#333333" text-anchor="middle">1. load PlexOB if another core runs</text>
+<text x="2130.0" y="345.0" font-size="15" fill="#333333" text-anchor="middle">2. wait ≤ 60 s for network, then start</text>
+<text x="2130.0" y="366.0" font-size="15" fill="#333333" text-anchor="middle">    (AirPlay registers with an address)</text>
+<text x="2130.0" y="387.0" font-size="15" fill="#333333" text-anchor="middle">3. name misterplex-&lt;last 3 octets&gt;</text>
+<text x="2130.0" y="408.0" font-size="15" fill="#333333" text-anchor="middle">    (a name you set is kept)</text>
+<text x="2130.0" y="429.0" font-size="15" fill="#333333" text-anchor="middle">4. stop cleanly on shutdown</text>
+<rect x="1910" y="545" width="440" height="165" rx="10" fill="#E6E6E6" stroke="#333333" stroke-width="1.6"/>
+<text x="2130.0" y="603.0" font-size="22" font-weight="bold" fill="#111111" text-anchor="middle">Main_MiSTer</text>
+<text x="2130.0" y="629.0" font-size="16" fill="#333333" text-anchor="middle">menu + core OSD options</text>
+<text x="2130.0" y="650.0" font-size="16" fill="#333333" text-anchor="middle">load_core via /dev/MiSTer_cmd</text>
+<text x="2130.0" y="671.0" font-size="16" fill="#333333" text-anchor="middle">grabs USB pads + keyboard</text>
+<rect x="1910" y="745" width="440" height="130" rx="10" fill="#E6E6E6" stroke="#333333" stroke-width="1.6"/>
+<text x="2130.0" y="796.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Linux framebuffer (fb0)</text>
+<text x="2130.0" y="822.0" font-size="16" fill="#333333" text-anchor="middle">holds the OSD canvas</text>
+<text x="2130.0" y="843.0" font-size="16" fill="#333333" text-anchor="middle">shown by the core&#x27;s overlay plane</text>
+<rect x="380" y="1060" width="1320" height="330" rx="16" fill="#FFF3E6" stroke="#D2691E" stroke-width="3"/>
+<text x="396.0" y="1092.0" font-size="24" font-weight="bold" fill="#111111" text-anchor="start">HPS DDR3 (shared with Linux) · FPGA side via f2sdram bridges</text>
+<rect x="400" y="1106" width="380" height="36" rx="0" fill="#F6D7B8" stroke="#C8A080" stroke-width="1"/>
+<rect x="780" y="1106" width="900" height="36" rx="0" fill="#F6D7B8" stroke="#C8A080" stroke-width="1"/>
+<text x="408.0" y="1129.0" font-size="17" font-weight="bold" fill="#1a1a1a" text-anchor="start">Byte address</text>
+<text x="788.0" y="1129.0" font-size="17" font-weight="bold" fill="#1a1a1a" text-anchor="start">Region (PlexOB memory map)</text>
+<rect x="400" y="1142" width="380" height="42" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<rect x="780" y="1142" width="900" height="42" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<text x="408.0" y="1168.0" font-size="17" font-weight="bold" fill="#1a1a1a" text-anchor="start">0x2200_0000 +8 MiB</text>
+<text x="788.0" y="1168.0" font-size="17" fill="#1a1a1a" text-anchor="start">Linux framebuffer (fb0): OSD canvas, double-buffered</text>
+<rect x="400" y="1184" width="380" height="98" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<rect x="780" y="1184" width="900" height="98" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<text x="408.0" y="1210.0" font-size="17" font-weight="bold" fill="#1a1a1a" text-anchor="start">0x3140_0000 (4 KiB)</text>
+<text x="788.0" y="1210.0" font-size="17" fill="#1a1a1a" text-anchor="start">Ring control block: core status 0–31 · program 32–39 (write index,</text>
+<text x="788.0" y="1238.0" font-size="17" fill="#1a1a1a" text-anchor="start">pause / volume, settings, rumble) · status 40–47 · input 48–71</text>
+<text x="788.0" y="1266.0" font-size="17" fill="#1a1a1a" text-anchor="start">overlay descriptor 72–79 · telemetry 80–87 (87 = Y/C) · build ID 88–95</text>
+<rect x="400" y="1282" width="380" height="42" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<rect x="780" y="1282" width="900" height="42" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<text x="408.0" y="1308.0" font-size="17" font-weight="bold" fill="#1a1a1a" text-anchor="start">0x3180_0000 +8 MiB</text>
+<text x="788.0" y="1308.0" font-size="17" fill="#1a1a1a" text-anchor="start">Record ring: H.264 access units + 48 kHz s16 PCM audio records</text>
+<rect x="400" y="1324" width="380" height="42" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<rect x="780" y="1324" width="900" height="42" rx="0" fill="white" stroke="#C8A080" stroke-width="1"/>
+<text x="408.0" y="1350.0" font-size="17" font-weight="bold" fill="#1a1a1a" text-anchor="start">0x3200_0000 20 × 2 MiB</text>
+<text x="788.0" y="1350.0" font-size="17" fill="#1a1a1a" text-anchor="start">DPB: 20 picture stores (decoder writes, display reads)</text>
+<rect x="1740" y="1060" width="610" height="200" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="2045.0" y="1125.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Core memory ports</text>
+<text x="2045.0" y="1151.0" font-size="16" fill="#333333" text-anchor="middle">ram1 (DDRAM): record reader + status write-back,</text>
+<text x="2045.0" y="1172.0" font-size="16" fill="#333333" text-anchor="middle">decoder DPB writes</text>
+<text x="2045.0" y="1193.0" font-size="16" fill="#333333" text-anchor="middle">ram2 (DDRAM2): display reader + overlay reads</text>
+<text x="2045.0" y="1214.0" font-size="16" fill="#333333" text-anchor="middle">both on clk_mem 90 MHz</text>
+<rect x="1740" y="1280" width="610" height="110" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="2045.0" y="1321.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">Status heartbeat</text>
+<text x="2045.0" y="1347.0" font-size="16" fill="#333333" text-anchor="middle">core rewrites the status block every frame;</text>
+<text x="2045.0" y="1368.0" font-size="16" fill="#333333" text-anchor="middle">daemon reads it (no session needed)</text>
+<rect x="30" y="1480" width="2340" height="1035" rx="16" fill="#FFFFFF" stroke="#1F3A68" stroke-width="4"/>
+<text x="46.0" y="1512.0" font-size="23" font-weight="bold" fill="#111111" text-anchor="start">FPGA fabric · Cyclone V 5CSEBA6 · PlexOB core (fork of owenb&#x27;s H.264 decoder)</text>
+<text x="46.0" y="1540.0" font-size="19" fill="#333333" text-anchor="start">Timing (worst of four corners): all clocks ≥ 0 ns except pll_hdmi setup −0.166 ns (bar −0.3 ns)</text>
+<text x="2350.0" y="1512.0" font-size="23" font-weight="bold" fill="#111111" text-anchor="end">41,033 / 41,910 ALMs (97.9%) · fitter seed 10</text>
+<text x="2350.0" y="1540.0" font-size="19" fill="#333333" text-anchor="end">worst hold +0.092 ns · all fit gates PASS</text>
+<rect x="60" y="1560" width="2280" height="150" rx="16" fill="#F6FFF6" stroke="#3C8D3C" stroke-width="2.2"/>
+<text x="76.0" y="1588.0" font-size="21" font-weight="bold" fill="#222222" text-anchor="start">MiSTer framework (sys, stock)</text>
+<rect x="80" y="1600" width="1360" height="95" rx="10" fill="#FFE2C6" stroke="#333333" stroke-width="1.6"/>
+<text x="760.0" y="1644.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">f2sdram bridges</text>
+<text x="760.0" y="1670.0" font-size="16" fill="#333333" text-anchor="middle">ram1 + ram2 into HPS DDR3 · clk_mem 90 MHz</text>
+<rect x="1470" y="1600" width="420" height="95" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1680.0" y="1644.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">PLLs</text>
+<text x="1680.0" y="1670.0" font-size="15" fill="#333333" text-anchor="middle">sys_pll 27 / 90 / 96.43 MHz · vid_pll 81 MHz</text>
+<rect x="1915" y="1600" width="405" height="95" rx="10" fill="#FFFFFF" stroke="#333333" stroke-width="1.6"/>
+<text x="2117.5" y="1644.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">pll_hdmi · pll_audio</text>
+<text x="2117.5" y="1670.0" font-size="15" fill="#333333" text-anchor="middle">HDMI pixel clock · 48 kHz audio</text>
+<rect x="60" y="1735" width="650" height="755" rx="16" fill="#F5F9FF" stroke="#3A6EA5" stroke-width="2.2"/>
+<text x="76.0" y="1763.0" font-size="21" font-weight="bold" fill="#222222" text-anchor="start">HPS interface</text>
+<rect x="750" y="1735" width="650" height="755" rx="16" fill="#FFFAF3" stroke="#C07030" stroke-width="2.2"/>
+<text x="766.0" y="1763.0" font-size="21" font-weight="bold" fill="#222222" text-anchor="start">H.264 decode</text>
+<rect x="1440" y="1735" width="530" height="755" rx="16" fill="#FBF7FF" stroke="#7B2FBE" stroke-width="2.2"/>
+<text x="1456.0" y="1763.0" font-size="21" font-weight="bold" fill="#222222" text-anchor="start">Presentation + video output</text>
+<rect x="2005" y="1735" width="355" height="755" rx="16" fill="#FFFDF0" stroke="#B8860B" stroke-width="2.2"/>
+<text x="2021.0" y="1763.0" font-size="21" font-weight="bold" fill="#222222" text-anchor="start">Audio</text>
+<defs><linearGradient id="g1" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#DFF5DF"/><stop offset="0.5" stop-color="#FFE2C6"/></linearGradient></defs>
+<rect x="90" y="1805" width="590" height="140" rx="10" fill="url(#g1)" stroke="#333333" stroke-width="1.6"/>
+<text x="385.0" y="1861.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">ring_rd · record reader</text>
+<text x="385.0" y="1887.0" font-size="16" fill="#333333" text-anchor="middle">reads AU + audio records on ram1</text>
+<text x="385.0" y="1908.0" font-size="16" fill="#333333" text-anchor="middle">writes the status block back</text>
+<rect x="90" y="1975" width="590" height="120" rx="10" fill="#DFF5DF" stroke="#333333" stroke-width="1.6"/>
+<text x="385.0" y="2031.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">hps_io (in the core)</text>
+<text x="385.0" y="2057.5" font-size="16" fill="#333333" text-anchor="middle">OSD options, pads, keys, mouse</text>
+<rect x="90" y="2125" width="590" height="130" rx="10" fill="#DFF5DF" stroke="#333333" stroke-width="1.6"/>
+<text x="385.0" y="2176.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">ring_in · input mirror</text>
+<text x="385.0" y="2202.0" font-size="16" fill="#333333" text-anchor="middle">pads / keys / OSD events → words 48–71</text>
+<text x="385.0" y="2223.0" font-size="16" fill="#333333" text-anchor="middle">the daemon reads them for the menus</text>
+<defs><linearGradient id="g2" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#DFF5DF"/><stop offset="0.5" stop-color="#FFE2C6"/></linearGradient></defs>
+<rect x="90" y="2285" width="590" height="150" rx="10" fill="url(#g2)" stroke="#333333" stroke-width="1.6"/>
+<text x="385.0" y="2346.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">ring_stat · status block</text>
+<text x="385.0" y="2372.0" font-size="16" fill="#333333" text-anchor="middle">heartbeat + telemetry each frame</text>
+<text x="385.0" y="2393.0" font-size="16" fill="#333333" text-anchor="middle">word 87: Y/C mode · word 88: build ID</text>
+<rect x="780" y="1805" width="590" height="140" rx="10" fill="#DCEBFF" stroke="#333333" stroke-width="1.6"/>
+<text x="1075.0" y="1861.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">h264_top · front end</text>
+<text x="1075.0" y="1887.0" font-size="16" fill="#333333" text-anchor="middle">NAL / slice parsing, entropy decode</text>
+<text x="1075.0" y="1908.0" font-size="16" fill="#333333" text-anchor="middle">clk_dec 96.43 MHz</text>
+<defs><linearGradient id="g3" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#DCEBFF"/><stop offset="0.5" stop-color="#FFE2C6"/></linearGradient></defs>
+<rect x="780" y="1975" width="590" height="150" rx="10" fill="url(#g3)" stroke="#333333" stroke-width="1.6"/>
+<text x="1075.0" y="2036.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">recon_top · reconstruction</text>
+<text x="1075.0" y="2062.0" font-size="16" fill="#333333" text-anchor="middle">prediction + residual → pictures</text>
+<text x="1075.0" y="2083.0" font-size="16" fill="#333333" text-anchor="middle">DPB on ram1 (ddr_mux2)</text>
+<defs><linearGradient id="g4" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#DCEBFF"/><stop offset="0.5" stop-color="#DFF5DF"/></linearGradient></defs>
+<rect x="780" y="2155" width="590" height="130" rx="10" fill="url(#g4)" stroke="#333333" stroke-width="1.6"/>
+<text x="1075.0" y="2206.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">recon_out + disp_ctl</text>
+<text x="1075.0" y="2232.0" font-size="16" fill="#333333" text-anchor="middle">output order · frame pacing</text>
+<text x="1075.0" y="2253.0" font-size="16" fill="#333333" text-anchor="middle">on the raster&#x27;s refresh grid</text>
+<rect x="780" y="2315" width="590" height="120" rx="10" fill="#EADCF8" stroke="#333333" stroke-width="1.6"/>
+<text x="1075.0" y="2371.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">idle_bars</text>
+<text x="1075.0" y="2397.5" font-size="16" fill="#333333" text-anchor="middle">colour bars when no stream plays</text>
+<defs><linearGradient id="g5" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#EADCF8"/><stop offset="0.5" stop-color="#FFE2C6"/></linearGradient></defs>
+<rect x="1470" y="1805" width="470" height="140" rx="10" fill="url(#g5)" stroke="#333333" stroke-width="1.6"/>
+<text x="1705.0" y="1861.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">disp_reader</text>
+<text x="1705.0" y="1887.0" font-size="16" fill="#333333" text-anchor="middle">DPB → 720×480 / 720×576 raster</text>
+<text x="1705.0" y="1908.0" font-size="16" fill="#333333" text-anchor="middle">reads on ram2</text>
+<defs><linearGradient id="g6" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#EADCF8"/><stop offset="0.5" stop-color="#FFE2C6"/></linearGradient></defs>
+<rect x="1470" y="1965" width="470" height="110" rx="10" fill="url(#g6)" stroke="#333333" stroke-width="1.6"/>
+<text x="1705.0" y="2016.5" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">ovl_plane · OSD overlay</text>
+<text x="1705.0" y="2042.5" font-size="16" fill="#333333" text-anchor="middle">fb0 canvas over the picture</text>
+<rect x="1470" y="2095" width="470" height="120" rx="10" fill="#EADCF8" stroke="#333333" stroke-width="1.6"/>
+<text x="1705.0" y="2141.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">vid_out · raster</text>
+<text x="1705.0" y="2167.0" font-size="15" fill="#333333" text-anchor="middle">Auto / Interlaced / Progressive /</text>
+<text x="1705.0" y="2188.0" font-size="15" fill="#333333" text-anchor="middle">Native (HDMI) · clk_vid 81 MHz</text>
+<rect x="1470" y="2235" width="470" height="95" rx="10" fill="#EADCF8" stroke="#333333" stroke-width="1.6"/>
+<text x="1705.0" y="2279.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">ascal scaler (sys)</text>
+<text x="1705.0" y="2305.0" font-size="16" fill="#333333" text-anchor="middle">pll_hdmi · setup −0.166 ns</text>
+<rect x="1470" y="2350" width="470" height="115" rx="10" fill="#FFF7F7" stroke="#B03030" stroke-width="2.4" stroke-dasharray="10,6"/>
+<text x="1705.0" y="2393.5" font-size="20" font-weight="bold" fill="#7A1F1F" text-anchor="middle">yc_out (sys) · Y/C encoder</text>
+<text x="1705.0" y="2419.5" font-size="15" fill="#7A1F1F" text-anchor="middle">S-Video / composite · in the build</text>
+<text x="1705.0" y="2440.5" font-size="15" fill="#7A1F1F" text-anchor="middle">planned: not yet tested on a screen</text>
+<rect x="2030" y="1805" width="305" height="170" rx="10" fill="#FFF5C2" stroke="#333333" stroke-width="1.6"/>
+<text x="2182.5" y="1855.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">aud_play</text>
+<text x="2182.5" y="1881.0" font-size="16" fill="#333333" text-anchor="middle">PCM records</text>
+<text x="2182.5" y="1902.0" font-size="16" fill="#333333" text-anchor="middle">from the ring</text>
+<text x="2182.5" y="1923.0" font-size="16" fill="#333333" text-anchor="middle">paced to the</text>
+<text x="2182.5" y="1944.0" font-size="16" fill="#333333" text-anchor="middle">display clock</text>
+<rect x="2030" y="2035" width="305" height="120" rx="10" fill="#FFF5C2" stroke="#333333" stroke-width="1.6"/>
+<text x="2182.5" y="2081.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle">audio_out (sys)</text>
+<text x="2182.5" y="2107.0" font-size="16" fill="#333333" text-anchor="middle">48 kHz AUDIO_L/R</text>
+<text x="2182.5" y="2128.0" font-size="16" fill="#333333" text-anchor="middle">ALSA mixer off</text>
+<rect x="1290" y="2565" width="430" height="150" rx="10" fill="#F2F2F2" stroke="#222222" stroke-width="2.4"/>
+<text x="1505.0" y="2615.5" font-size="24" font-weight="bold" fill="#111111" text-anchor="middle">HDMI</text>
+<text x="1505.0" y="2641.5" font-size="15" fill="#333333" text-anchor="middle">MiSTer scaler; mode from MiSTer.ini</text>
+<text x="1505.0" y="2662.5" font-size="15" fill="#333333" text-anchor="middle">Plex tiers 480i / 480p / 720p (no 240p)</text>
+<text x="1505.0" y="2683.5" font-size="15" fill="#333333" text-anchor="middle">video + audio</text>
+<rect x="1760" y="2565" width="430" height="150" rx="10" fill="#FFF7F7" stroke="#B03030" stroke-width="2.6" stroke-dasharray="10,6"/>
+<text x="1975.0" y="2615.5" font-size="24" font-weight="bold" fill="#7A1F1F" text-anchor="middle">Analog out</text>
+<text x="1975.0" y="2641.5" font-size="15" fill="#7A1F1F" text-anchor="middle">OSD: RGB / S-Video / Composite</text>
+<text x="1975.0" y="2662.5" font-size="15" fill="#7A1F1F" text-anchor="middle">planned: Y/C bench test pending</text>
+<text x="1975.0" y="2683.5" font-size="15" fill="#7A1F1F" text-anchor="middle">(15 kHz)</text>
+<rect x="60" y="2565" width="1190" height="150" rx="10" fill="#FFFFFF" stroke="#1F3A68" stroke-width="2"/>
+<text x="655.0" y="2647.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="middle"></text>
+<text x="80.0" y="2597.0" font-size="21" font-weight="bold" fill="#111111" text-anchor="start">Shipped PlexOB fit (Quartus, fitter seed 10)</text>
+<text x="80.0" y="2625.0" font-size="16" fill="#333333" text-anchor="start">Logic: 41,033 / 41,910 ALMs (97.9%) · input mirror (ring_in) kept in the netlist: 601 ALUTs / 1,026 registers</text>
+<text x="80.0" y="2647.0" font-size="16" fill="#333333" text-anchor="start">Setup slack: pll_hdmi −0.166 ns (bar −0.3 ns, TNS −2.403) · worst other clock +0.197 ns · hold ≥ +0.092 ns</text>
+<text x="80.0" y="2669.0" font-size="16" fill="#333333" text-anchor="start">Fmax: clk_dec 104.87 / 104.62 MHz (check 101.4) · clk_vid 91.6 / 89.4 MHz (check 86.0) · 100 °C / −40 °C</text>
+<text x="80.0" y="2691.0" font-size="16" fill="#333333" text-anchor="start">Gates: timing gate, hdmi_pll_check, fmax_check, lint_undriven, netlist_canary all PASS</text>
+<polyline points="345.0,292.0 407.4,292.0" fill="none" stroke="#666666" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="420.0,292.0 402.0,282.3 402.0,301.7" fill="#666666"/>
+<polyline points="345.0,515.0 407.4,515.0" fill="none" stroke="#666666" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="420.0,515.0 402.0,505.3 402.0,524.7" fill="#666666"/>
+<polyline points="345.0,650.0 407.4,650.0" fill="none" stroke="#666666" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="420.0,650.0 402.0,640.3 402.0,659.7" fill="#666666"/>
+<polyline points="345.0,395.0 905.0,395.0 905.0,450.0 903.8,450.0" fill="none" stroke="#000000" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="915.0,450.0 899.0,441.4 899.0,458.6" fill="#000000"/>
+<polyline points="345.0,560.0 888.0,560.0 888.0,545.0 903.8,545.0" fill="none" stroke="#000000" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="915.0,545.0 899.0,536.4 899.0,553.6" fill="#000000"/>
+<polyline points="345.0,715.0 896.0,715.0 896.0,500.0 903.8,500.0" fill="none" stroke="#000000" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="915.0,500.0 899.0,491.4 899.0,508.6" fill="#000000"/>
+<polyline points="875.0,320.0 905.2,320.0" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="915.0,320.0 901.0,312.4 901.0,327.6" fill="#666666"/>
+<polyline points="647.0,700.0 647.0,720.2" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="647.0,730.0 639.4,716.0 654.6,716.0" fill="#666666"/>
+<polyline points="1140.0,380.0 1140.0,400.2" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="1140.0,410.0 1132.4,396.0 1147.6,396.0" fill="#666666"/>
+<polyline points="1140.0,630.0 1140.0,609.8" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="1140.0,600.0 1132.4,614.0 1147.6,614.0" fill="#666666"/>
+<polyline points="1140.0,770.0 1140.0,790.2" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="1140.0,800.0 1132.4,786.0 1147.6,786.0" fill="#666666"/>
+<polyline points="1910.0,300.0 1886.2,300.0" fill="none" stroke="#666666" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="1875.0,300.0 1891.0,291.4 1891.0,308.6" fill="#666666"/>
+<polyline points="2130.0,511.0 2130.0,533.8" fill="none" stroke="#666666" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="2130.0,545.0 2121.4,529.0 2138.6,529.0" fill="#666666"/>
+<polyline points="345.0,905.0 366.0,905.0 366.0,1040.0 2362.0,1040.0 2362.0,680.0 2359.8,680.0" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="2350.0,680.0 2364.0,672.4 2364.0,687.6" fill="#666666"/>
+<polyline points="1378.0,505.0 1378.0,1047.4" fill="none" stroke="#D2691E" stroke-width="4.0" stroke-linejoin="round"/>
+<polygon points="1378.0,1060.0 1368.3,1042.0 1387.7,1042.0" fill="#D2691E"/>
+<polyline points="1140.0,985.0 1140.0,1047.4" fill="none" stroke="#D2691E" stroke-width="3.4" stroke-linejoin="round"/>
+<polygon points="1140.0,1060.0 1130.3,1042.0 1149.7,1042.0" fill="#D2691E"/>
+<polyline points="1625.0,1060.0 1625.0,841.2" fill="none" stroke="#666666" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="1625.0,830.0 1616.4,846.0 1633.6,846.0" fill="#666666"/>
+<polyline points="1300.0,1405.4 1300.0,1584.6" fill="none" stroke="#D2691E" stroke-width="5.0" stroke-linejoin="round"/>
+<polygon points="1300.0,1600.0 1288.1,1578.0 1311.9,1578.0" fill="#D2691E"/>
+<polygon points="1300.0,1390.0 1288.1,1412.0 1311.9,1412.0" fill="#D2691E"/>
+<polyline points="2350.0,630.0 2385.0,630.0 2385.0,1722.0 725.0,1722.0 725.0,2035.0 691.2,2035.0" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="680.0,2035.0 696.0,2026.4 696.0,2043.6" fill="#666666"/>
+<polyline points="250.0,1707.6 250.0,1792.4" fill="none" stroke="#D2691E" stroke-width="3.6" stroke-linejoin="round"/>
+<polygon points="250.0,1805.0 240.3,1787.0 259.7,1787.0" fill="#D2691E"/>
+<polygon points="250.0,1695.0 240.3,1713.0 259.7,1713.0" fill="#D2691E"/>
+<polyline points="740.0,1707.6 740.0,2050.0 767.4,2050.0" fill="none" stroke="#D2691E" stroke-width="3.6" stroke-linejoin="round"/>
+<polygon points="780.0,2050.0 762.0,2040.3 762.0,2059.7" fill="#D2691E"/>
+<polygon points="740.0,1695.0 730.3,1713.0 749.7,1713.0" fill="#D2691E"/>
+<polyline points="1428.0,1695.0 1428.0,1865.0 1457.4,1865.0" fill="none" stroke="#D2691E" stroke-width="3.6" stroke-linejoin="round"/>
+<polygon points="1470.0,1865.0 1452.0,1855.3 1452.0,1874.7" fill="#D2691E"/>
+<polyline points="1428.0,1865.0 1428.0,2020.0 1457.4,2020.0" fill="none" stroke="#D2691E" stroke-width="3.6" stroke-linejoin="round"/>
+<polygon points="1470.0,2020.0 1452.0,2010.3 1452.0,2029.7" fill="#D2691E"/>
+<polyline points="385.0,2095.0 385.0,2115.2" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="385.0,2125.0 377.4,2111.0 392.6,2111.0" fill="#666666"/>
+<polyline points="680.0,1875.0 767.4,1875.0" fill="none" stroke="#1F4E9E" stroke-width="3.4" stroke-linejoin="round"/>
+<polygon points="780.0,1875.0 762.0,1865.3 762.0,1884.7" fill="#1F4E9E"/>
+<polyline points="1075.0,1945.0 1075.0,1965.2" fill="none" stroke="#1F4E9E" stroke-width="3.4" stroke-linejoin="round"/>
+<polygon points="1075.0,1975.0 1067.4,1961.0 1082.6,1961.0" fill="#1F4E9E"/>
+<polyline points="1075.0,2125.0 1075.0,2145.2" fill="none" stroke="#1F4E9E" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="1075.0,2155.0 1067.4,2141.0 1082.6,2141.0" fill="#1F4E9E"/>
+<polyline points="1370.0,2220.0 1414.0,2220.0 1414.0,1915.0 1460.2,1915.0" fill="none" stroke="#666666" stroke-width="2.4" stroke-linejoin="round"/>
+<polygon points="1470.0,1915.0 1456.0,1907.4 1456.0,1922.6" fill="#666666"/>
+<polyline points="1370.0,2375.0 1388.0,2375.0 1388.0,2185.0 1460.2,2185.0" fill="none" stroke="#7B2FBE" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="1470.0,2185.0 1456.0,2177.4 1456.0,2192.6" fill="#7B2FBE"/>
+<polyline points="1705.0,1945.0 1705.0,1956.6" fill="none" stroke="#7B2FBE" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="1705.0,1965.0 1698.5,1953.0 1711.5,1953.0" fill="#7B2FBE"/>
+<polyline points="1705.0,2075.0 1705.0,2086.6" fill="none" stroke="#7B2FBE" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="1705.0,2095.0 1698.5,2083.0 1711.5,2083.0" fill="#7B2FBE"/>
+<polyline points="1705.0,2215.0 1705.0,2226.6" fill="none" stroke="#7B2FBE" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="1705.0,2235.0 1698.5,2223.0 1711.5,2223.0" fill="#7B2FBE"/>
+<polyline points="1940.0,2155.0 1958.0,2155.0 1958.0,2405.0 1949.8,2405.0" fill="none" stroke="#7B2FBE" stroke-width="2.6" stroke-linejoin="round"/>
+<polygon points="1940.0,2405.0 1954.0,2397.4 1954.0,2412.6" fill="#7B2FBE"/>
+<polyline points="1470.0,2283.0 1455.0,2283.0 1455.0,2552.4" fill="none" stroke="#7B2FBE" stroke-width="3.4" stroke-linejoin="round"/>
+<polygon points="1455.0,2565.0 1445.3,2547.0 1464.7,2547.0" fill="#7B2FBE"/>
+<polyline points="1840.0,2465.0 1840.0,2552.4" fill="none" stroke="#7B2FBE" stroke-width="3.0" stroke-linejoin="round" stroke-dasharray="11,7"/>
+<polygon points="1840.0,2565.0 1830.3,2547.0 1849.7,2547.0" fill="#7B2FBE"/>
+<polyline points="500.0,1805.0 500.0,1783.0 2180.0,1783.0 2180.0,1795.2" fill="none" stroke="#B8860B" stroke-width="2.8" stroke-linejoin="round"/>
+<polygon points="2180.0,1805.0 2172.4,1791.0 2187.6,1791.0" fill="#B8860B"/>
+<polyline points="2180.0,1975.0 2180.0,2025.2" fill="none" stroke="#B8860B" stroke-width="3.0" stroke-linejoin="round"/>
+<polygon points="2180.0,2035.0 2172.4,2021.0 2187.6,2021.0" fill="#B8860B"/>
+<polyline points="2180.0,2155.0 2180.0,2535.0 1700.0,2535.0 1700.0,2553.8" fill="none" stroke="#B8860B" stroke-width="2.8" stroke-linejoin="round"/>
+<polygon points="1700.0,2565.0 1691.4,2549.0 1708.6,2549.0" fill="#B8860B"/>
+<polyline points="2120.0,2535.0 2120.0,2555.2" fill="none" stroke="#B8860B" stroke-width="2.8" stroke-linejoin="round" stroke-dasharray="6,4"/>
+<polygon points="2120.0,2565.0 2112.4,2551.0 2127.6,2551.0" fill="#B8860B"/>
+<rect x="359.4" y="257.0" width="45.1" height="26.0" rx="5" fill="white" fill-opacity="0.95" stroke="#666666" stroke-width="0.8"/>
+<text x="382.0" y="275.0" font-size="13" fill="#222222" text-anchor="middle">cast</text>
+<rect x="565.4" y="381.5" width="149.3" height="27.0" rx="5" fill="white" fill-opacity="0.95" stroke="#000000" stroke-width="0.8"/>
+<text x="640.0" y="400.5" font-size="14" fill="#222222" text-anchor="middle">HLS / https media</text>
+<rect x="534.0" y="701.5" width="212.0" height="27.0" rx="5" fill="white" fill-opacity="0.95" stroke="#000000" stroke-width="0.8"/>
+<text x="640.0" y="720.5" font-size="14" fill="#222222" text-anchor="middle">progressive or DASH https</text>
+<rect x="1840.3" y="265.0" width="103.4" height="26.0" rx="5" fill="white" fill-opacity="0.95" stroke="#666666" stroke-width="0.8"/>
+<text x="1892.0" y="283.0" font-size="13" fill="#222222" text-anchor="middle">start / stop</text>
+<rect x="2159.2" y="515.0" width="81.5" height="26.0" rx="5" fill="white" fill-opacity="0.95" stroke="#666666" stroke-width="0.8"/>
+<text x="2200.0" y="533.0" font-size="13" fill="#222222" text-anchor="middle">load_core</text>
+<rect x="562.6" y="1026.5" width="274.7" height="27.0" rx="5" fill="white" fill-opacity="0.95" stroke="#666666" stroke-width="0.8"/>
+<text x="700.0" y="1045.5" font-size="14" fill="#222222" text-anchor="middle">USB pads + keyboard → Main_MiSTer</text>
+<rect x="1338.6" y="967.0" width="78.7" height="46.0" rx="5" fill="white" fill-opacity="0.95" stroke="#D2691E" stroke-width="0.8"/>
+<text x="1378.0" y="986.0" font-size="14" fill="#222222" text-anchor="middle">AU + PCM</text>
+<text x="1378.0" y="1005.0" font-size="14" fill="#222222" text-anchor="middle">records</text>
+<rect x="1012.8" y="1006.5" width="94.4" height="27.0" rx="5" fill="white" fill-opacity="0.95" stroke="#D2691E" stroke-width="0.8"/>
+<text x="1060.0" y="1025.5" font-size="14" fill="#222222" text-anchor="middle">OSD canvas</text>
+<rect x="1562.1" y="927.0" width="125.8" height="46.0" rx="5" fill="white" fill-opacity="0.95" stroke="#666666" stroke-width="0.8"/>
+<text x="1625.0" y="946.0" font-size="14" fill="#222222" text-anchor="middle">status · input</text>
+<text x="1625.0" y="965.0" font-size="14" fill="#222222" text-anchor="middle">· build ID</text>
+<rect x="1264.6" y="1421.5" width="70.9" height="27.0" rx="5" fill="white" fill-opacity="0.95" stroke="#D2691E" stroke-width="0.8"/>
+<text x="1300.0" y="1440.5" font-size="14" fill="#222222" text-anchor="middle">f2sdram</text>
+<rect x="2282.0" y="1428.0" width="96.1" height="44.0" rx="5" fill="white" fill-opacity="0.95" stroke="#666666" stroke-width="0.8"/>
+<text x="2330.0" y="1446.0" font-size="13" fill="#222222" text-anchor="middle">HPS_BUS:</text>
+<text x="2330.0" y="1464.0" font-size="13" fill="#222222" text-anchor="middle">OSD + input</text>
+<rect x="692.9" y="1832.0" width="74.2" height="26.0" rx="5" fill="white" fill-opacity="0.95" stroke="#1F4E9E" stroke-width="0.8"/>
+<text x="730.0" y="1850.0" font-size="13" fill="#222222" text-anchor="middle">ES bytes</text>
+<rect x="1067.3" y="1770.0" width="285.4" height="26.0" rx="5" fill="white" fill-opacity="0.95" stroke="#B8860B" stroke-width="0.8"/>
+<text x="1210.0" y="1788.0" font-size="13" fill="#222222" text-anchor="middle">PCM records (via the reader&#x27;s engine)</text>
+<rect x="40" y="2760" width="2320" height="330" rx="16" fill="#FFFFFF" stroke="#555555" stroke-width="1.6"/>
+<text x="56.0" y="2789.0" font-size="21" font-weight="bold" fill="#222222" text-anchor="start">Legend</text>
+<rect x="70" y="2820" width="70" height="28" rx="5" fill="#DCEBFF" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="2841.0" font-size="18" fill="#1a1a1a" text-anchor="start">clk_dec 96.43 MHz: H.264 decoder · Fmax 104.87 / 104.62 MHz (100 °C / −40 °C) vs 101.4 MHz check</text>
+<rect x="70" y="2858" width="70" height="28" rx="5" fill="#FFE2C6" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="2879.0" font-size="18" fill="#1a1a1a" text-anchor="start">clk_mem 90 MHz: DDR3 ports (ram1, ram2) and DDR-side engines</text>
+<rect x="70" y="2896" width="70" height="28" rx="5" fill="#DFF5DF" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="2917.0" font-size="18" fill="#1a1a1a" text-anchor="start">clk_sys 27 MHz: HPS interface, display control, audio tick</text>
+<rect x="70" y="2934" width="70" height="28" rx="5" fill="#EADCF8" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="2955.0" font-size="18" fill="#1a1a1a" text-anchor="start">clk_vid 81 MHz raster · Fmax 91.6 / 89.4 MHz vs 86.0 MHz check · pll_hdmi (scaler)</text>
+<rect x="70" y="2972" width="70" height="28" rx="5" fill="#FFF5C2" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="2993.0" font-size="18" fill="#1a1a1a" text-anchor="start">audio (48 kHz)</text>
+<rect x="70" y="3010" width="70" height="28" rx="5" fill="#E6E6E6" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="3031.0" font-size="18" fill="#1a1a1a" text-anchor="start">ARM / Linux software</text>
+<defs><linearGradient id="g7" x1="0" x2="1" y1="0" y2="0"><stop offset="0.5" stop-color="#EADCF8"/><stop offset="0.5" stop-color="#FFE2C6"/></linearGradient></defs>
+<rect x="70" y="3048" width="70" height="28" rx="5" fill="url(#g7)" stroke="#333333" stroke-width="1"/>
+<text x="155.0" y="3069.0" font-size="18" fill="#1a1a1a" text-anchor="start">two colours = block spans both clock domains</text>
+<polyline points="1300.0,2834.0 1367.4,2834.0" fill="none" stroke="#000000" stroke-width="3.2" stroke-linejoin="round"/>
+<polygon points="1380.0,2834.0 1362.0,2824.3 1362.0,2843.7" fill="#000000"/>
+<text x="1400.0" y="2841.0" font-size="18" fill="#1a1a1a" text-anchor="start">network media: HLS / https video + audio</text>
+<polyline points="1300.0,2870.0 1367.4,2870.0" fill="none" stroke="#D2691E" stroke-width="3.2" stroke-linejoin="round"/>
+<polygon points="1380.0,2870.0 1362.0,2860.3 1362.0,2879.7" fill="#D2691E"/>
+<text x="1400.0" y="2877.0" font-size="18" fill="#1a1a1a" text-anchor="start">DDR3 traffic (ARM /dev/mem, FPGA f2sdram)</text>
+<polyline points="1300.0,2906.0 1367.4,2906.0" fill="none" stroke="#1F4E9E" stroke-width="3.2" stroke-linejoin="round"/>
+<polygon points="1380.0,2906.0 1362.0,2896.3 1362.0,2915.7" fill="#1F4E9E"/>
+<text x="1400.0" y="2913.0" font-size="18" fill="#1a1a1a" text-anchor="start">H.264 data inside the FPGA</text>
+<polyline points="1300.0,2942.0 1367.4,2942.0" fill="none" stroke="#666666" stroke-width="3.2" stroke-linejoin="round"/>
+<polygon points="1380.0,2942.0 1362.0,2932.3 1362.0,2951.7" fill="#666666"/>
+<text x="1400.0" y="2949.0" font-size="18" fill="#1a1a1a" text-anchor="start">control, status, input, discovery</text>
+<polyline points="1300.0,2978.0 1367.4,2978.0" fill="none" stroke="#7B2FBE" stroke-width="3.2" stroke-linejoin="round"/>
+<polygon points="1380.0,2978.0 1362.0,2968.3 1362.0,2987.7" fill="#7B2FBE"/>
+<text x="1400.0" y="2985.0" font-size="18" fill="#1a1a1a" text-anchor="start">video</text>
+<polyline points="1300.0,3014.0 1367.4,3014.0" fill="none" stroke="#B8860B" stroke-width="3.2" stroke-linejoin="round"/>
+<polygon points="1380.0,3014.0 1362.0,3004.3 1362.0,3023.7" fill="#B8860B"/>
+<text x="1400.0" y="3021.0" font-size="18" fill="#1a1a1a" text-anchor="start">audio</text>
+<polyline points="1300.0,3050.0 1367.4,3050.0" fill="none" stroke="#B03030" stroke-width="3.2" stroke-linejoin="round" stroke-dasharray="11,7"/>
+<polygon points="1380.0,3050.0 1362.0,3040.3 1362.0,3059.7" fill="#B03030"/>
+<text x="1400.0" y="3057.0" font-size="18" fill="#1a1a1a" text-anchor="start">planned / not yet proven on glass</text>
+<text x="1200.0" y="3130.0" font-size="19" font-weight="bold" fill="#222222" text-anchor="middle">Source: MisterPlex rc5 tree (daemon, boot hook, PlexOB RTL) · fit + timing: Quartus reports of the shipped PlexOB core, seed 10 · see VERIFY.md</text>
+</svg>

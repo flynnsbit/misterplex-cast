@@ -1,0 +1,1036 @@
+{
+  "format": "misterplex.p3.inter_mc.v1",
+  "profile": {
+    "source": "PMS XML VideoEncodeFlags / local x264 proxy",
+    "coded": [
+      624,
+      480
+    ],
+    "display": [
+      618,
+      480
+    ],
+    "x264opts": "cabac=0:bframes=0:ref=1:weightp=0:8x8dct=0:partitions=none",
+    "partition_measurement": {
+      "frames": {
+        "I": 6,
+        "P": 294,
+        "B": 0
+      },
+      "mb_P": {
+        "intra": 4.8,
+        "p16x16": 17.6,
+        "sub_mb": 0.0,
+        "skip": 77.7
+      },
+      "note": "x264 CLI encode with the exact VideoEncodeFlags; partitions=none leaves P16x16 and P_Skip for inter MBs."
+    }
+  },
+  "mv_cases": [
+    {
+      "name": "median3",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        4,
+        -2
+      ],
+      "b": [
+        -8,
+        6
+      ],
+      "c": [
+        12,
+        10
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        1,
+        -1
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        4,
+        6
+      ],
+      "mv": [
+        5,
+        5
+      ]
+    },
+    {
+      "name": "c_fallback_d",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": false,
+        "d": true
+      },
+      "a": [
+        20,
+        4
+      ],
+      "b": [
+        -4,
+        8
+      ],
+      "c": [
+        0,
+        0
+      ],
+      "d": [
+        6,
+        -12
+      ],
+      "mvd": [
+        -2,
+        3
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        6,
+        4
+      ],
+      "mv": [
+        4,
+        7
+      ]
+    },
+    {
+      "name": "top_row_single_a",
+      "avail": {
+        "a": true,
+        "b": false,
+        "c": false,
+        "d": false
+      },
+      "a": [
+        7,
+        -5
+      ],
+      "b": [
+        0,
+        0
+      ],
+      "c": [
+        0,
+        0
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        0,
+        0
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        7,
+        -5
+      ],
+      "mv": [
+        7,
+        -5
+      ]
+    },
+    {
+      "name": "skip_left_edge",
+      "avail": {
+        "a": false,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        9,
+        4
+      ],
+      "c": [
+        7,
+        2
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        5,
+        5
+      ],
+      "p_skip": true,
+      "skip_zero": true,
+      "pred": [
+        0,
+        0
+      ],
+      "mv": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "skip_zero_neighbor",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        9,
+        4
+      ],
+      "c": [
+        7,
+        2
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        3,
+        -3
+      ],
+      "p_skip": true,
+      "skip_zero": true,
+      "pred": [
+        0,
+        0
+      ],
+      "mv": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "skip_predicted_nonzero",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        4,
+        2
+      ],
+      "b": [
+        8,
+        6
+      ],
+      "c": [
+        12,
+        10
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        9,
+        9
+      ],
+      "p_skip": true,
+      "skip_zero": false,
+      "pred": [
+        8,
+        6
+      ],
+      "mv": [
+        8,
+        6
+      ]
+    }
+  ],
+  "partition_cases": [
+    {
+      "name": "p16x16_median",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        4,
+        -2
+      ],
+      "b": [
+        -8,
+        6
+      ],
+      "c": [
+        12,
+        10
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        1,
+        -1
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        4,
+        6
+      ],
+      "mv": [
+        5,
+        5
+      ],
+      "mode": 0,
+      "idx": 0
+    },
+    {
+      "name": "pskip_predicted_nonzero",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        4,
+        2
+      ],
+      "b": [
+        8,
+        6
+      ],
+      "c": [
+        12,
+        10
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        9,
+        9
+      ],
+      "p_skip": true,
+      "skip_zero": false,
+      "pred": [
+        8,
+        6
+      ],
+      "mv": [
+        8,
+        6
+      ],
+      "mode": 0,
+      "idx": 0
+    },
+    {
+      "name": "pskip_left_edge_zero",
+      "avail": {
+        "a": false,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        9,
+        4
+      ],
+      "c": [
+        7,
+        2
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        5,
+        5
+      ],
+      "p_skip": true,
+      "skip_zero": true,
+      "pred": [
+        0,
+        0
+      ],
+      "mv": [
+        0,
+        0
+      ],
+      "mode": 0,
+      "idx": 0
+    },
+    {
+      "name": "p16x8_top_uses_b",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        100,
+        0
+      ],
+      "b": [
+        1,
+        2
+      ],
+      "c": [
+        50,
+        0
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        3,
+        4
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        1,
+        2
+      ],
+      "mv": [
+        4,
+        6
+      ],
+      "mode": 1,
+      "idx": 0
+    },
+    {
+      "name": "p16x8_bottom_uses_a",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        7,
+        -3
+      ],
+      "b": [
+        20,
+        12
+      ],
+      "c": [
+        30,
+        2
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        -2,
+        5
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        7,
+        -3
+      ],
+      "mv": [
+        5,
+        2
+      ],
+      "mode": 1,
+      "idx": 1
+    },
+    {
+      "name": "p8x16_left_uses_a",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        6,
+        -6
+      ],
+      "b": [
+        40,
+        1
+      ],
+      "c": [
+        30,
+        8
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        4,
+        -1
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        6,
+        -6
+      ],
+      "mv": [
+        10,
+        -7
+      ],
+      "mode": 2,
+      "idx": 0
+    },
+    {
+      "name": "p8x16_right_uses_c",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        6,
+        -6
+      ],
+      "b": [
+        40,
+        1
+      ],
+      "c": [
+        9,
+        11
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        2,
+        3
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        9,
+        11
+      ],
+      "mv": [
+        11,
+        14
+      ],
+      "mode": 2,
+      "idx": 1
+    },
+    {
+      "name": "p8x16_right_c_missing_median_d",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": false,
+        "d": true
+      },
+      "a": [
+        2,
+        20
+      ],
+      "b": [
+        8,
+        4
+      ],
+      "c": [
+        0,
+        0
+      ],
+      "d": [
+        6,
+        10
+      ],
+      "mvd": [
+        1,
+        -2
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        6,
+        10
+      ],
+      "mv": [
+        7,
+        8
+      ],
+      "mode": 2,
+      "idx": 1
+    },
+    {
+      "name": "p8x8_median",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": false,
+        "d": true
+      },
+      "a": [
+        2,
+        20
+      ],
+      "b": [
+        8,
+        4
+      ],
+      "c": [
+        0,
+        0
+      ],
+      "d": [
+        6,
+        10
+      ],
+      "mvd": [
+        -3,
+        7
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        6,
+        10
+      ],
+      "mv": [
+        3,
+        17
+      ],
+      "mode": 3,
+      "idx": 2
+    },
+    {
+      "name": "sub_partition_median",
+      "avail": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false
+      },
+      "a": [
+        -5,
+        1
+      ],
+      "b": [
+        11,
+        9
+      ],
+      "c": [
+        3,
+        7
+      ],
+      "d": [
+        0,
+        0
+      ],
+      "mvd": [
+        2,
+        -4
+      ],
+      "p_skip": false,
+      "skip_zero": false,
+      "pred": [
+        3,
+        7
+      ],
+      "mv": [
+        5,
+        3
+      ],
+      "mode": 4,
+      "idx": 3
+    }
+  ],
+  "luma_ref_9x9": [
+    33,
+    50,
+    7,
+    24,
+    109,
+    126,
+    83,
+    164,
+    185,
+    9,
+    19,
+    117,
+    95,
+    161,
+    139,
+    237,
+    247,
+    217,
+    125,
+    92,
+    187,
+    154,
+    249,
+    216,
+    39,
+    6,
+    101,
+    45,
+    213,
+    253,
+    165,
+    77,
+    117,
+    29,
+    197,
+    237,
+    217,
+    142,
+    191,
+    108,
+    29,
+    50,
+    227,
+    144,
+    65,
+    225,
+    183,
+    125,
+    3,
+    201,
+    159,
+    165,
+    107,
+    49,
+    189,
+    120,
+    59,
+    246,
+    177,
+    108,
+    47,
+    234,
+    165,
+    109,
+    41,
+    229,
+    161,
+    125,
+    57,
+    245,
+    177,
+    77,
+    81,
+    10,
+    199,
+    112,
+    45,
+    230,
+    147,
+    76,
+    249
+  ],
+  "luma_cases": [
+    {
+      "frac": [
+        0,
+        0
+      ],
+      "sample": 29
+    },
+    {
+      "frac": [
+        1,
+        0
+      ],
+      "sample": 19
+    },
+    {
+      "frac": [
+        2,
+        0
+      ],
+      "sample": 8
+    },
+    {
+      "frac": [
+        3,
+        0
+      ],
+      "sample": 29
+    },
+    {
+      "frac": [
+        0,
+        1
+      ],
+      "sample": 73
+    },
+    {
+      "frac": [
+        1,
+        1
+      ],
+      "sample": 62
+    },
+    {
+      "frac": [
+        2,
+        1
+      ],
+      "sample": 57
+    },
+    {
+      "frac": [
+        3,
+        1
+      ],
+      "sample": 56
+    },
+    {
+      "frac": [
+        0,
+        2
+      ],
+      "sample": 116
+    },
+    {
+      "frac": [
+        1,
+        2
+      ],
+      "sample": 111
+    },
+    {
+      "frac": [
+        2,
+        2
+      ],
+      "sample": 105
+    },
+    {
+      "frac": [
+        3,
+        2
+      ],
+      "sample": 105
+    },
+    {
+      "frac": [
+        0,
+        3
+      ],
+      "sample": 159
+    },
+    {
+      "frac": [
+        1,
+        3
+      ],
+      "sample": 161
+    },
+    {
+      "frac": [
+        2,
+        3
+      ],
+      "sample": 156
+    },
+    {
+      "frac": [
+        3,
+        3
+      ],
+      "sample": 155
+    }
+  ],
+  "chroma_cases": [
+    {
+      "p": [
+        23,
+        101,
+        77,
+        209
+      ],
+      "frac": [
+        0,
+        0
+      ],
+      "sample": 23
+    },
+    {
+      "p": [
+        23,
+        101,
+        77,
+        209
+      ],
+      "frac": [
+        3,
+        5
+      ],
+      "sample": 99
+    },
+    {
+      "p": [
+        250,
+        7,
+        33,
+        199
+      ],
+      "frac": [
+        7,
+        7
+      ],
+      "sample": 161
+    }
+  ],
+  "clamp_cases": [
+    {
+      "xy": [
+        -5,
+        10
+      ],
+      "wh": [
+        624,
+        480
+      ],
+      "clamped": [
+        0,
+        10
+      ]
+    },
+    {
+      "xy": [
+        630,
+        -9
+      ],
+      "wh": [
+        624,
+        480
+      ],
+      "clamped": [
+        623,
+        0
+      ]
+    },
+    {
+      "xy": [
+        623,
+        479
+      ],
+      "wh": [
+        624,
+        480
+      ],
+      "clamped": [
+        623,
+        479
+      ]
+    }
+  ],
+  "fetch_cases": [
+    {
+      "base": [
+        0,
+        0
+      ],
+      "tap": 0,
+      "wh": [
+        624,
+        480
+      ],
+      "xy": [
+        0,
+        0
+      ]
+    },
+    {
+      "base": [
+        0,
+        0
+      ],
+      "tap": 40,
+      "wh": [
+        624,
+        480
+      ],
+      "xy": [
+        0,
+        0
+      ]
+    },
+    {
+      "base": [
+        623,
+        479
+      ],
+      "tap": 80,
+      "wh": [
+        624,
+        480
+      ],
+      "xy": [
+        623,
+        479
+      ]
+    },
+    {
+      "base": [
+        100,
+        50
+      ],
+      "tap": 0,
+      "wh": [
+        624,
+        480
+      ],
+      "xy": [
+        96,
+        46
+      ]
+    },
+    {
+      "base": [
+        100,
+        50
+      ],
+      "tap": 80,
+      "wh": [
+        624,
+        480
+      ],
+      "xy": [
+        104,
+        54
+      ]
+    }
+  ]
+}

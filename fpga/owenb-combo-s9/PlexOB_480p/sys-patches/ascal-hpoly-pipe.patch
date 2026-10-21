@@ -1,0 +1,139 @@
+--- a/ascal.vhd
++++ b/ascal.vhd
+@@ -494,7 +494,7 @@
+ 	SIGNAL o_adturn : std_logic;
+ 	SIGNAL o_dr : unsigned(N_DW-1 DOWNTO 0);
+ 	SIGNAL o_shift : unsigned(0 TO N_DW+15);
+-	SIGNAL o_sh,o_sh1,o_sh2,o_sh3,o_sh4 : std_logic;
++	SIGNAL o_sh,o_sh1,o_sh2,o_sh3,o_sh4,o_sh5 : std_logic;
+ 	SIGNAL o_reset_na : std_logic;
+ 	SIGNAL o_dpram : arr_dw(0 TO BLEN*2-1);
+ 	ATTRIBUTE ramstyle OF o_dpram : SIGNAL IS "no_rw_check";
+@@ -543,7 +543,7 @@
+ 	SIGNAL o_dcptv : arr_uint12(13 TO 14);
+ 	SIGNAL o_dcpt_clr, o_dcpt_inc : std_logic;
+ 	SIGNAL o_dcptv_clr, o_dcptv_inc : std_logic_vector(1 TO 12);
+-	SIGNAL o_hpixs,o_hpix0,o_hpix1,o_hpix2,o_hpix3 : type_pix;
++	SIGNAL o_hpixs,o_hpixs_d,o_hpix0,o_hpix1,o_hpix2,o_hpix3 : type_pix;
+ 	SIGNAL o_hpixq : arr_pixq(2 TO 8);
+ 	ATTRIBUTE ramstyle OF o_hpixq : SIGNAL IS "logic"; -- avoid blockram shift register
+ 	SIGNAL o_vpixq, o_vpixq_pre : arr_pix(0 TO 3);
+@@ -1032,11 +1032,14 @@
+ 	SIGNAL o_v_poly_phase_a,o_v_poly_phase_a2,o_v_poly_phase_a3, o_v_poly_phase_a4, o_v_poly_phase_a5 : poly_phase_t;
+ 	SIGNAL o_poly_phase_a, o_poly_phase_a2, o_poly_phase_a3 : poly_phase_t;
+ 	SIGNAL o_poly_phase_b,o_poly_phase_b2,o_poly_phase_b3 : poly_phase_t;
+-	SIGNAL o_v_poly_phase, o_v_poly_phase2, o_h_poly_phase, o_poly_phase, o_poly_phase1 : poly_phase_interp_t;
++	SIGNAL o_v_poly_phase, o_v_poly_phase2, o_h_poly_phase, o_h_poly_phase_d, o_poly_phase, o_poly_phase1 : poly_phase_interp_t;
+ 	SIGNAL o_v_poly_pix, o_h_poly_pix, o_h_lum_pix, o_v_lum_pix : type_pix;
+ 	SIGNAL o_poly_lum, o_poly_lum1 : unsigned(7 DOWNTO 0);
+ 	SIGNAL o_poly_lerp_ta, o_poly_lerp_tb : signed(9 DOWNTO 0);
+ 	SIGNAL o_h_poly_t,o_h_poly_t2,o_v_poly_t   : type_poly_t;
++	SIGNAL o_hpoly_wr_lat : unsigned(3 DOWNTO 0);
++	SIGNAL o_hpoly_wadl_lat : natural RANGE 0 TO OHRESH-1;
++	SIGNAL o_hpoly_ldw_lat  : type_pix;
+ 
+ 	SIGNAL o_v_poly_adaptive, o_h_poly_adaptive, o_v_poly_use_adaptive, o_h_poly_use_adaptive : std_logic;
+ 	SIGNAL poly_wr_mode : std_logic_vector(2 DOWNTO 0);
+@@ -2289,7 +2292,7 @@
+ 
+ 			o_acpt1<=o_acpt; o_acpt2<=o_acpt1; o_acpt3<=o_acpt2; o_acpt4<=o_acpt3;
+ 			o_ad1<=o_ad; o_ad2<=o_ad1; o_ad3<=o_ad2;
+-			o_sh1<=o_sh; o_sh2<=o_sh1; o_sh3<=o_sh2; o_sh4<=o_sh3;
++			o_sh1<=o_sh; o_sh2<=o_sh1; o_sh3<=o_sh2; o_sh4<=o_sh3; o_sh5<=o_sh4;
+ 			o_lastt1<=o_last;   o_lastt2<=o_lastt1;
+ 			o_lastt3<=o_lastt2; o_lastt4<=o_lastt3;
+ 
+@@ -2301,9 +2304,13 @@
+ 			END IF;
+ 
+ 			IF o_sh4='1' THEN
+-				hpix_v:=o_hpixs;
++					o_hpixs_d<=o_hpixs;
++			END IF;
++
++			IF o_sh5='1' THEN
++				hpix_v:=o_hpixs_d;
+ 				IF o_format(4)='1' THEN -- Swap B <-> R
+-					hpix_v:=(r=>o_hpixs.b,g=>o_hpixs.g,b=>o_hpixs.r);
++					hpix_v:=(r=>o_hpixs_d.b,g=>o_hpixs_d.g,b=>o_hpixs_d.r);
+ 				END IF;
+ 				IF o_format(2 DOWNTO 0)="011" THEN
+ 					-- 8bpp indexed colour mode
+@@ -2328,9 +2335,7 @@
+ 					-- Right edge. Keep last pixel.
+ 					o_hpix0<=o_hpix0;
+ 				END IF;
+-			END IF;
+-
+-			------------------------------------------------------
++			END IF;			------------------------------------------------------
+ 			-- lev_inc : read start
+ 			-- lev_dec : end of copy
+ 			-- READLEV : Number of ongoing Avalon Reads
+@@ -2686,11 +2691,11 @@
+ 
+ 			-- C3-C8 in PolyFetch
+ 
+-			-- C9 : Apply Polyphase
+-			o_h_poly_t<=poly_calc(o_h_poly_phase,o_hpixq(8));
+-
+-			-- C10 : Sum and bound
+-			o_h_poly_pix<=poly_final(o_h_poly_t);
++			-- C9 : Apply Polyphase (hpoly-pipe: MAC then sum, pixels + phase delayed via o_sh5 / o_h_poly_phase_d)
++			o_h_poly_phase_d<=o_h_poly_phase;
++			o_h_poly_t<=poly_calc(o_h_poly_phase_d,o_hpixq(8));
++			o_h_poly_t2<=o_h_poly_t;
++			o_h_poly_pix<=poly_final(o_h_poly_t2);
+ 
+ 			-- C11 : Select interpoler ----------------------------
+ 			o_wadl<=o_dcptv(14);
+@@ -2716,6 +2721,9 @@
+ 						o_ldw<=o_h_poly_pix;
+ 					END IF;
+ 			END CASE;
++				o_hpoly_wadl_lat<=o_wadl;
++				o_hpoly_wr_lat<=o_wr;
++				o_hpoly_ldw_lat<=o_ldw;
+ 			------------------------------------------------------
+ 		END IF;
+ 	END PROCESS HSCAL;
+@@ -2723,19 +2731,31 @@
+ 	-----------------------------------------------------------------------------
+ 	-- Line buffers 4 x OHRES x (R+G+B)
+ 	OLBUF:PROCESS(o_clk) IS
++		VARIABLE wr_v : unsigned(3 DOWNTO 0);
++		VARIABLE wadl_v : natural RANGE 0 TO OHRESH-1;
++		VARIABLE ldw_v : type_pix;
+ 	BEGIN
+ 		IF rising_edge(o_clk) THEN
++			IF o_hmode(2 DOWNTO 0) > "011" THEN
++				wr_v := o_hpoly_wr_lat;
++				wadl_v := o_hpoly_wadl_lat;
++				ldw_v := o_hpoly_ldw_lat;
++			ELSE
++				wr_v := o_wr;
++				wadl_v := o_wadl;
++				ldw_v := o_ldw;
++			END IF;
+ 			-----------------------------------------------
+ 			-- WRITES
+-			IF o_wr(0)='1' AND o_wadl < OHRESL  THEN o_line0(o_wadl MOD OHRESL)<=o_ldw; END IF;
+-			IF o_wr(1)='1' AND o_wadl < OHRESL  THEN o_line1(o_wadl MOD OHRESL)<=o_ldw; END IF;
+-			IF o_wr(2)='1' AND o_wadl < OHRESL  THEN o_line2(o_wadl MOD OHRESL)<=o_ldw; END IF;
+-			IF o_wr(3)='1' AND o_wadl < OHRESL  THEN o_line3(o_wadl MOD OHRESL)<=o_ldw; END IF;
++			IF wr_v(0)='1' AND wadl_v < OHRESL  THEN o_line0(wadl_v MOD OHRESL)<=ldw_v; END IF;
++			IF wr_v(1)='1' AND wadl_v < OHRESL  THEN o_line1(wadl_v MOD OHRESL)<=ldw_v; END IF;
++			IF wr_v(2)='1' AND wadl_v < OHRESL  THEN o_line2(wadl_v MOD OHRESL)<=ldw_v; END IF;
++			IF wr_v(3)='1' AND wadl_v < OHRESL  THEN o_line3(wadl_v MOD OHRESL)<=ldw_v; END IF;
+ 			IF OHRES = 2304 OR OHRES = 2560 THEN
+-				IF o_wr(0)='1' AND o_wadl >= OHRESL THEN o_linf0(o_wadl MOD OHRESM)<=o_ldw; END IF;
+-				IF o_wr(1)='1' AND o_wadl >= OHRESL THEN o_linf1(o_wadl MOD OHRESM)<=o_ldw; END IF;
+-				IF o_wr(2)='1' AND o_wadl >= OHRESL THEN o_linf2(o_wadl MOD OHRESM)<=o_ldw; END IF;
+-				IF o_wr(3)='1' AND o_wadl >= OHRESL THEN o_linf3(o_wadl MOD OHRESM)<=o_ldw; END IF;
++				IF wr_v(0)='1' AND wadl_v >= OHRESL THEN o_linf0(wadl_v MOD OHRESM)<=ldw_v; END IF;
++				IF wr_v(1)='1' AND wadl_v >= OHRESL THEN o_linf1(wadl_v MOD OHRESM)<=ldw_v; END IF;
++				IF wr_v(2)='1' AND wadl_v >= OHRESL THEN o_linf2(wadl_v MOD OHRESM)<=ldw_v; END IF;
++				IF wr_v(3)='1' AND wadl_v >= OHRESL THEN o_linf3(wadl_v MOD OHRESM)<=ldw_v; END IF;
+ 			END IF;
+ 
+ 			-----------------------------------------------

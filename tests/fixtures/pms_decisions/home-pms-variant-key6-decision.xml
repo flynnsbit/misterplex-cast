@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer size="1" allowSync="1" directPlayDecisionCode="3000" directPlayDecisionText="App cannot direct play this item. Direct play is disabled." generalDecisionCode="1001" generalDecisionText="Direct play not available; Conversion OK." identifier="com.plexapp.plugins.library" librarySectionID="1" librarySectionTitle="MiSTerPlex Native Tests" librarySectionUUID="00000000-0000-4000-8000-000000000001" mediaTagPrefix="/system/bundle/media/flags/" mediaTagVersion="1783932891" resourceSession="mplex-test-session-1" transcodeDecisionCode="1001" transcodeDecisionText="Direct play not available; Conversion OK.">
+<Video addedAt="1790977412" art="/library/metadata/6/art/1790977412" createdAtAccuracy="epoch" createdAtTZOffset="-18000" duration="634588" guid="com.plexapp.agents.none://cccccccccccccccccccccccccccccccccccccccc?lang=xn" key="/library/metadata/6" lastViewedAt="1791312259" librarySectionID="1" librarySectionKey="/library/sections/1" librarySectionTitle="MiSTerPlex Native Tests" originallyAvailableAt="2026-10-02" ratingKey="6" skipCount="1" subtype="clip" thumb="/library/metadata/6/thumb/1790977412" title="GATE-RC30 BBB 30p 640x480 full (2026)" type="movie" updatedAt="1790977412" viewCount="6" year="2026">
+<Media hasVoiceActivity="0" id="6" videoProfile="high" audioChannels="2" audioCodec="aac" bitrate="727" container="mpegts" duration="634588" height="468" videoCodec="h264" videoFrameRate="24p" videoResolution="480p" width="624" selected="1">
+<Part deepAnalysisVersion="6" id="6" requiredBandwidths="5188,4620,3042,3042,3042,3042,3042,3042" videoProfile="high" bitrate="727" container="mpegts" duration="634588" height="468" width="624" decision="transcode" selected="1">
+<Stream bitDepth="8" bitrate="533" codec="h264" default="1" displayTitle="480p" extendedDisplayTitle="480p (H.264)" frameRate="24" height="468" id="11" requiredBandwidths="4995,4427,2871,2871,2871,2871,2871,2871" streamType="1" width="624" decision="transcode" location="direct" />
+<Stream bitrate="194" bitrateMode="cbr" channels="2" codec="aac" default="1" displayTitle="Unknown (AAC Stereo)" extendedDisplayTitle="Unknown (AAC Stereo)" id="12" requiredBandwidths="193,193,193,193,193,193,193,193" samplingRate="48000" selected="1" streamType="2" decision="copy" location="direct" />
+</Part>
+</Media>
+<UltraBlurColors bottomLeft="6c2943" bottomRight="61612b" topLeft="1a2c53" topRight="2b6772" />
+<Genre filter="genre=6" id="6" tag="Animation" />
+<Role filter="actor=4" id="4" tag="Blender Foundation 2008" />
+<Role filter="actor=5" id="5" tag="Janus Bager Kristensen 2013" />
+</Video>
+</MediaContainer>
