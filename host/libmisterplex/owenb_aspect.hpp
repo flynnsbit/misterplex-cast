@@ -62,7 +62,7 @@ struct OwenbStreamAspect {
     bool spsAspect = false;   // the SPS states a sample aspect
     int64_t darNum = 0, darDen = 0;
     bool force43 = false;
-    // BUG6 (glass a lab MiSTer 1017): the coded picture itself is 4:3 (square samples, e.g. a PMS 960x720
+    // BUG6 (glass  lab 1017): the coded picture itself is 4:3 (square samples, e.g. a PMS 960x720
     // transcode of a 1440x1080 4:3 source). Video Output Native (HDMI) shows it at its own pixels,
     // pillarboxed in the core's 16:9 raster, so Aspect 4:3 there would squeeze the whole raster.
     bool square43 = false;
@@ -90,7 +90,7 @@ inline OwenbStreamAspect owenbStreamAspect(const uint8_t* au, size_t n, bool hav
     return r;
 }
 
-// 0006 (review 10:08): no VIDEO_OUTPUT in the mask -- changing it switches the display's signal
+// 0006 (reviewer 10:08): no VIDEO_OUTPUT in the mask -- changing it switches the display's signal
 // (the TV resyncs, h264ring.h:229-231) and overrides the user's menu. HDMI ASPECT is asked only to
 // force 4:3 for a VUI-less 4:3 stream; otherwise the user's ASPECT is left alone. The analog value
 // is the daemon's Letterbox default (owenb_aspect_guard.hpp restores the user's at the end).

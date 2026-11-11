@@ -26,11 +26,13 @@
 #include "browse_v2.hpp"
 #include "input_mailbox.hpp"
 #include "library_browser.hpp"
+#include "plex_server_catalog.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -53,6 +55,7 @@ enum class BrowseOp : uint8_t {
     StopAndReopen, // stop a play this browser started, then show its level again
     Left,          // Plex UI: horizontal focus (chips / grid columns)
     Right,
+    ToggleUiSize,  // GH#46: browse Y (ObNav::Aux) flips UI_SIZE normal|large
 };
 
 inline const char* browseOpName(BrowseOp op) {
@@ -68,6 +71,7 @@ inline const char* browseOpName(BrowseOp op) {
     case BrowseOp::StopAndReopen: return "stop+reopen";
     case BrowseOp::Left: return "left";
     case BrowseOp::Right: return "right";
+    case BrowseOp::ToggleUiSize: return "ui-size";
     }
     return "?";
 }
@@ -86,6 +90,16 @@ inline bool browseOpForVisibleCommand(PlaybackCommand c, BrowseOp& op) {
     case PlaybackCommand::PageDown: op = BrowseOp::PageDown; return true;
     case PlaybackCommand::Info: op = BrowseOp::Info; return true;
     case PlaybackCommand::Browse: op = BrowseOp::Open; return true;
+    case PlaybackCommand::QueuePlayNext:
+    case PlaybackCommand::MarkerActivate:
+    case PlaybackCommand::MarkerDismiss:
+    case PlaybackCommand::MarkWatched:
+    case PlaybackCommand::MarkUnwatched:
+    case PlaybackCommand::MarkDropContinue:
+    case PlaybackCommand::ChannelUp:
+    case PlaybackCommand::ChannelDown:
+    case PlaybackCommand::GuideToggle:
+    case PlaybackCommand::GuideTune:
     case PlaybackCommand::None: return false;
     }
     return false;
@@ -109,6 +123,8 @@ public:
         std::string menuUrl;   // "" = no helper: the PMS list only
         std::string pmsBase;   // conf PMS ("" = none)
         std::string pmsToken;  // conf token: in the PMS URL only, never logged
+        // More than one: the root list is the server picker. Tokens stay off the log.
+        std::vector<PlexBrowseTarget> servers;
         int cols = 48;         // title columns of the raster, sent to the helper
         int rows = 23;         // rows on screen (PageUp/PageDown without paging rows)
         int menuConnectMs = kMenuTimeoutMs;
@@ -121,9 +137,13 @@ public:
 
     BrowseController(Config cfg, Hooks hooks) : cfg_(std::move(cfg)), hooks_(std::move(hooks)) {
         if (!hooks_.get)
-            hooks_.get = [](const std::string& url, int connectMs, int timeoutMs,
-                            const BrowseCancelFn& c) {
-                return browseHttpGet(url, connectMs, timeoutMs, c);
+            hooks_.get = [tok = cfg_.pmsToken](const std::string& url, int connectMs, int timeoutMs,
+                                               const BrowseCancelFn& c) {
+                std::vector<std::pair<std::string, std::string>> h;
+                if (!tok.empty())
+                    h.emplace_back("X-Plex-Token", tok);
+                return browseHttpGet(url, connectMs, timeoutMs, c, "curl", "application/xml", nullptr,
+                                     true, kBrowseHttpBodyCap, h);
             };
     }
     ~BrowseController() { stop(); }
@@ -289,15 +309,7 @@ private:
     }
 
     std::string pmsUrl(const std::string& path) const {
-        std::string url = cfg_.pmsBase;
-        if (!path.empty() && path[0] == '/')
-            url += path;
-        else if (!path.empty())
-            url += "/" + path;
-        if (!cfg_.pmsToken.empty())
-            url += (url.find('?') == std::string::npos ? "?" : "&") +
-                   std::string("X-Plex-Token=") + cfg_.pmsToken;
-        return url;
+        return browsePmsUrl(cfg_.pmsBase, path, cfg_.pmsToken);
     }
 
     void run() {
@@ -340,6 +352,7 @@ private:
         case BrowseOp::Info: info(); break;
         case BrowseOp::Left:
         case BrowseOp::Right:
+        case BrowseOp::ToggleUiSize:
             break;
         }
     }
@@ -399,6 +412,14 @@ private:
             }
             offline = true;
             log("media: browse helper did not answer: HELPER OFFLINE, local PMS sections");
+        }
+        if (cfg_.servers.size() > 1) {
+            f.ok = true;
+            f.page.rows = plexServerPickerRows(cfg_.servers);
+            f.page.header = "Servers";
+            f.page.isMediaContainer = true;
+            f.status = offline ? "HELPER OFFLINE" : "";
+            return f;
         }
         if (cfg_.pmsBase.empty()) {
             f.status = offline ? "HELPER OFFLINE" : "NO PLEX SERVER";
@@ -503,6 +524,37 @@ private:
 
     // Enter a Directory row (push), or a paging row (replace the page).
     void enter(uint64_t gen, const LibraryRow& row) {
+        if (plexServerPickerRow(row)) {
+            const int idx = std::atoi(row.key.c_str());
+            if (idx < 0 || idx >= static_cast<int>(cfg_.servers.size())) {
+                setStatus("NO PLEX SERVER", false);
+                return;
+            }
+            const PlexBrowseTarget picked = cfg_.servers[static_cast<size_t>(idx)];
+            cfg_.pmsBase = picked.baseUrl;
+            cfg_.pmsToken = picked.token;
+            const std::string path = "/library/sections";
+            setStatus("LOADING...", true);
+            const BrowseHttpResult r = get(pmsUrl(path), cfg_.pmsConnectMs, cfg_.pmsTimeoutMs, gen);
+            if (r.cancelled) {
+                clearLoading();
+                return;
+            }
+            if (!r.ok()) {
+                setStatus("FETCH FAILED", false);
+                return;
+            }
+            BrowsePage p = parseBrowseXml(r.body, false);
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!br_.visible || br_.stack.empty())
+                return;
+            br_.push(std::move(p.rows));
+            levels_.push_back({false, path, p.header, p.mpxPage});
+            header_ = p.header;
+            br_.status = br_.stack.back().empty() ? "EMPTY" : "";
+            dirty_.store(true);
+            return;
+        }
         const bool menu = row.fromMenu;
         const std::string url = menu ? menuUrlForKey(cfg_.menuUrl, row.key, 0)
                                      : pmsUrl(libraryListPath(row));
@@ -568,6 +620,22 @@ private:
             }
         } else {
             t = localBrowseTicket(row);
+            if (cfg_.servers.size() > 1 && t.address.empty()) {
+                std::string proto, host, port;
+                if (splitPlexBase(cfg_.pmsBase, proto, host, port)) {
+                    t.protocol = proto;
+                    t.address = host;
+                    t.port = port;
+                }
+                if (t.token.empty())
+                    t.token = cfg_.pmsToken;
+                for (const auto& s : cfg_.servers) {
+                    if (s.baseUrl == cfg_.pmsBase) {
+                        t.machineIdentifier = s.machineId;
+                        break;
+                    }
+                }
+            }
         }
         if (gen_.load() != gen) { // a newer input came in while the ticket was fetched
             clearLoading();

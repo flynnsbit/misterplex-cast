@@ -1,8 +1,8 @@
-// MPX-FORK: PlexOB P0 — keep MiSTerPlex shim RTL in the emu netlist.
+// MPX-FORK: PlexOB P0 — keep MiSTerPlex shim RTL in the emu netlist (private lane).
 `default_nettype none
 
 module mpx_plexob_core_hook #(
-    parameter logic [31:0] BUILD_ID = 32'h0B59C11A
+    parameter logic [31:0] BUILD_ID = 32'h0B1101C5
 ) (
     input  wire        clk,
     input  wire        rst_n,

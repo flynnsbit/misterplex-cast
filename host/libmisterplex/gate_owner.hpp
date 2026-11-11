@@ -1,9 +1,9 @@
 #pragma once
-// SPS-gate layer 3 (L3 paper v1 c1f55425; review 06:17 CLEAR TO CODE): FpgaPlayGate, the ONE decision owner of
+// SPS-gate layer 3 (L3 paper v1 c1f55425; FPGA Bug 06:17 CLEAR TO CODE): FpgaPlayGate, the ONE decision owner of
 // pre-reg v1.4.3 b57a87fb (B13). It turns the loaded core's CAPS verdict (gate::evaluateCaps) and the per-AU stream
 // verdict (CompressedSyntax::inspect) into one action. Pure: no I/O, no daemon state, so every row is a unit tooth.
 //
-// Rows (L3 paper section 2, with Q1-Q4 as ruled by review 06:17):
+// Rows (L3 paper section 2, with Q1-Q4 as ruled by FPGA Bug 06:17):
 //   R1   CAPS NoPlay (section 1 (i))                          -> Error on screen; no play, no fallback
 //   R2   CAPS FallbackOnFloor, the item's first play, helper   -> Fallback, before the demux opens
 //   R3   CAPS FallbackOnFloor, the item's fallback play        -> GateOnFloor: gate the helper stream on the floor

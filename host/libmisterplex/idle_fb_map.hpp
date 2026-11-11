@@ -6,7 +6,7 @@
 //   3. off:    paint nothing and never arm PLXH en=1 (the FPGA keeps today's idle).
 // MPX_IDLEFB_PATH=wc|devmem|off forces one path (a forced path that fails is off). One log line at arm:
 //   "r1: idlefb path=wc|devmem|off kmod_caps=0x%x reason=<...>".
-// Pacing (render spec F5 + review 18:45): at most one paint per display frame on wc; on devmem the next paint
+// Pacing (render spec F5 + Bug 18:45): at most one paint per display frame on wc; on devmem the next paint
 // starts no earlier than 2 display frames (PLXD frames_done/VBL) after the previous ACK.
 #include "libmisterplex/mplex_ddr_abi.hpp"
 #include "libmisterplex/r1_idle_fb.hpp"
@@ -106,7 +106,7 @@ public:
     const std::string& reason() const { return reason_; }
     // Painting is allowed only on a mapped path; off must never arm PLXH en=1.
     bool paintAllowed() const { return path_ != IdleFbMapPath::Off && base_ != nullptr; }
-    // Minimum display frames from the previous paint's ACK to the next paint start (F5, review 18:45).
+    // Minimum display frames from the previous paint's ACK to the next paint start (F5, Bug 18:45).
     int minFramesAfterAck() const { return path_ == IdleFbMapPath::DevMem ? 2 : 1; }
     uint8_t* buffer(int idx) const {
         if (!base_ || (idx != 0 && idx != 1))

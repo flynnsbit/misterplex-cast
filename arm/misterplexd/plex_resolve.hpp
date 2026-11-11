@@ -2,13 +2,19 @@
 // Slim Plex resolve for MiSTerPlex Phase 2/4 (transitional ARM decode).
 // Harvested from mistercast-linux lessons; full feature set ports later.
 
+#include <atomic>
 #include <cstdint>
+#include <netdb.h>
 #include <functional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "libmisterplex/chapters.hpp"
+#include "libmisterplex/plex_web_client.hpp"
+#include "libmisterplex/plex_markers.hpp"
 #include "libmisterplex/source_aspect.hpp"
+#include "libmisterplex/track_select.hpp"
 #include "libmisterplex/video_backend.hpp"
 
 namespace misterplex {
@@ -50,12 +56,44 @@ struct ResolveResult {
     SourceAspect sourceAspect{};
     // The X-Plex-Client-Profile-Name this play's PMS requests used (timeline repeats it).
     std::string clientProfileName;
+    // Streams from the item metadata, and the choice applied to this play (selected flags,
+    // or the per-show file when one exists). valid is false when the metadata had no streams.
+    StreamCatalog tracks;
+    TrackPick trackPick;
+    std::string showKey;
+    int partId = 0;
+    std::string partKey;   // #334: Part@key of partId (embedded text source)
+    // Skip Intro / Up Next. markers is filled only when resolve is asked for them.
+    // type / parent / index come off the Video tag the metadata GET already returned.
+    std::vector<markers::Marker> markers;
+    // CHAPTERS on: <Chapter> markers from the same metadata GET (includeChapters=1).
+    // Unset or off leaves this empty and does not change that GET.
+    std::vector<chapters::Chapter> chapters;
+    // SCRUB_THUMBS on: "sd" or "hd" when the first Part has a BIF index.
+    // Unset or off leaves this empty. The metadata GET is unchanged either way.
+    std::string scrubIndexKind;
+    std::string type;
+    std::string parentKey;
+    std::string grandparentKey;
+    int parentIndex = -1;
+    int index = -1;
+    // Universal transcode template for a later audio or subtitle switch (offset rewritten then).
+    // May carry a token in the query. Do not log it.
+    std::string transcodeUrl;
+    // The PMS transcode session id (X-Plex-Session-Identifier / session=) this resolve used; empty for
+    // a direct play. The /:/timeline reporter sends the SAME id so the PMS ties the timeline to that session.
+    std::string sessionId;
     // SPS-gate L3: playable is the ladder helper's /ladder.ts (the stream is the helper's, GatePlayContext).
     bool viaLadderProxy = false;
     // PMS universal decision output geometry (Goal F menu reload). Filled when ensureUniversalDecision
     // accepts; do not rely on thread_local lastDecisionVideo() across resolve threads.
     int decisionWidth = 0;
     int decisionHeight = 0;
+    // On-device OpenSubtitles cache path when the title has no text stream.
+    // Empty when unused. Soft overlay reads this file; never a secret.
+    std::string softSubPath;
+    // #226: remote universal /start probe HTTP status when the body was dead (0 or 4xx/5xx). 0 = not probed.
+    int remoteUniversalStartHttp = 0;
 };
 
 struct QueueItem {
@@ -78,12 +116,80 @@ struct PlayQueue {
 };
 
 std::string urlDecode(const std::string& in);
+// GET through curl started with posix_spawnp and an argv (no shell). The URL is the last argument, after "--".
+// extraHeaders are (name, value) pairs sent via curl -K config on stdin (never on argv / ps); a pair whose name
+// is not an HTTP token, or whose name or value has CR/LF/NUL, is dropped. A URL with an embedded NUL returns {}
+// without running curl.
 std::string plexHttpGet(const std::string& url, int timeoutSec = 15,
-                        const std::string& extraHeaders = {});
+                        const std::vector<std::pair<std::string, std::string>>& extraHeaders = {});
+// Same GET as plexHttpGet, plus the status line and Content-Type from curl -D.
+// contentType and body are for the caller. Do not log body: it can hold a token.
+struct PlexHttpObserved {
+    int httpStatus = 0;
+    std::string contentType;
+    std::string body;
+};
+PlexHttpObserved plexHttpGetObserved(
+    const std::string& url, int timeoutSec = 15,
+    const std::vector<std::pair<std::string, std::string>>& extraHeaders = {});
+// Binary GET (Accept */*, no XML). Empty on transport error, HTTP error, or a body
+// larger than capBytes. The URL may carry a token; callers must not log it.
+// A token in extraHeaders is not followed across a redirect.
+std::string plexHttpGetBytes(const std::string& url, int timeoutSec,
+                             const std::vector<std::pair<std::string, std::string>>& extraHeaders,
+                             size_t capBytes);
+// GET through the metadata test hook (setMetadataFetchForTest) or curl. 12 s.
+std::string plexMetadataHttpGet(const std::string& url);
+// #340: same, with the token as an X-Plex-Token header (never a query).
+std::string plexMetadataHttpGet(const std::string& url, const std::string& token);
+// PUT with an empty body. True on HTTP 2xx. The URL may carry a token; callers must not log it.
+// One long-lived worker (no shell). A newer PUT replaces one that has not started.
+// https is refused (plain HTTP on the LAN only) and logged once. cancel aborts DNS,
+// connect, and the transfer so process shutdown can join the worker promptly.
+// #340: token is sent as an X-Plex-Token header line; a query token in url is moved there.
+bool plexHttpPut(const std::string& url, int timeoutSec = 8, const std::atomic<bool>* cancel = nullptr,
+                 const std::string& token = {});
+void notePartPutHttpsSkip();
+// Test seam. nullptr restores ::getaddrinfo. Hostname lookups and numeric hosts both call it.
+using PutAddrInfoFn = int (*)(const char* node, const char* service, const ::addrinfo* hints, ::addrinfo** res);
+void setPutAddrInfoForTest(PutAddrInfoFn fn);
+// Test seam. nullptr restores curl. resolvePlayTarget's metadata GET calls it.
+using MetadataFetchFn = std::string (*)(const std::string& url);
+void setMetadataFetchForTest(MetadataFetchFn fn);
+// Test seam. nullptr restores plexHttpPut. Replaces the audio part PUT made before a non-default audio pick plays.
+using AudioPartPutFn = bool (*)(const std::string& url, const std::string& token);
+void setAudioPartPutForTest(AudioPartPutFn fn);
+// Test seam. A non-negative fd replaces the part-PUT connect with the same
+// 200 ms poll/cancel loop. A filled pipe write end blocks until cancel.
+void setPutConnectStallFdForTest(int fd);
+// How many times that poll loop has been entered, including real connects.
+int putConnectPollsForTest();
+// Detached hostname lookups still running, including ones the caller already abandoned.
+int putDnsLookupsInFlight();
+// Join the part-PUT worker. Tests only; that worker does not restart.
+void stopTrackIoForTest();
+void enqueueShowTrackSave();
+void enqueuePartStreamPut(const std::string& url, const std::string& token = {});
 std::string urlEncodeQuery(const std::string& s);
 
 // Normalize a PMS base: trim, strip trailing slash, add http:// if bare host[:port].
+// True for a shipped placeholder (YOUR-PLEX-SERVER, <your-plex-server>, ...).
+bool isPlexBasePlaceholder(const std::string& raw);
+// Blank or placeholder -> empty (unset).
 std::string normalizePlexBase(const std::string& raw);
+
+// First reachable IPv4/LAN base from candidates. A local player (conf 127.0.0.1)
+// keeps loopback. ULA / foreign loopback fall back to conf. playerLan (this
+// box's IPv4) rewrites a same-/24 gateway (203.0.113.1 next to  lab) onto conf.
+std::string preferReachablePmsBase(const std::vector<std::string>& candidates,
+                                   const std::string& confLanFallback,
+                                   const std::string& playerLan = {});
+
+// #333: true when base's host is a private address on the player's /24 that is not the conf
+// PMS, i.e. what the "player VLAN gateway" rule (companionOpenablePmsBase) rewrites onto conf.
+// Address-only: callers must prove identity (castLanPmsVerified) before keeping such a host.
+bool castHostOnPlayerLan(const std::string& base, const std::string& playerLan,
+                         const std::string& conf);
 
 // Split comma/semicolon/whitespace-separated server list into normalized bases.
 // Empty tokens skipped. Order preserved (first = default).
@@ -106,6 +212,29 @@ struct PlexEndpoint {
 };
 PlexEndpoint splitPlexHostPort(const std::string& address, const std::string& port);
 
+// IPv6 PMS hosts. Plex Web can hand the cast target the PMS's IPv6 ULA (fd00::/8) as address=
+// "fd00:db8:...", as a bracketed URL host, or as a plex.direct label "fd00-db8-...-5cd5". The
+// MiSTer has no IPv6 route to it. ipv6FromPmsHost() extracts the address text ("" when the host
+// is IPv4/a name). isUnreachableIpv6Host() is true for a ULA (fc00::/7), link-local (fe80::/10)
+// or site-local (fec0::/10) address: never routable from the lab LAN, so no probe is needed.
+bool ipv6FromPmsHost(const std::string& hostOrUrl, std::string& out);
+bool isUnreachableIpv6Host(const std::string& hostOrUrl);
+
+// GET <base>/identity (unauthenticated) within timeoutSec. True on a MediaContainer body that carries
+// machineId when one is given: the check that a fallback base is the PMS the cast named.
+bool probePmsIdentity(const std::string& base, const std::string& machineId, int timeoutSec);
+
+// Local IPv4 connections of one server in a plex.tv /api/v2/resources JSON body, as http://a.b.c.d:port.
+// Only connections with local=true, relay!=true, IPv6!=true and a dotted-IPv4 address are returned.
+std::vector<std::string> localIpv4BasesFromResources(const std::string& resourcesJson,
+                                                     const std::string& machineIdentifier);
+// plex.tv lookup (timeoutSec, TLS verified, no redirects) feeding localIpv4BasesFromResources.
+std::vector<std::string> plexTvLocalIpv4Bases(const std::string& machineIdentifier,
+                                              const std::string& token, int timeoutSec);
+// plex.tv /api/v2/resources JSON. Empty when token is empty or the GET fails.
+// The body contains access tokens. Callers must not log or store it on disk.
+std::string fetchPlexTvResourcesJson(const std::string& token, int timeoutSec);
+
 // Build http(s)://host:port base. Rewrites Docker-bridge plex.direct to empty
 // (caller should supply LAN fallback).
 std::string buildPlexBase(const std::string& protocol, const std::string& address,
@@ -118,8 +247,37 @@ std::string buildPlexBase(const std::string& protocol, const std::string& addres
 // - foreign private home LAN (different /24 than conf) → empty (use public lookup)
 // - already-http bases pass through
 // Returns empty if no openable base can be derived.
+// playerLan: this box's IPv4. A private host on that /24 that is not conf
+// (lab VLAN gateway 203.0.113.1 next to player  lab) becomes confLanFallback.
+// A foreign private host on a different /24 (home 203.0.113.70) stays empty.
 std::string companionOpenablePmsBase(const std::string& selectedBase,
-                                     const std::string& confLanFallback = {});
+                                     const std::string& confLanFallback = {},
+                                     const std::string& playerLan = {});
+
+// True when the URL/host is this-process loopback (127.0.0.1 / localhost / ::1).
+// Plex Web on the studio/buildhost box casts with address=127.0.0.1:32400; the player's
+// outbound GET /:/timeline must not follow that to the MiSTer loopback.
+bool isLoopbackPmsHost(const std::string& hostOrUrl);
+
+// If selectedBase is loopback, return a non-loopback lanFallback (conf PLEX_BASE).
+// Otherwise return selectedBase unchanged. Empty fallback leaves selectedBase.
+std::string rewriteLoopbackPmsBase(const std::string& selectedBase,
+                                   const std::string& lanFallback);
+// Timeline.address/port/protocol while playing are the PMS (python-plexapi
+// ClientTimeline, plex-mpv-shim GetCurrentTimeline, OpenPHT) so Plex Web can
+// fetch /library/metadata/{ratingKey} for the in-play stream menu. Rewrite
+// ULA / link-local / plex.direct / docker-bridge onto a LAN IPv4 HTTP base.
+// Also rewrite a private IPv4 on the player's own /24 that is not conf
+// (203.0.113.1 + player 203.0.113.20 + conf 203.0.113.10 →  lab). A reachable
+// IPv4 on a different /24 is left alone (do not remap a foreign home LAN).
+PlexEndpoint reachableTimelinePms(const std::string& address, const std::string& port,
+                                  const std::string& protocol,
+                                  const std::string& lanFallback = {},
+                                  const std::string& playerLan = {});
+
+// Copy http(s)://host:port onto address/port/protocol. IPv6 hosts keep [].
+bool applyPmsBaseToEndpoint(const std::string& base, std::string& address, std::string& port,
+                            std::string& protocol);
 
 // When cast pins a foreign private LAN address, resolve a public HTTP base via
 // plex.tv resources for machineIdentifier + cast token. Prefer non-local,
@@ -194,15 +352,20 @@ struct WeakLadder {
     std::string fpgaProfileVariant;
     // Phase 4: ask PMS to burn subtitles into the universal ladder when set.
     bool burnSubtitles = false;
-    int subtitleStreamId = -1; // -1 = PMS default / first
+    // #201-r3: BURN_SUBS_FIX on and the burn is an image sub (PGS/VobSub): force the transcode.
+    bool burnSubsFixImage = false;
+    int subtitleStreamId = -1; // -1 = omit; 0 = off; >0 = that PMS stream
+    // >0 names audioStreamID on the universal URL. -1 omits it. A default transcode
+    // still names the picked stream so the player does not guess a container index.
+    int audioStreamId = -1;
     int fpgaFpsNum = 0;
     int fpgaFpsDen = 0;
     // MPX_BROWSE_V2 plays of an mpx-menu "ladder" row only (empty for every cast): the ladder
-    // input the helper chose (lead Q4: the original Part up to ~8 Mbps, the owning server's
+    // input the helper chose (reviewer Q4: the original Part up to ~8 Mbps, the owning server's
     // own transcode above). Used instead of the metadata Part in the /ladder.ts src=; the
     // ladder still seeks it with &offset_ms.
     std::string ladderSrcOverride;
-    // MPX_BROWSE_V2 play ticket mpxLadderInput="server-transcode" (lead Q4, Part above
+    // MPX_BROWSE_V2 play ticket mpxLadderInput="server-transcode" (reviewer Q4, Part above
     // ~8 Mbps): the ladder input is the owning server's own universal transcode of this item,
     // started at the offset, instead of the original Part over the owner's uplink. If its
     // decision fails, the Part as before. Never set for casts.
@@ -216,7 +379,24 @@ struct WeakLadder {
     // rebuilds the OB ladder from scratch, so a cap set on the legacy ladder (the CAVLC retry, the per-PMS memory)
     // travels here; the legacy FPGA paths ignore it. Never a Plex client profile.
     int obMaxKbps = 0;
+    // Owenb X-Plex-Client-Profile-Extra video.frameRate upper bound. 30 unless
+    // ALLOW_480P60 accepted this source (owenbApplyAllow480p60). The 1280x720,
+    // 8-bit, bitrate, and codec caps stay. A lowered transcode retry is 30.
+    int directPlayFpsCap = 30;
 };
+
+// Play-start track choice onto the ladder the universal URL is built from.
+// Soft text (SRT/ASS/SSA) does not set burnSubtitles while the overlay will
+// paint them (Direct Play + OSD sink; softOverlayAllowed is always on).
+// BURN_SUBS_FIX on keeps a pick the overlay will not paint (PGS/VobSub/image,
+// mov_text when SOFT_SUBS is off) as a burn and forces a video transcode.
+// An explicit image / embedded pick still burns. Audio is named whenever the
+// pick has an id, with or without a saved preference.
+void applyTrackPickToLadder(WeakLadder& ladder, const ResolveResult& r, bool havePref);
+
+// Direct H.264 Part only when nothing is burned into the picture. The play-start
+// branch calls this with the ladder's burn flag; dropping that flag is a direct play.
+bool directH264Allowed(bool wantDirect, bool isH264, bool burnSubtitles);
 
 // NO-REQUIRED-PROFILE (docs/plans/NO-REQUIRED-PROFILE.md section 4/5): the transcode decision's video fields,
 // checked against what the loaded core takes. Only present fields are checked; the first AU's SPS (the gate)
@@ -240,11 +420,11 @@ std::string decisionCoreMismatch(const DecisionVideo& v, const WeakLadder& weak)
 // transcode target (profile, level, refFrames, size, 8-bit); pmsLowered set.
 WeakLadder lowerPmsLadder(const WeakLadder& weak);
 // BUG1-CAP (V2-BUGS-1017 #1): the lowered retry after an OB play ended "CAVLC at N kbps ..." asks the server for
-// at most 85 % of OB_CAVLC_MAX_KBPS (never under 1000): the same server's encoder answers CAVLC again (a lab MiSTer
+// at most 85 % of OB_CAVLC_MAX_KBPS (never under 1000): the same server's encoder answers CAVLC again (the  lab
 // log: 5228 then 5411 kbps at the unchanged 6000k ladder), so only the rate can bring it under the rewrite's
 // ceiling (owenb docs/cavlc.md §8a option F). Any other ladder or reason comes back unchanged.
 WeakLadder owenbCavlcRetryLadder(const WeakLadder& weak, const std::string& reason, int cavlcMaxKbps);
-// BUG1 pre-play (owner, 2026-10-17): the SOURCE's entropy coding from the PMS metadata's video Stream.
+// BUG1 pre-play (Shawn, 2026-10-17): the SOURCE's entropy coding from the PMS metadata's video Stream.
 // cabac: 1 / 0 from a cabac="1|0" attribute when PMS exposes one, else 0 for a Baseline / Constrained Baseline
 // profile (Baseline has no CABAC), else -1 (unknown: Main / High may be either). bitrateKbps: the video
 // Stream's bitrate, else Media@bitrate, else 0.
@@ -261,7 +441,7 @@ ObSourceEntropy parseObSourceEntropy(const std::string& metadataXml);
 // 4000-7000 kbps stays with the in-session load gate. Only a direct play is predicted this way; a PMS
 // transcode's output entropy is not in the metadata (BUG1-CAP.md §6).
 bool owenbPrePlayCavlcLadder(WeakLadder& weak, const ObSourceEntropy& src, int hardKbps, int capKbps);
-// BUG1 (lab 7AE78D80: a remote PMS's HEVC Main10 source, transcoder CAVLC at 94-98 % rewrite load): a PlexOB ladder whose
+// BUG1 (lab 7AE78D80: reviewer's HEVC Main10 source, transcoder CAVLC at 94-98 % rewrite load): a PlexOB ladder whose
 // source video is known and not H.264 (HEVC, VP9, AV1, MPEG-2...: PMS must transcode, its output entropy is
 // unpredictable) asks at most safeKbps (OB_TRANSCODE_SAFE_KBPS, 3200; ~55-60 % load measured) on the first
 // request, keeping 720p. True when it lowered the ladder. H.264, an unknown codec or a legacy ladder: unchanged.
@@ -352,6 +532,30 @@ std::string plexClientProfileExtra(const WeakLadder& weak, bool namedProfile = f
 // PlexOB ladder: 1280x720 cap, High/Main/Baseline, no named client profile.
 // WAN starts at 6000 kb/s. LAN starts at 8000 kb/s.
 WeakLadder owenbWeakLadder(bool wan);
+
+// ALLOW_480P60 (misterplex.conf) / MPX_ALLOW_480P60 (env wins; ALLOW_480P60
+// also read). Default off: the owenb profile extra stays video.frameRate=30.
+// When on, a source at or under 854x480 whose rate is above 30 fps and at most
+// 60 fps (60/1 and 60000/1001) may direct-play. 720p60 and width above 854 stay
+// at 30. 8-bit, the ladder bitrate, and H.264 still apply. FPGA ladders ignore it.
+constexpr int kAllow480p60MaxWidth = 854;
+constexpr int kAllow480p60MaxHeight = 480;
+struct Allow480p60Source {
+    int width = 0;
+    int height = 0;
+    int fpsNum = 0;
+    int fpsDen = 0;
+    int bitDepth = 0;     // 0 = unreported (allowed); above 8 refused
+    int bitrateKbps = 0;  // 0 = unreported (allowed); above the ladder cap refused
+    std::string codec;    // h264 / avc required
+};
+bool allow480p60Enabled();
+// True when the ladder's direct-play frame-rate cap was raised to 60.
+bool owenbApplyAllow480p60(WeakLadder& weak, const Allow480p60Source& src);
+// Same, reading codec / bit depth / bitrate off the item metadata. width/height
+// and fps are the already-parsed video stream (0 fps refuses).
+bool owenbApplyAllow480p60FromMeta(WeakLadder& weak, const std::string& metadataXml,
+                                   int width, int height, int fpsNum, int fpsDen);
 // A verified PlexOB session asks for the Owenb ladder (direct play, 1280x720 cap).
 // The configured FPGA ladder (624x480 baseline, directPlay=0) is for the legacy cores.
 // A lowered retry keeps pmsLowered so the URL forces one transcode.
@@ -397,7 +601,7 @@ std::string baselineClientProfileName(std::string* source = nullptr);
 // picks NVENC, which ignores the x264 ref=1 flags, so the prod core refuses ref=3): a Baseline FPGA ladder
 // sends its per-variant name (selectFpgaPmsProfile). Remote/WAN PMS and an unknown
 // target get the fixed MiSTerPlex / MiSTerPlex-High. The CLIENT_PROFILE_NAME override wins everywhere.
-// NO-REQUIRED-PROFILE (docs/plans/NO-REQUIRED-PROFILE.md, owner 1011 20:59 CT): by default NO
+// NO-REQUIRED-PROFILE (docs/plans/NO-REQUIRED-PROFILE.md, Shawn 1011 20:59 CT): by default NO
 // X-Plex-Client-Profile-Name is sent (empty result); correctness comes from the params + Profile-Extra.
 // Opt-in for testing: CLIENT_PROFILE_NAME / MPX_CLIENT_PROFILE_NAME (that exact name everywhere);
 // SEND_PROFILE_NAME / MPX_SEND_PROFILE_NAME = fixed (MiSTerPlex / MiSTerPlex-High) or variant (the
@@ -440,7 +644,7 @@ std::string buildUniversalTranscodeUrl(const std::string& base,
                                        int64_t offsetMs,
                                        const WeakLadder& weak,
                                        std::string* why = nullptr);
-// MPX_BROWSE_V2 (lead Q4): the owning server's own universal transcode as a ladder src, started
+// MPX_BROWSE_V2 (reviewer Q4): the owning server's own universal transcode as a ladder src, started
 // at offsetMs (a negative offset counts as 0): buildUniversalTranscodeUrl's start URL with the
 // X-Plex set libav sends carried as query parameters, because the ladder fetches it without
 // headers. Empty when there is no transcode URL for this raster. *startUrl, if given, receives the
@@ -480,10 +684,10 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
                                 bool weakAlways = true, const WeakLadder& weak = {},
                                 bool preferDirectH264 = false, int decodeW = 0,
                                 int decodeH = 0, bool forceLadder = false,
-                                const std::string& gateDetail = {});
+                                const std::string& gateDetail = {},
+                                bool includeMarkers = false);
 
-// SPS-gate L3: a ladder helper is configured (MPX_REMOTE_LADDER_PROXY, else REMOTE_LADDER_PROXY, non-empty).
-// Product default is empty (direct PMS). Non-empty is debug opt-in. The one read shared by resolve
+// SPS-gate L3: a ladder helper is configured. Always false since #275 (helper removed; direct PMS only). The one read shared by resolve
 // and the gate's GatePlayContext, so they cannot disagree on "helper configured".
 bool ladderProxyConfigured();
 
@@ -523,6 +727,8 @@ std::vector<std::pair<std::string, std::string>> plexStartProbeHeaders(const std
                                                                        const std::string& startUrl);
 // MPX_PREWARM: OFF unless MPX_PREWARM is set to something other than "" / "0".
 bool plexPrewarmProbeEnabled();
+// FU9 test seam: runArgv (posix_spawnp, no shell); stdout captured. Tests only.
+std::string runArgvCaptureForTest(const std::vector<std::string>& args);
 // MPX_PREWARM's single-GET probe: status + the body bytes (binary-safe).
 struct PlexStartProbe {
     int httpStatus = 0;
@@ -531,6 +737,19 @@ struct PlexStartProbe {
 PlexStartProbe plexHttpGetStatusAndBody(
     const std::string& url, const std::vector<std::pair<std::string, std::string>>& headers,
     const std::string& clientProfileName, int timeoutSec);
+// Byte-capped curl -D - probe: one GET, headers + leading body (binary-safe), read stops at capBytes.
+PlexStartProbe plexHttpGetStatusAndHead(
+    const std::string& url, const std::vector<std::pair<std::string, std::string>>& headers,
+    const std::string& clientProfileName, int timeoutSec, size_t capBytes);
+// rs9: one remote universal start probe attempt (the resolve's probeOnce). capBytes > 0 = one byte-capped GET.
+struct RemoteStartProbeResult {
+    int httpStatus = 0;
+    std::string body;
+    bool alive = false;
+};
+RemoteStartProbeResult remoteStartProbeOnce(const std::string& start,
+                                            const std::vector<std::pair<std::string, std::string>>& probeHdr,
+                                            const std::string& profileName, size_t capBytes, bool prewarm);
 // Seek coalescing: the resolve thread's "superseded?" check. A decision is not issued once it returns
 // true (a later seek/play owns the session), so one coalesced seek never runs two decisions.
 void setResolveAbortCheck(std::function<bool()> check);

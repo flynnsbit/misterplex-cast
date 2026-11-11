@@ -1,4 +1,5 @@
 #pragma once
+#include "analog_raster.hpp"
 
 #include "plexob_yc.hpp"
 
@@ -365,6 +366,35 @@ inline YcPollResult pollYcOnOwenbGate(const CoreGate& gate, const OwenbCtrlReade
     out.value = live;
     out.buildId = build;
     return out;
+}
+
+// ANALOG_RASTER on the OB gate: same gating as the Y/C poll (OB gate open, legacy gate closed, reader present).
+// The caller must not run it while a Y/C reload is queued or in flight (one reload worker, one job slot).
+struct RasterTick {
+    bool read = false;
+    uint32_t build = 0;
+    uint64_t w87 = 0;
+    RasterOut out;
+};
+inline RasterTick pollAnalogRasterOnOwenbGate(const CoreGate& gate, const OwenbCtrlReader& reader,
+                                              RasterState& st, RasterWant want, const std::string& cfgPath,
+                                              bool playing, int64_t nowUs) {
+    RasterTick t;
+    if (!gate.owenbOpen() || gate.open() || !reader.read)
+        return t;
+    t.read = true;
+    t.build = gate.buildId();
+    t.w87 = reader.read(kRingWordYcMode);
+    RasterIn in;
+    in.want = want;
+    in.build = t.build;
+    in.w87 = t.w87;
+    in.osdOpen = ycOsdOpenFromLiveWord(reader.read(kRingWordLive));
+    in.playing = playing;
+    in.nowUs = nowUs;
+    in.cfgPath = cfgPath.c_str();
+    t.out = pollAnalogRaster(st, in);
+    return t;
 }
 
 }  // namespace misterplex::plexob

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Read a Quartus Multicorner Timing Analysis Summary and apply the Y/C bar.
 
-Bar (HDMI-EXP): pll_hdmi setup >= -0.3 ns, and every other clock's setup,
-hold, recovery and removal >= 0. N/A cells are paths that do not exist.
+Bar (HDMI-EXP): pll_hdmi setup >= PLL_BAR (default -0.3 ns), and every other
+clock's setup, hold, recovery and removal >= 0. N/A cells are paths that do not
+exist. `--pll-bar` changes ONLY the pll_hdmi setup bar. Shawn's 2026-10-17
+sign-off (stock ascal, pll_hdmi setup OK down to -3.0 ns, every other clock
+must pass) applies only when a caller passes `--pll-bar -3.0` explicitly
+(launch_yc.sh does, via YC_PLL_BAR). Values below -3.0 or above 0 are
+refused (rc 1), so a typo cannot silently loosen the gate.
 Minimum pulse width is not part of this bar.
 
 Prints RESULT.env lines on stdout. Exit 0 when the bar holds, 2 when it
@@ -25,6 +30,7 @@ from decimal import Decimal
 from pathlib import Path
 
 PLL_BAR = Decimal("-0.3")
+PLL_BAR_FLOOR = Decimal("-3.0")
 CHECKS = ("setup", "hold", "recovery", "removal")
 
 
@@ -193,6 +199,7 @@ def env_lines(values: dict[str, str]) -> str:
         "PLL_HDMI_RECOVERY",
         "PLL_HDMI_REMOVAL",
         "PLL_HDMI_TNS",
+        "PLL_BAR",
         "OTHER_SETUP",
         "OTHER_HOLD",
         "OTHER_RECOVERY",
@@ -206,7 +213,9 @@ def env_lines(values: dict[str, str]) -> str:
     return "\n".join(f"{k}={values[k]}" for k in keys if k in values)
 
 
-def evaluate(sta_text: str, log_text: str = "", rbf_path: str = "") -> tuple[dict[str, str], bool]:
+def evaluate(
+    sta_text: str, log_text: str = "", rbf_path: str = "", pll_bar: Decimal = PLL_BAR
+) -> tuple[dict[str, str], bool]:
     slack, tns = parse_summary(sta_text)
     pll, other = classify(slack)
     values: dict[str, str] = {}
@@ -220,8 +229,9 @@ def evaluate(sta_text: str, log_text: str = "", rbf_path: str = "") -> tuple[dic
     pll_tns_rows = {k: v for k, v in tns.items() if "pll_hdmi" in k.lower()}
     tns_setup, _ = worst(pll_tns_rows, 0) if pll_tns_rows else (None, "")
     values["PLL_HDMI_TNS"] = "N/A" if tns_setup is None else format(tns_setup, "f")
-    if pll_setup < PLL_BAR:
-        reasons.append(f"pll_hdmi setup {pll_setup} < {PLL_BAR}")
+    values["PLL_BAR"] = format(pll_bar, "f")
+    if pll_setup < pll_bar:
+        reasons.append(f"pll_hdmi setup {pll_setup} < {pll_bar}")
     for index, name in enumerate(CHECKS):
         value, clock = worst(other, index)
         key = f"OTHER_{name.upper()}"
@@ -281,11 +291,21 @@ def main() -> int:
     parser.add_argument("--log", default="")
     parser.add_argument("--rbf", default="")
     parser.add_argument("--map", default="")
+    parser.add_argument("--pll-bar", default=str(PLL_BAR), help="pll_hdmi setup bar in ns (default -0.3)")
     args = parser.parse_args()
+    try:
+        pll_bar = Decimal(args.pll_bar)
+        if not pll_bar.is_finite() or not (PLL_BAR_FLOOR <= pll_bar <= 0):
+            raise ValueError(f"--pll-bar {args.pll_bar} is outside {PLL_BAR_FLOOR}..0")
+    except (ArithmeticError, ValueError) as exc:
+        print("TIMING_PARSE=0")
+        print("GATE_PASS=0")
+        print(f"timing_gate: {exc}", file=sys.stderr)
+        return 1
     try:
         sta = Path(args.sta).read_text(errors="replace")
         log = Path(args.log).read_text(errors="replace") if args.log else ""
-        values, ok = evaluate(sta, log, args.rbf)
+        values, ok = evaluate(sta, log, args.rbf, pll_bar)
     except (OSError, ValueError) as exc:
         print("TIMING_PARSE=0", file=sys.stdout)
         print("GATE_PASS=0", file=sys.stdout)

@@ -38,6 +38,29 @@ constexpr uint8_t kIdleFgR = 0xE5, kIdleFgG = 0xA0, kIdleFgB = 0x0D;
 // closer than kIdleMargin px to an edge, so it cannot be cropped by overscan.
 constexpr int kIdlePhasePeriod = 1200;
 constexpr int kIdleMargin = 8;
+// Default IDLE_SCREEN=logo: still chevron for this long, then Screensaver drift.
+constexpr int64_t kIdleScreensaverAfterMs = 5 * 60 * 1000;
+
+// #326: Logo promotes to Screensaver after quietMs. Explicit screensaver/black/last
+// are unchanged. MUT_IDLE_SCREENSAVER_NEVER keeps Logo forever (C1 must fail).
+inline IdleMode effectiveIdleMode(IdleMode conf, int64_t quietMs) {
+#ifdef MUT_IDLE_SCREENSAVER_NEVER
+    (void)quietMs;
+    return conf;
+#else
+    if (conf == IdleMode::Logo && quietMs >= kIdleScreensaverAfterMs)
+        return IdleMode::Screensaver;
+    return conf;
+#endif
+}
+
+// Play, library, and the menu restart the quiet clock. A second idle publish
+// (the link hint) does not.
+inline bool idleQuietRestart(bool play, bool library, bool menu, bool linkHint = false) {
+    if (linkHint)
+        return false;
+    return play || library || menu;
+}
 
 // Triangular wave in [0, span] — a drift that reverses instead of wrapping, so
 // the mark never jumps across the screen.

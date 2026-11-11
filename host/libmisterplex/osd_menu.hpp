@@ -99,7 +99,7 @@ inline ContentResolution contentResolutionFromOsdWord(uint16_t word) {
     // Labels are product names (240p/480p/720p); width/height remain bank geom.
     // weakBitrateKbps is NOT kept equal to plexTranscodeProfiles(): 240p and 720p differ
     // (known ladder split, parked as option C; tests/unit/test_resolve.cpp pins it).
-    // See the 240p ladder split ticket (1005).
+    // See ~/review/daemon/240p-ladder-split-ticket-1005.md.
     switch ((word >> 4) & 3u) {
     case 1:
         return {640, 480, "480p", 2500};

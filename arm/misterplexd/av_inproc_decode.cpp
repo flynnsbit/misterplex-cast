@@ -7,8 +7,10 @@
 #include "libmisterplex/h264_sps.hpp"
 #include "libmisterplex/fpga_terminal.hpp"
 #include "log_redact.hpp"
+#include "av_log_redact.hpp"
 #include "av_open_opts.hpp"
 #include "ca_bundle.hpp"
+#include "http_range_avio.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -676,7 +678,7 @@ struct CompressedSyntax {
                             return out(activeField, static_cast<int64_t>(active), capRefs,
                                        "multiple active references are unsupported");
                     }
-                    // review 03:04 (p3), re-labelled by review 04:16 (n1): an active count above
+                    // FPGA Bug 03:04 (p3), re-labelled by FPGA Bug 04:16 (n1): an active count above
                     // max_num_ref_frames is legal H.264 (7.4.2.2, 7.4.3; the extra RefPicList0
                     // entries are "no reference picture", 8.2.4.2), but this decoder has only
                     // max_num_ref_frames DPB slots, so it is OUT for us, never MALFORMED. It is
@@ -1145,9 +1147,15 @@ struct AvInprocDecoder::Impl {
             avcodec_free_context(&acodec);
         if (codec)
             avcodec_free_context(&codec);
-        if (fmt)
+        if (fmt) {
+            if (rangeIo.attached())
+                fmt->pb = nullptr;
             avformat_close_input(&fmt);
+        }
+        rangeIo.reset();
     }
+
+    misterplex::httprange::AvioSession rangeIo;
 };
 
 int AvInprocDecoder::interruptThunk(void* p) {
@@ -1230,6 +1238,7 @@ bool AvInprocDecoder::openCompressed(const std::string& url,
     err.clear();
     abort_.store(0);
     av_log_set_level(AV_LOG_QUIET); // URL-bearing libav diagnostics must not expose Plex tokens.
+    misterplex::installRedactingAvLog();
     impl_ = new Impl();
     impl_->compressed = true;
     impl_->options = opts;
@@ -1264,7 +1273,12 @@ bool AvInprocDecoder::openCompressed(const std::string& url,
             av_dict_set(&options, "ca_file", ca.c_str(), 0);
     }
     ioDeadlineMs_.store(monotonicMs() + 20000);
-    const int opened = avformat_open_input(&impl_->fmt, url.c_str(), nullptr, &options);
+    const std::string openName =
+        impl_->rangeIo.attach(impl_->fmt, url, opts.headers,
+                              [this] { return interruptThunk(this) != 0; })
+            ? misterplex::httprange::probeName(url)
+            : url;
+    const int opened = avformat_open_input(&impl_->fmt, openName.c_str(), nullptr, &options);
     av_dict_free(&options);
     if (opened < 0) { err = "compressed input open: " + avErr(opened); return false; }
     impl_->pkt = av_packet_alloc();
@@ -1847,6 +1861,7 @@ bool AvInprocDecoder::open(const std::string& pathOrUrl, const AvInprocOpenOpts&
     abort_.store(0, std::memory_order_relaxed);
     impl_ = new Impl();
     av_log_set_level(AV_LOG_ERROR);
+    misterplex::installRedactingAvLog();
 
     AVDictionary* opts = nullptr;
     if (!o.headers.empty()) {
@@ -1883,7 +1898,12 @@ bool AvInprocDecoder::open(const std::string& pathOrUrl, const AvInprocOpenOpts&
     }
     impl_->fmt->interrupt_callback.callback = interruptThunk;
     impl_->fmt->interrupt_callback.opaque = this;
-    int ret = avformat_open_input(&impl_->fmt, pathOrUrl.c_str(), ifmt, &opts);
+    const std::string openName =
+        impl_->rangeIo.attach(impl_->fmt, pathOrUrl, o.headers,
+                              [this] { return interruptThunk(this) != 0; })
+            ? misterplex::httprange::probeName(pathOrUrl)
+            : pathOrUrl;
+    int ret = avformat_open_input(&impl_->fmt, openName.c_str(), ifmt, &opts);
     av_dict_free(&opts);
     if (ret < 0) {
         err = "avformat_open_input: " + avErr(ret);

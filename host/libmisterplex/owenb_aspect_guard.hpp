@@ -1,5 +1,5 @@
 #pragma once
-// OWENB-P1B 0006: the Analog Aspect default (spec Decision 1) without making it stick (review 10:08).
+// OWENB-P1B 0006: the Analog Aspect default (spec Decision 1) without making it stick (reviewer 10:08).
 // OWENB-P1B 0008: the same for the HDMI Aspect Ratio 4:3 override of a VUI-less 4:3 stream (design d.3.5).
 //
 // At a session's start: the user's menu values (word 27 OSD_ANALOG_ASPECT / OSD_ASPECT,
@@ -23,6 +23,7 @@
 // Thread: one caller at a time (the play thread, then stop() after the join); a mutex guards it.
 
 #include "owenb_osd_renderer.hpp"
+#include "picture_14_9.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -39,7 +40,22 @@ struct AspectSaved {
     unsigned aaVal = 0;
     bool ar = false;   // (0008) Aspect Ratio saved
     unsigned arVal = 0;
-    bool any() const { return aa || ar; }
+    bool vo = false;   // Video Output saved only when a caller set setVo
+    unsigned voVal = 0;
+    bool any() const { return aa || ar || vo; }
+};
+
+// REMEMBER_PICTURE: one play's Analog Aspect (and optional Aspect Ratio), asked
+// instead of the Letterbox default. Off leaves onStatus on the tip path.
+struct PictureOverride {
+    bool on = false;
+    unsigned aa = 2;
+    bool setAr = false;
+    unsigned ar = 0;
+    bool setVo = false;  // only then is VIDEO_OUTPUT in the request (Spelunkr leaves this false)
+    unsigned vo = 0;
+    bool arOnIdle = false;  // Spelunkr (SPELUNKR=1): picAr even when allowLetterbox is false
+    bool autoOnly = false;  // Automatic service defaults must not replace explicit menu choices.
 };
 
 class IAspectStore {
@@ -69,12 +85,14 @@ public:
     using IAspectStore::load;
     using IAspectStore::save;
     bool load(AspectSaved& s) override {
-        if (!has && !hasAr)
+        if (!has && !hasAr && !hasVo)
             return false;
         s.aa = has;
         s.aaVal = val;
         s.ar = hasAr;
         s.arVal = ar;
+        s.vo = hasVo;
+        s.voVal = vo;
         return true;
     }
     bool save(const AspectSaved& s) override {
@@ -82,12 +100,14 @@ public:
         val = s.aaVal;
         hasAr = s.ar;
         ar = s.arVal;
+        hasVo = s.vo;
+        vo = s.voVal;
         ++saves;
         return true;
     }
-    void erase() override { has = hasAr = false; }
-    bool has = false, hasAr = false;
-    unsigned val = 0, ar = 0, saves = 0;
+    void erase() override { has = hasAr = hasVo = false; }
+    bool has = false, hasAr = false, hasVo = false;
+    unsigned val = 0, ar = 0, vo = 0, saves = 0;
 };
 
 // "analog_aspect=N\n" and/or "aspect=M\n"; written to path.tmp then renamed. Default path (daemon):
@@ -112,6 +132,9 @@ public:
             } else if (std::sscanf(line, "aspect=%u", &x) == 1 && x <= 2) {
                 r.ar = true;
                 r.arVal = x;
+            } else if (std::sscanf(line, "video_output=%u", &x) == 1 && x <= 3) {
+                r.vo = true;
+                r.voVal = x;
             }
         }
         std::fclose(f);
@@ -130,6 +153,8 @@ public:
             ok = std::fprintf(f, "analog_aspect=%u\n", s.aaVal) > 0 && ok;
         if (s.ar)
             ok = std::fprintf(f, "aspect=%u\n", s.arVal) > 0 && ok;
+        if (s.vo)
+            ok = std::fprintf(f, "video_output=%u\n", s.voVal) > 0 && ok;
         const bool closed = std::fclose(f) == 0;
         return ok && closed && std::rename(tmp.c_str(), path_.c_str()) == 0;
     }
@@ -155,6 +180,7 @@ inline const char* aspectEndName(AspectEnd e) {
 struct AspectStats {
     unsigned letterboxRequests = 0, restores = 0, userChanged = 0, pending = 0, startRestores = 0;
     unsigned aspect43Requests = 0;   // 0008
+    unsigned pictureRequests = 0;    // REMEMBER_PICTURE / picture-mode reapply (not letterbox)
 };
 
 // 0008: what the play's first video access unit said (owenb_play.cpp sniffs it, owenb_aspect.hpp decides).
@@ -188,7 +214,32 @@ public:
         checked_ = false;
         needStream_ = needStream;
         stream_ = StreamAspect{};
+        picture_ = {};
+        spelunkrMode_ = false;
     }
+    void setSpelunkrMode(bool v) { std::lock_guard<std::mutex> g(mu_); spelunkrMode_ = v; }
+
+    // REMEMBER_PICTURE. on is false on the tip path (no per-show mode).
+    void setPicture(bool on, unsigned aa, bool setAr, unsigned ar, bool setVo = false, unsigned vo = 0,
+                    bool arOnIdle = false, bool autoOnly = false) {
+        std::lock_guard<std::mutex> g(mu_);
+        picture_.on = on;
+        picture_.aa = aa & 3u;
+        picture_.setAr = setAr;
+        picture_.ar = ar > 2u ? 0u : ar;
+        picture_.setVo = setVo;
+        picture_.vo = vo > 3u ? 0u : vo;
+        picture_.arOnIdle = arOnIdle;
+        picture_.autoOnly = autoOnly;
+    }
+    void clearPicture() {
+        std::lock_guard<std::mutex> g(mu_);
+        picture_ = {};
+        // GBE N-7: keep spelunkrMode_ across PICTURE clear; newSession/endSession reset it
+    }
+    // A menu change after the once-per-session request. No-op until that request
+    // has run, and no-op when no picture override is armed.
+    int reapplyPicture(IOverlayPort& p, const OvlStatus& s);
     void setStream(const StreamAspect& a) {
         std::lock_guard<std::mutex> g(mu_);
         if (!stream_.known)
@@ -215,7 +266,7 @@ public:
     }
     bool requested() const {
         std::lock_guard<std::mutex> g(mu_);
-        return reqAa_ || reqAr_;
+        return reqAa_ || reqAr_ || reqVo_;
     }
 
 private:
@@ -223,7 +274,8 @@ private:
         if (log_)
             log_(s);
     }
-    static int request(IOverlayPort& p, bool aa, unsigned aaVal, bool ar, unsigned arVal) {
+    static int request(IOverlayPort& p, bool aa, unsigned aaVal, bool ar, unsigned arVal, bool vo = false,
+                       unsigned voVal = 0) {
         unsigned vals[H264RING_OPT_COUNT] = {};
         unsigned mask = 0;
         if (aa) {
@@ -234,15 +286,23 @@ private:
             mask |= 1u << H264RING_OPT_ASPECT;
             vals[H264RING_OPT_ASPECT] = arVal;
         }
+        if (vo) {
+            mask |= 1u << H264RING_OPT_VIDEO_OUTPUT;
+            vals[H264RING_OPT_VIDEO_OUTPUT] = voVal;
+        }
         return p.requestSettings(mask, vals);
     }
-    static int requestSaved(IOverlayPort& p, const AspectSaved& v) { return request(p, v.aa, v.aaVal, v.ar, v.arVal); }
+    static int requestSaved(IOverlayPort& p, const AspectSaved& v) {
+        return request(p, v.aa, v.aaVal, v.ar, v.arVal, v.vo, v.voVal);
+    }
     static std::string savedText(const AspectSaved& v) {
         std::string t;
         if (v.aa)
             t += "Analog Aspect " + std::to_string(v.aaVal);
         if (v.ar)
             t += std::string(t.empty() ? "" : ", ") + "Aspect Ratio " + std::to_string(v.arVal);
+        if (v.vo)
+            t += std::string(t.empty() ? "" : ", ") + "Video Output " + std::to_string(v.voVal);
         return t;
     }
     // the core consumed request `seq` (SET_SEQ) and applied it (SET_ERR 0)
@@ -262,7 +322,12 @@ private:
     std::shared_ptr<IAspectStore> store_;
     std::function<void(const std::string&)> log_;
     bool enabled_ = true, checked_ = false, needStream_ = false;
-    bool reqAa_ = false, reqAr_ = false;   // our value is on the request word
+    bool reqAa_ = false, reqAr_ = false, reqVo_ = false;   // our value is on the request word
+    unsigned reqAaVal_ = kLetterbox;
+    unsigned reqArVal_ = kAspect43;
+    unsigned reqVoVal_ = 0;  // GH#412: unset; never default Progressive
+    PictureOverride picture_{};
+    bool spelunkrMode_ = false;  // GBE N-5: Spelunkr Interlaced letterbox
     StreamAspect stream_;
     int seq_ = 0;
     AspectStats st_;
@@ -278,13 +343,22 @@ inline void AspectGuard::onStatus(IOverlayPort& p, const OvlStatus& s, const Sle
     // a stuck value of ours is not the user's: a saved value wins over the mirror
     const unsigned userAa = pend && sv.aa ? sv.aaVal : s.osdAnalogAspect;
     const unsigned userAr = pend && sv.ar ? sv.arVal : s.osdAspect;
-    const bool wantAa = allowLetterbox && s.raster.videoOut == H264RING_VOUT_PROGRESSIVE && userAa == 0;
+    // GH#412 / GBE N-5: Spelunkr-only via spelunkrMode_ (survives PICTURE arOnIdle=false).
+    // Plex leaves spelunkrMode_ false, so behavior matches main.
+    const bool wantAaAuto = allowLetterbox && s.raster.videoOut == H264RING_VOUT_PROGRESSIVE &&
+                            userAa == 0 &&
+                            !(spelunkrMode_ && s.osdVideoOut == H264RING_VOUT_INTERLACED);
+    // 14:9 narrowed the SPS window. Fit / Crop would not show that compromise; Letterbox does.
+    // Auto and Letterbox already letterbox on a fitted raster, so they are not asked again.
+    const bool want149 = allowLetterbox && !picture_.autoOnly &&
+                         picture149ForcesLetterbox(picture149CropApplied(), userAa, s.raster.videoOut);
+    const bool wantAa = wantAaAuto || want149;
 #ifdef MUT_ASPECT43_IGNORE_USER
     const bool wantArShape = allowLetterbox && stream_.force43;   // mutant: over the user's 16:9 / 4:3 choice
 #else
     const bool wantArShape = allowLetterbox && stream_.force43 && userAr == 0;
 #endif
-    // BUG6 (owner 22:07: the squish is ONLY in Video Output Native (HDMI)): Native shows the picture at its
+    // BUG6 (Shawn 22:07: the squish is ONLY in Video Output Native (HDMI)): Native shows the picture at its
     // own pixels inside the core's raster (a 960x720 picture pillarboxed in 1280x720), so a square-sample 4:3
     // picture is already right; Aspect 4:3 would squeeze the 16:9 raster. Non-native outputs scale the
     // picture to the fitted raster and still need the 4:3.
@@ -297,8 +371,38 @@ inline void AspectGuard::onStatus(IOverlayPort& p, const OvlStatus& s, const Sle
 #else
     const bool wantAr = wantArShape;
 #endif
-    if (!wantAa && !wantAr) {
+    // REMEMBER_PICTURE off: picOn is false and the request below matches the tip.
+    const bool picOn = picture_.on && allowLetterbox;
+    const bool picAa = picOn && (!picture_.autoOnly ||
+                                (userAa == 0 && !(spelunkrMode_ && s.osdVideoOut == H264RING_VOUT_INTERLACED)));
+    // Plex: picAr stays behind allowLetterbox (idle-aspect replay unchanged).
+    // Spelunkr (SPELUNKR=1) sets arOnIdle so 4:3 still applies on idle ticks; VO stays off.
+    const bool picAr = picture_.on && picture_.setAr && (allowLetterbox || picture_.arOnIdle) &&
+                       (!picture_.autoOnly || userAr == 0);
+    const unsigned userVo = pend && sv.vo ? sv.voVal : s.osdVideoOut;
+    const bool picVo = picOn && picture_.setVo && (!picture_.autoOnly || userVo == 0);
+    const bool wantAaEff = wantAa || picAa;
+    const bool wantVoEff = picVo;
+    // BUG6: automatic stream 4:3 on Native+square43 is withheld (wantAr above).
+    // Spelunkr's Auto default also applies on Native; an explicit OSD choice wins.
+    const bool wantArEff = wantAr || picAr;
+    const unsigned aaAsk = picOn ? picture_.aa : kLetterbox;
+    const unsigned arAsk = picAr ? picture_.ar : kAspect43;
+    const unsigned voAsk = picVo ? picture_.vo : 0;
+    if (!wantAaEff && !wantArEff && !wantVoEff) {
         if (!pend)
+            return;
+        // GH#412: leftover Video Output stays off this word. Live OSD wins.
+        if (sv.vo) {
+            sv.vo = false;
+            if (sv.any())
+                store_->save(sv);
+            else {
+                store_->erase();
+                return;
+            }
+        }
+        if (!sv.any())
             return;
         // the way back from an earlier session that could not restore
         const int rc = requestSaved(p, sv);
@@ -314,31 +418,58 @@ inline void AspectGuard::onStatus(IOverlayPort& p, const OvlStatus& s, const Sle
         return;
     }
     AspectSaved ns = pend ? sv : AspectSaved{};
-    if (wantAa && !ns.aa) {
+    if (wantAaEff && !ns.aa) {
         ns.aa = true;
         ns.aaVal = userAa;
     }
-    if (wantAr && !ns.ar) {
+    if (wantArEff && !ns.ar) {
         ns.ar = true;
         ns.arVal = userAr;
     }
+    if (wantVoEff && !ns.vo) {
+        ns.vo = true;
+        ns.voVal = userVo;
+    }
+    if (!wantVoEff && ns.vo) {
+        ns.vo = false;
+        ns.voVal = 0;
+    }
     if (!store_->save(ns))
         logf("aspect: the state file did not save; restoring from memory only");
-    // one request: ours where wanted, a left-over user value back elsewhere (the word holds one request)
-    const int rc = request(p, ns.aa, wantAa ? kLetterbox : ns.aaVal, ns.ar, wantAr ? kAspect43 : ns.arVal);
+    // one request: ours where wanted, a left-over user value back elsewhere (the word holds one request).
+    // GH#412: VIDEO_OUTPUT only when this session set setVo. A leftover video_output=2 from an
+    // older Spelunkr Progressive poke must not overwrite the live Interlaced OSD.
+    const int rc = request(p, ns.aa, wantAaEff ? aaAsk : ns.aaVal, ns.ar, wantArEff ? arAsk : ns.arVal, wantVoEff,
+                           voAsk);
     if (rc > 0) {
-        reqAa_ = wantAa;
-        reqAr_ = wantAr;
+        reqAa_ = wantAaEff;
+        reqAr_ = wantArEff;
+        reqVo_ = wantVoEff;
+        reqAaVal_ = aaAsk;
+        reqArVal_ = arAsk;
+        reqVoVal_ = voAsk;
         seq_ = rc;
-        if (wantAa) {
+        if (wantAaEff) {
             ++st_.letterboxRequests;
-            logf("aspect: Analog Aspect Auto at 31 kHz progressive -> Letterbox (request " + std::to_string(rc) +
-                 "), the user's " + std::to_string(userAa) + " saved");
+            if (picOn)
+                logf("aspect: picture mode Analog Aspect " + std::to_string(aaAsk) +
+                     (picAr ? " Aspect Ratio " + std::to_string(arAsk) : std::string()) + " (request " +
+                     std::to_string(rc) + "), the user's " + std::to_string(userAa) + " saved");
+            else if (want149)
+                logf("aspect: 14:9 picture -> Letterbox (request " + std::to_string(rc) + "), the user's " +
+                     std::to_string(userAa) + " saved");
+            else
+                logf("aspect: Analog Aspect Auto at 31 kHz progressive -> Letterbox (request " + std::to_string(rc) +
+                     "), the user's " + std::to_string(userAa) + " saved");
         }
-        if (wantAr) {
+        if (wantAr && !picAr) {
             ++st_.aspect43Requests;
             logf("aspect: a VUI-less 4:3 stream with Aspect Ratio Auto -> 4:3 (request " + std::to_string(rc) +
                  "), the user's " + std::to_string(userAr) + " saved");
+        }
+        if (wantVoEff) {
+            logf("aspect: Video Output Progressive (request " + std::to_string(rc) + "), the user's " +
+                 std::to_string(userVo) + " saved");
         }
     } else {
         logf("aspect: the request failed (" + std::to_string(rc) + ")");
@@ -352,34 +483,51 @@ inline void AspectGuard::onStatus(IOverlayPort& p, const OvlStatus& s, const Sle
 inline AspectEnd AspectGuard::endSession(IOverlayPort& p, const Sleep& sleepMs, unsigned ackMs) {
     std::lock_guard<std::mutex> g(mu_);
     checked_ = false;
+    picture_ = {};
+    spelunkrMode_ = false;
     AspectSaved sv;
     if (!store_->load(sv)) {
-        reqAa_ = reqAr_ = false;
+        reqAa_ = reqAr_ = reqVo_ = false;
         return AspectEnd::Nothing;
+    }
+    if (!reqVo_ && sv.vo) {
+        sv.vo = false;
+        if (sv.any())
+            store_->save(sv);
+        else {
+            p.clearSettings();
+            store_->erase();
+            reqAa_ = reqAr_ = reqVo_ = false;
+            return AspectEnd::Nothing;
+        }
     }
 #ifdef MUT_ASPECT_NO_RESTORE
     (void)sleepMs;
     (void)ackMs;
     p.clearSettings();   // mutant: T6's behaviour -- drop the request, Letterbox sticks on the menu
     store_->erase();
-    reqAa_ = reqAr_ = false;
+    reqAa_ = reqAr_ = reqVo_ = false;
     return AspectEnd::Restored;
 #else
     const OvlStatus s = p.status();
-    if ((reqAa_ || reqAr_) && s.valid && s.session && s.setSeq == unsigned(seq_)) {
+    if ((reqAa_ || reqAr_ || reqVo_) && s.valid && s.session && s.setSeq == unsigned(seq_)) {
         // our request was consumed: an option no longer showing ours is the user's choice
-        if (reqAa_ && s.osdAnalogAspect != kLetterbox && sv.aa) {
+        if (reqAa_ && s.osdAnalogAspect != reqAaVal_ && sv.aa) {
             sv.aa = false;
             logf("aspect: the user chose Analog Aspect " + std::to_string(s.osdAnalogAspect) + " during the session: kept");
         }
-        if (reqAr_ && s.osdAspect != kAspect43 && sv.ar) {
+        if (reqAr_ && s.osdAspect != reqArVal_ && sv.ar) {
             sv.ar = false;
             logf("aspect: the user chose Aspect Ratio " + std::to_string(s.osdAspect) + " during the session: kept");
+        }
+        if (reqVo_ && s.osdVideoOut != reqVoVal_ && sv.vo) {
+            sv.vo = false;
+            logf("aspect: the user chose Video Output " + std::to_string(s.osdVideoOut) + " during the session: kept");
         }
         if (!sv.any()) {
             p.clearSettings();
             store_->erase();
-            reqAa_ = reqAr_ = false;
+            reqAa_ = reqAr_ = reqVo_ = false;
             ++st_.userChanged;
             return AspectEnd::UserChanged;
         }
@@ -389,13 +537,13 @@ inline AspectEnd AspectGuard::endSession(IOverlayPort& p, const Sleep& sleepMs, 
     if (!sv.any()) {
         p.clearSettings();
         store_->erase();
-        reqAa_ = reqAr_ = false;
+        reqAa_ = reqAr_ = reqVo_ = false;
         return AspectEnd::Restored;
     }
 #endif
     const int rc = requestSaved(p, sv);
     const bool ok = rc > 0 && waitAck(p, rc, sleepMs, ackMs);
-    reqAa_ = reqAr_ = false;
+    reqAa_ = reqAr_ = reqVo_ = false;
 #ifndef MUT_ASPECT_CLEAR_UNACKED
     if (!ok) {
         store_->save(sv);   // without the options the user took back
@@ -411,6 +559,79 @@ inline AspectEnd AspectGuard::endSession(IOverlayPort& p, const Sleep& sleepMs, 
     logf("aspect: the user's " + savedText(sv) + " restored");
     return ok ? AspectEnd::Restored : AspectEnd::Pending;
 #endif
+}
+
+inline int AspectGuard::reapplyPicture(IOverlayPort& p, const OvlStatus& s) {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!enabled_ || !picture_.on || !checked_ || !s.valid || !s.session)
+        return 0;
+    // Service defaults are applied once per session. A live menu edit wins,
+    // including when it happens to equal our temporary default.
+    if (picture_.autoOnly)
+        return 0;
+    AspectSaved sv;
+    const bool pend = store_->load(sv);
+    AspectSaved ns = pend ? sv : AspectSaved{};
+    if (!ns.aa && !reqAa_) {
+        ns.aa = true;
+        ns.aaVal = s.osdAnalogAspect;
+    }
+    const bool picAr = picture_.setAr;
+    const bool sendVo = picture_.setVo;
+    const bool picArEff = picAr;
+    const bool stream43 = stream_.force43 && !(s.raster.videoOut == H264RING_VOUT_NATIVE && stream_.square43);
+    if ((picArEff || stream43) && !ns.ar && !reqAr_) {
+        ns.ar = true;
+        ns.arVal = s.osdAspect;
+    }
+    if ((ns.aa || ns.ar) && !store_->save(ns))
+        logf("aspect: the state file did not save; restoring from memory only");
+    bool sendAr = false;
+    unsigned arOut = 0;
+    bool ownAr = false;
+    if (picArEff) {
+        sendAr = true;
+        arOut = picture_.ar;
+        ownAr = true;
+    } else if (stream43) {
+        sendAr = true;
+        arOut = kAspect43;
+        ownAr = true;
+    } else if (reqAr_ && ns.ar) {
+        sendAr = true;
+        arOut = ns.arVal;
+        ownAr = false;
+    }
+    const unsigned aaOut = picture_.aa & 3u;
+    const unsigned voOut = picture_.vo;
+    if (sendVo && !ns.vo && !reqVo_) {
+        ns.vo = true;
+        ns.voVal = s.osdVideoOut;
+        if (!store_->save(ns))
+            logf("aspect: the state file did not save; restoring from memory only");
+    }
+    const int rc = request(p, true, aaOut, sendAr, arOut, sendVo, voOut);
+    if (rc <= 0) {
+        logf("aspect: picture mode request failed (" + std::to_string(rc) + ")");
+        return rc;
+    }
+    reqAa_ = true;
+    reqAaVal_ = aaOut;
+    if (ownAr) {
+        reqAr_ = true;
+        reqArVal_ = arOut;
+    } else if (!picAr && !stream43) {
+        reqAr_ = false;
+    }
+    if (sendVo) {
+        reqVo_ = true;
+        reqVoVal_ = voOut;
+    }
+    seq_ = rc;
+    ++st_.pictureRequests;
+    logf("aspect: picture mode Analog Aspect " + std::to_string(aaOut) +
+         (sendAr ? " Aspect Ratio " + std::to_string(arOut) : std::string()) + " (request " + std::to_string(rc) + ")");
+    return rc;
 }
 
 } // namespace misterplex::owenb_osd

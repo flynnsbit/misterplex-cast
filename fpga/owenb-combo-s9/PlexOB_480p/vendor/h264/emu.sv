@@ -217,15 +217,17 @@ assign LOCKED    = locked & vid_locked;
 //   [19]      Analog Dither                  Off, On; forced off while Y/C is selected
 //   [21:20]   Analog Output                  RGB, S-Video, Composite
 //   [23:22]   NTSC Color                     NTSC, PAL60, PAL-M
-//   [24]      reserved                       later "15 kHz Raster, 480i/240p"; not in this CONF_STR
+//   [24]      Analog Raster                  480i, 240p (MPX-FORK 240p): the 15 kHz raster is the 480i field pair or
+//                                            262-line progressive 240p; only while Video Output resolves to the
+//                                            interlaced analog raster (Auto on an analog setup, or Interlaced)
 //   [25+]     free
 //
-// FEASIBILITY's O[20]-for-240p is retired. O[24] is the appended 240p bit and is
-// not driven here. Y/C is published on ring word 87 (not word 82, which is rumble):
+// FEASIBILITY's O[20]-for-240p is retired. O[24] is the appended 240p bit (MPX-FORK 240p).
+// Y/C is published on ring word 87 (not word 82, which is rumble):
 //   [3:0]   yc_mode = status[23:20]
 //   [7:4]   reserved, tied 0
-//   [8]     p240 requested (status[24]); tied 0 until that PR
-//   [9]     p240 active; tied 0 until that PR
+//   [8]     p240 requested (status[24])
+//   [9]     p240 active: the raster's last frame0 ran in 240p (std 3, progressive)
 //   [31:10] reserved, tied 0
 //   [63:32] 0
 localparam CONF_STR = {
@@ -235,17 +237,23 @@ localparam CONF_STR = {
 	"O[12:11],Refresh Rate,Auto,59.94 Hz,60 Hz,50 Hz;",
 	"O[2:1],Aspect Ratio,Auto,4:3,16:9;",
 	"H0O[4:3],Deinterlace,Weave,Bob,Blend;",
-	"h0O[7],HDMI Deinterlace,Weave,Bob;",
 	"h0O[16:15],Anti-Twitter,Auto,Off,On;",
 	"O[9:8],Analog Aspect,Auto,Fit,Letterbox,Crop;",
 	"O[19],Analog Dither,Off,On;",
 	"O[21:20],Analog Output,RGB,S-Video,Composite;",
 	"O[23:22],NTSC Color,NTSC,PAL60,PAL-M;",
+	"O[24],Analog Raster,480i,240p;",
 	"-;",
 	"R[17],Send Home to the program;",
 	"R[18],Program menu;",
 	"-;",
 	"R[0],Reset;",
+	// Main keeps a numeric cursor into the visible CONF_STR rows. Hiding HDMI
+	// Deinterlace (H1 while Analog Raster is 240p) used to sit above Analog Raster,
+	// so the same index landed on the separator and the next press was Send Home.
+	// The hideable row stays after every action: showing or hiding it does not move
+	// Analog Raster, Send Home, Program menu, or Reset.
+	"h0H1O[7],HDMI Deinterlace,Weave,Bob;",
 	"JN,A,B,X,Y,LB,RB,Back,Start,LS,RS,LT,RT;",
 	"jn,B,A,Y,X,L,R,Select,Start;",
 	"v,1;",
@@ -279,7 +287,9 @@ wire        ini_vga_scaler, ini_csync, ini_ypbpr, ini_sog, cfg_seen, cfg_wr;
 // alike, the 480p raster, or (hdmi_raster stage 2) the native raster. Assigned below the
 // display (it holds while a stream plays).
 wire  [1:0] video_out_eff;            // 1 Interlaced, 2 Progressive, 3 Native (HDMI): Auto resolved
-wire        interlaced_eff;
+wire        interlaced_eff;           // the 480i field-pair raster (0 in 240p)
+wire        p240_eff;                 // MPX-FORK 240p: the 262-line progressive 15 kHz raster (std 3 on the raster)
+wire        il_pix_sys;               // 480i or 240p: pixels of two dots, the short-field (il) reader/fit path
 // interface 0.4: the program's settings request (ring_rd's engine -> h264/osd_req.sv -> hps_io's
 // status_in / status_set: Main adopts it as if the user had chosen it)
 wire [127:0] req_status_in;
@@ -321,7 +331,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io_inst (
 	// the menu mask: bit 0 = the 480i raster is on (CONF_STR's H0 / h0 swap the in-core
 	// Deinterlace line for ascal's HDMI Bob / Weave: the menu never offers what the
 	// raster cannot do, docs/display.md S1)
-	.status_menumask ({15'd0, interlaced_eff}),
+	.status_menumask ({14'd0, p240_eff, il_pix_sys}),   // MPX-FORK F3: bit0 480i or 240p (analog 15 kHz raster), bit1 240p (hides HDMI Deinterlace)
 
 	// interface 0.6: the input, mirrored into the control block by h264/ring_in.sv
 	.joystick_0     (joystick_0), .joystick_1 (joystick_1), .joystick_2 (joystick_2),
@@ -678,6 +688,8 @@ wire        tick27 = (ce_ph == 2'd2);
 wire        ce_dot;                       // sync_gen's dot: tick27, or every clock native
 wire        v_il, v_pal;                  // the bundle (clk_vid): the raster's mode
 wire  [1:0] v_std;
+wire        v_pix_il = v_il | (v_std == 2'd3);   // MPX-FORK 240p: pixel pairs + short-field reads (v_il itself is 0 in 240p: sync_gen's progressive flag)
+wire        v_p240   = (v_std == 2'd3);   // MPX-FORK 240p (clk_vid): the reader / overlay wrap to {0,v_pos[0]}, not {0,~v_pos[0]}
 wire        v_nat;                        // ... raster_geom's geometry
 wire [11:0] v_rw, v_rh, v_l, v_nt, v_last;
 wire        v_sh_valid, v_sh_field, v_sh_parity, v_sh_single;   // ... the shown picture (disp_ctl)
@@ -751,7 +763,7 @@ wire [2:0] f0_tag;
 cdc_event_tag #(.W(3)) f0_xing (
 	.src_clk   (clk_vid),
 	.src_rst_n (vid_lock_n),
-	.src_pulse (ce_dot & frame_tick & (v_pos == 12'd0)),
+	.src_pulse (ce_dot & frame_tick & (v_pos == {11'd0, sg_mode_std == 2'd3})),   // 240p's v_pos is {line, 1}
 	.src_tag   ({sg_mode_il, sg_mode_std}),
 	.dst_clk   (clk_sys),
 	.dst_rst_n (lock_sys_n),
@@ -759,6 +771,9 @@ cdc_event_tag #(.W(3)) f0_xing (
 	.dst_tag   (f0_tag)
 );
 wire       frame0_sys = f0_sys && (f0_tag == {interlaced_eff, raster_std});
+// word 87 [9]: the raster really ran 240p (progressive, std 3) at its last frame0
+reg        p240_act_sys = 1'b0;
+always @(posedge clk_sys) if (f0_sys) p240_act_sys <= (f0_tag == 3'b011);
 
 // =========================================================================
 // The reconstruction (h264/dec/recon_top.sv), its DPB client on clk_mem, the output
@@ -1241,10 +1256,10 @@ disp_ctl disp_ctl_inst (
 wire  [1:0] fit_mode_want = (status[9:8] == 2'd1) ? 2'd2 :      // Fit
                             (status[9:8] == 2'd2) ? 2'd0 :      // Letterbox
                             (status[9:8] == 2'd3) ? 2'd1 :      // Crop
-                            interlaced_eff        ? 2'd0 :      // Auto at 480i: Letterbox
+                            il_pix_sys            ? 2'd0 :      // Auto at 480i / 240p: Letterbox
                                                     2'd3;       // Auto in Progressive: Fill (or A')
 // the raster carries a 4:3 fit (bars inside it) unless Progressive with Auto
-wire        raster_fitted = ~geom_nat & (interlaced_eff || (status[9:8] != 2'd0));   // native: never fitted
+wire        raster_fitted = ~geom_nat & (il_pix_sys || (status[9:8] != 2'd0));   // native: never fitted
 reg   [1:0] fit_mode_l = 2'd2;
 reg  [11:0] fit_dw_l = 12'd0, fit_dh_l = 12'd0;   // A': the HDMI display's shape, latched with the mode
 reg         nat_req_l = 1'b0;                     // stage 2: Video Output Native (HDMI), latched with the mode
@@ -1270,7 +1285,7 @@ always @(posedge clk_sys)
 		fit_dh_l   <= HDMI_HEIGHT;
 		nat_req_l  <= (video_out_eff == 2'd3);      // Video Output Native (HDMI), or Auto resolved to it: raster_geom decides
 	end
-wire        fit_at = at_opt_l & interlaced_eff & ~sh_field;
+wire        fit_at = at_opt_l & il_pix_sys & ~sh_field;
 wire [12:0] fit_ow, fit_oh;
 wire [13:0] fit_ox0, fit_oy0;
 wire [27:0] fit_sx, fit_sy;
@@ -1292,7 +1307,7 @@ disp_fit disp_fit_inst (
 	.nat      (geom_nat),                  // stage 2: the picture 1:1 on raster_geom's raster
 	.nat_w    (geom_rw),
 	.nat_h    (geom_rh),
-	.il       (interlaced_eff),
+	.il       (il_pix_sys),            // 480i or 240p: the fitted 480-row raster read as one short field
 	.at       (fit_at),
 	.pal      (raster_pal),
 	.area     (1'b1),                      // the Area pre-filter, always (docs/analog.md §11b, decided 2026-10-05)
@@ -1364,7 +1379,8 @@ disp_reader #(.DPB_BASE(29'h0640_0000)) disp_reader_inst (
 	.h_pos             (h_pos),
 	.v_pos             (v_pos),
 	.de_in             (pixel_en),
-	.il                (v_il),               // P6: pixels of two dots, the fields shown as they are
+	.il                (v_pix_il),           // P6: pixels of two dots, the fields shown as they are (240p: the short field)
+	.p240              (v_p240),
 	.pal               (v_pal),              // P6 step 6: the 625-line raster's line counts
 	.lines             (rast_lines),         // stage 2: the frame being scanned (native or fitted)
 	.last_line         (rast_last),
@@ -1495,7 +1511,8 @@ ovl_plane ovl_plane_inst (
 	.h_pos             (h_pos),
 	.v_pos             (v_pos),
 	.de_in             (pixel_en),
-	.il                (v_il),
+	.il                (v_pix_il),
+	.p240              (v_p240),
 	.pal               (v_pal),
 	.rast_w            (v_rw),             // (0.10) the raster the canvas is centred on (720 fitted, native's)
 	.rast_h            (v_rh),             // (hd_raster) ... its lines: the next frame's (raster_geom's)
@@ -1577,7 +1594,7 @@ always @(posedge clk_sys or negedge reset_n)
 // =========================================================================
 // The idle screen (h264/idle_bars.sv, LAT 2) and the output stage
 // =========================================================================
-wire       idle_vis = ~stream_live & ~played;
+wire       idle_vis = 1'b0;   // MPX-FORK 1023: no FPGA colour bars; the daemon's overlay owns the idle screen
 
 // Video Output's Auto (MiSTer_DVD's rule; Native added 2026-10-04 with the maintainer,
 // docs/analog.md §11): an analog TV configured in MiSTer.ini (composite_sync / ypbpr / vga_sog
@@ -1607,7 +1624,13 @@ wire [1:0] video_out_mode = status[6:5];     // 0 Auto, 1 Interlaced, 2 Progress
 assign video_out_eff  = (video_out_mode != 2'd0) ? video_out_mode :
                         analog_want_l            ? 2'd1 :
                         vga31_want_l             ? 2'd2 : 2'd3;
-assign interlaced_eff = (video_out_eff == 2'd1);
+// MPX-FORK 240p: Analog Raster 240p replaces the 480i field pair by a 262-line progressive raster
+// (sync_gen std 3, interlaced 0). It is the same analog raster (video_out_eff == 1), so the
+// reader, fit, overlay and csync keep their 480i short-field (il) path via il_pix_sys / v_pix_il,
+// while interlaced_eff (the field PAIR: disp_ctl's hold, Deinterlace, HDMI Bob) is 0.
+assign il_pix_sys     = (video_out_eff == 2'd1);
+assign p240_eff       = il_pix_sys & status[24];
+assign interlaced_eff = il_pix_sys & ~status[24];
 
 // Refresh Rate (P6 steps 5 / 6, docs/analog.md §8 / §10; decided 2026-09-29 with the
 // maintainer): 59.94 Hz, 60.00 Hz (the 525-line raster, one line in seven a dot longer:
@@ -1624,7 +1647,8 @@ always @(posedge clk_sys or negedge reset_n) begin
 	else if (rate_v && !stream_live)   std_auto_l <= rate_cls;
 end
 wire [1:0] rate_opt   = status[12:11];          // 0 Auto, 1 59.94, 2 60, 3 50 Hz
-assign raster_std     = (rate_opt == 2'd0) ? std_auto_l : (rate_opt - 2'd1);
+// 240p is its own 59.94006 Hz raster (std 3): Refresh Rate (Auto / 60 / 50) does not apply, so 240p Auto never uses 60 Hz
+assign raster_std     = p240_eff ? 2'd3 : (rate_opt == 2'd0) ? std_auto_l : (rate_opt - 2'd1);
 assign raster_pal     = (raster_std == 2'd2);
 // ---- (hd_raster) the crossings of the raster side (docs/hd_raster.md S3) ---------------------
 // clk_sys -> clk_vid: everything the raster side reads, as ONE bundle through a continuous cdc_snap
@@ -1676,7 +1700,7 @@ cdc_snap #(.W(XW_UP)) raster_up_xing (
 
 wire [7:0] idle_r, idle_g, idle_b;
 // the pixel column: in 480i a pixel is two dots (pixel repetition), h_pos counts dots
-wire [11:0] idle_x = v_il ? {1'b0, h_pos[11:1]} : h_pos;
+wire [11:0] idle_x = v_pix_il ? {1'b0, h_pos[11:1]} : h_pos;
 idle_bars idle_bars_inst (
 	.clk        (clk_vid),
 	.ce         (ce_dot),
@@ -1708,7 +1732,8 @@ vid_out vid_out_inst (
 	.ce_pix   (ce_pix),
 	.field    (field),
 	.v_pos    (v_pos),
-	.il       (v_il),
+	.il       (v_pix_il),
+	.p240     (v_p240),
 	.pal      (v_pal),
 	.pic_r    (pic_r),
 	.pic_g    (pic_g),
@@ -1842,7 +1867,7 @@ wire ar_exact   = (status[2:1] == 2'd0) && !raster_fitted && (stream_live || pla
 // raster is meant to be shown at 16:9, as a TV in its wide mode shows it, so HDMI's Auto is 16:9 there --
 // except on Main's SD modes, 720x480 and 720x576, which it sends as CEA's 16:9 VIC 3 / 18 (the AVI frame's
 // 16:9 bit set): the TV stretches that frame to 16:9 itself, so the raster FILLS it (the mode's own shape,
-// HDMI_WIDTH : HDMI_HEIGHT -- ascal treats the frame as square pixels). Found on .201 2026-10-11 with the
+// HDMI_WIDTH : HDMI_HEIGHT -- ascal treats the frame as square pixels). Found on lab 2026-10-11 with the
 // maintainer: 16:9 there gave a 720x405 window, letterboxed on the TV (docs/analog.md §5a).
 wire fit_169    = raster_fitted && (status[9:8] == 2'd1);
 reg  hdmi_sd16  = 1'b0;                        // Main's 720x480 / 720x576 HDMI modes (16:9 VIC 3 / 18)
@@ -1902,16 +1927,15 @@ wire  [5:0] st_mem_ix, st_dec_ix;
 wire [63:0] st_sys_word, st_mem_word, st_dec_word;
 // Y/C on free word 87. Word 82 stays ring_words_sys rumble. Word 88 is the MPXB
 // BUILD_ID stamp (hi32 tag, lo32 id). This PR drives [3:0] = status[23:20]
-// ({NTSC Color, Analog Output}) and ties [63:4] to 0, including the
-// later p240 bits [8] (status[24]) and [9] (p240 active). Both indexes are
+// ({NTSC Color, Analog Output}) plus the p240 bits [8] (status[24]) and [9] (p240 active); the rest tied 0. Both are
 // clk_sys, same as status, so this mux adds no CDC row.
 `ifdef MPX_PLEXOB_BUILD_ID
 wire [31:0] mpx_build_id = `MPX_PLEXOB_BUILD_ID;
 `else
-wire [31:0] mpx_build_id = 32'h0B59C11A;
+wire [31:0] mpx_build_id = 32'h0B1101C5;
 `endif
 wire [63:0] mpx_ring_sys_word =
-    (st_sys_ix == 7'd87) ? {32'd0, 28'd0, status[23:20]} :
+    (st_sys_ix == 7'd87) ? {32'd0, 22'd0, p240_act_sys, status[24], 4'd0, status[23:20]} :
     (st_sys_ix == 7'd88) ? {32'h4D505842, mpx_build_id} :
     st_sys_word;
 // interface 0.6: the input region (docs/architecture.md "Input (interface 0.6)"): hps_io's pads,

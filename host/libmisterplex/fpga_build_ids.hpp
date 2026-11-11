@@ -1,5 +1,5 @@
-// Recognised FPGA video builds (lead decision 2026-10-03 03:51; explicit
-// status layout per row: release 05:04, V3-FIT-PRECHECK-1003).
+// Recognised FPGA video builds (reviewer decision 2026-10-03 03:51; explicit
+// status layout per row: reviewer 05:04, V3-FIT-PRECHECK-1003).
 //
 // The core publishes its FPGA_VIDEO_BUILD_ID (qsf VERILOG_MACRO) in CAPS word
 // MPC4 (ddr_bitstream_reader.sv TX_CAPS, VideoCapabilities::build_id).
@@ -21,6 +21,7 @@
 // (kRetiredFpgaBuilds).
 #pragma once
 
+#include "build_id_mutants.hpp"
 #include "plx_page.hpp"
 #include "status_telemetry.hpp"
 
@@ -41,7 +42,7 @@ struct FpgaBuildInfo {
     bool byte12Echoed;   // status_in byte 12 [103:96] echoes the OSD byte (else telemetry)
     int confVersion;     // CONF_STR "v,N": 9 before the OSD menu, 10 with it
     const char* lineage; // qsf line and the RBFs known to report the ID
-    // A/V sync (avsync45, release 19:22 10/3): avTrimMs is a signed trim added to the conf
+    // A/V sync (avsync45, reviewer 19:22 10/3): avTrimMs is a signed trim added to the conf
     // AUDIO_DELAY_MS at play start (the effective delay is clamped at 0; + = audio later), so
     // the conf stays universal. avResync runs the A/V machinery of av_sync.hpp: the open-loop
     // drift compensation avDriftPpm (the audio content rate, ppm; - = audio slower, which
@@ -52,7 +53,7 @@ struct FpgaBuildInfo {
     bool avResync = false;
     double avDriftPpm = 0.0;
     // R1 host idle framebuffer (item 6 build kit 6c md5 bc95b8e1; DDR address map 9252a9a1, K1-K4
-    // folded, accepted by review 16:39): while no decoded picture is live, the core
+    // folded, accepted by FPGA Bug 16:39): while no decoded picture is live, the core
     // scans out the daemon's RGB24 idle buffers, selected by the PLXH word, so idle and browse
     // paint there instead of the I420 frame-store banks, with no YUV doorbell. A consumer must
     // also have the second WC window for the idle buffers (map K1: they sit outside the offset-0
@@ -64,7 +65,7 @@ struct FpgaBuildInfo {
     // F1 (PLEX_IDLE_FB_240P; F1-PREREG-1006 v2.1 910719de, v2.2 PLXL ba1ae917): the core turns its
     // MISTER_FB (the R1 idle buffers above, flipped by PLXH) on only while it sees the daemon's PLXL
     // beat, <PLX page> + 0x148 {hb32, 'PLXL'}. The beat thread writes PLXL only on a row with this
-    // flag and only while the core gate is open on it (review 01:30 p2). Such a core is
+    // flag and only while the core gate is open on it (FPGA Bug 01:30 p2). Such a core is
     // publish-only: it never presents a host-painted bank, so idle paints only the R1 buffers.
     bool idleBeatPlxl = false;
     // Status block byte H (status byte 6 [55:48], OSD-MENU-SPEC-1002 section 9, STATUS-BYTE-H.md;
@@ -74,7 +75,7 @@ struct FpgaBuildInfo {
     // (Plex_240p.qsf MPX_STATUS_BLOCK). False on 480i 0x4801F40A until that fit adds the block
     // (writing H would stomp first_mb_type telemetry).
     bool statusBlock = false;
-    // T-WEDGE-COUNTERS phase 1 (48FF65F2, dev/wedge-p1-1007): the build also carves a read-only
+    // T-WEDGE-COUNTERS phase 1 (48FF65F2, qwen/wedge-p1-1007): the build also carves a read-only
     // detect-only stall/wedge monitor page off the status telemetry (UIO WEDGE page, bytes 12/15),
     // so the daemon publishes it in addition to the 14-field row. Only the 0x48FF65F2 WEDGE-p1 row
     // carries this set; every other recognised row is false. `true` = the daemon may read the WEDGE page.
@@ -106,7 +107,7 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
     {0x48005D40u, "480p", kPlx300FF, false, false, 9,
      "next RC 97584eaf: RC 47cb9fb4 + LANE7-N5 (refit pending)"},
     // 45/50 MHz A/V: soak A (RBF 534cb8e7 + daemon c5334354, AUDIO_DELAY_MS=50,
-    // lab-runs/soak45-1003) measured HDMI +52.7 ms over the first 180 s (N5: +36.3) and a
+    // glass-runs/soak45-1003) measured HDMI +52.7 ms over the first 180 s (N5: +36.3) and a
     // smooth -0.874 ms/min drift (p50 +40.0, p95 66.0). Trim -45 ms puts the start near
     // +7.7 ms; -14.6 ppm of audio content rate (0.874 ms/min) cancels the drift. 50 MHz has no
     // soak yet and takes the 45 MHz numbers.
@@ -116,21 +117,21 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
     {0x48005D50u, "480p", kPlx300FF, false, false, 9,
      "N5 2b625b7c + clk_dec 50 MHz: 2b770497 (Plex_480p.qsf:178, RBF 7fdb10b9)", -45, true,
      -14.6},
-    // dec50 cut 4 (review; ID by release 00:47 10/4; row 02:14): its own ID, the 48005D50 row in
+    // dec50 cut 4 (FPGA Bug; ID by reviewer 00:47 10/4; row 02:14): its own ID, the 48005D50 row in
     // every field, including the trim, the drift compensation and the resync (as 48005D51 was).
     {0x48005D52u, "480p", kPlx300FF, false, false, 9,
-     "dec50 cut 4: DPB_SPAN_CUT 9c86d9b2 on cut 3 62c6df94 (dev/dec50-cut4); "
+     "dec50 cut 4: DPB_SPAN_CUT 9c86d9b2 on cut 3 62c6df94 (copilot/dec50-cut4); "
      "RBF s2 d53bdd17 (glass), s9 b04cbb84 (backup)", -45, true,
      -14.6},
-    // R1 + MVP-b lab line (release 16:26; re-ID 17:02 from 0x48005D47, 1 bit from 48005D45, to
+    // R1 + MVP-b lab line (reviewer 16:26; re-ID 17:02 from 0x48005D47, 1 bit from 48005D45, to
     // 0x4800A1FB, >=5 bits from every known ID, before any RBF): the 48005D45 core (4c210d99,
     // clk_dec 45 MHz) plus PLEX_HOST_IDLE_FB and PLEX_INPUT_NAV (lab qsf Plex_480p_r1.qsf), with
     // its own ID (MVP-b M4). The clocks and the audio path are 48005D45's, so are the A/V numbers.
     // Its SDRAM_DIAG word is on the 480p PLX page (0x300FF120), not 0x3007F120.
     {0x4800A1FBu, "480p", kPlx300FF, false, false, 9,
-     "R1 host idle FB + MVP-b input nav on 4c210d99 (dev/r1-idlefb-mvpb, Plex_480p_r1.qsf); "
+     "R1 host idle FB + MVP-b input nav on 4c210d99 (copilot/r1-idlefb-mvpb, Plex_480p_r1.qsf); "
      "RBF 2caa9483", -45, true, -14.6, true, true},
-    // R1 50 MHz refit (release 08:58 ID 0x4800A152, review 09:11; wQ dev/r1-refit-dec50
+    // R1 50 MHz refit (reviewer 08:58 ID 0x4800A152, FPGA Bug 09:11; wQ copilot/r1-refit-dec50
     // 45ff6daf): dec50 cut 4 (48005D52, 9c86d9b2, RBF d53bdd17) plus PLEX_HOST_IDLE_FB and
     // PLEX_INPUT_NAV. Plex_480p_r1.qsf :193 the ID, :199/:202 the macros, :284/:289/:290 clk_dec
     // M16/DIV16 (the 5D52 clock); Plex.sv :158 "v,9"; the PLX page 0x300FF000
@@ -138,98 +139,98 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
     // (Plex.sv :2171-2175, as 9c86d9b2). The decode/present path and the A/V numbers are 48005D52's.
     {0x4800A152u, "480p", kPlx300FF, false, false, 9,
      "R1 host idle FB + MVP-b input nav, clk_dec 50 MHz, on dec50 cut 4 9c86d9b2 (RBF d53bdd17): "
-     "dev/r1-refit-dec50 45ff6daf (Plex_480p_r1.qsf); RBF s2 daf64dc3", -45, true,
+     "copilot/r1-refit-dec50 45ff6daf (Plex_480p_r1.qsf); RBF s2 daf64dc3", -45, true,
      -14.6, true, true},
-    // Fixes refit (release 10:44 ID 0x48009E36, review 10:45; wQ ea4ca1e0, RBF s2 c74cf4dc, review 12:30):
+    // Fixes refit (reviewer 10:44 ID 0x48009E36, FPGA Bug 10:45; wQ ea4ca1e0, RBF s2 c74cf4dc, Bug 12:30):
     // 4800A152 + BANK2-ANALOG F-a (PLEX_FS_BANK3) + s11 fix (a) PLEX_S11_GATHER + analog idle blank (iii)
     // PLEX_ANALOG_IDLE_BLANK. Plex_480p_r1.qsf :199 the ID, :162 PLEX_PRESENT_480P, :205/:208 the R1
     // macros, :229 PLEX_480P_LEAN, :290/:295/:296 clk_dec M16/DIV16; Plex.sv :158 "v,9"; the PLX page
     // 0x300FF000 (ddr_frame_layout_params.svh :30/:34); bytes 15 and 12 telemetry (Plex.sv :2194-2199,
     // byte-identical to 45ff6daf :2171-2176). The daemon ABI is A152's (the PLXD [36]/[37] bits are not
-    // decoded, review 10:06), so every field but the ID and the lineage is 4800A152's.
+    // decoded, FPGA Bug 10:06), so every field but the ID and the lineage is 4800A152's.
     {0x48009E36u, "480p", kPlx300FF, false, false, 9,
      "R1 + F-a bank-2 analog + s11 gather + analog idle blank, clk_dec 50 MHz: fixes head "
      "ea4ca1e0 (Plex_480p_r1.qsf); RBF s2 c74cf4dc", -45, true, -14.6, true, true},
-    // P_PART port on 9E36 (release 10/05; ID 0x48002731 adopted by review 16:41 from w9's idsearch,
+    // P_PART port on 9E36 (reviewer 10/05; ID 0x48002731 adopted by FPGA Bug 16:41 from w9's idsearch,
     // >= 7 bits from every known ID): 48009E36 + PLEX_P_PART_PRODUCT (P16x8/P8x16/P8x8, the
-    // dev/480p-ppart-m10k 73d46ad7 RTL merged at ccea7d23). dev/ppart-9e36 9801dad2
+    // copilot/480p-ppart-m10k 73d46ad7 RTL merged at ccea7d23). copilot/ppart-9e36 9801dad2
     // Plex_480p_r1.qsf :207 the ID, :72 PLEX_P_PART_PRODUCT, :164 PLEX_PRESENT_480P, :237 PLEX_480P_LEAN.
     // fpga/ differs from ea4ca1e0 only in h264_mb_ctrl.sv, h264_inter_pred.sv and the qsf; the macro is
     // used under rtl/ only, so Plex.sv ("v,9", PLX page 0x300FF000, bytes 15/12 telemetry,
     // VIDEO_FUNCTIONAL_FEATURES :1054-1057) is 9E36's and every field but the ID and the lineage is 48009E36's.
-    // SUPERSEDED by 0x48003ECB, never shipped (review 18:42, review 18:42): kept as an inert accept row at
-    // the base of the canon stack. No RBF carries this ID, and no tree with it active may be fitted (release
+    // SUPERSEDED by 0x48003ECB, never shipped (reviewer 18:42, FPGA Bug 18:42): kept as an inert accept row at
+    // the base of the canon stack. No RBF carries this ID, and no tree with it active may be fitted (reviewer
     // gates fits). 48005D46 (5D45 + P_PART) stays must-refuse.
     {0x48002731u, "480p", kPlx300FF, false, false, 9,
      "R1 + F-a bank-2 analog + s11 gather + analog idle blank + P_PART (P16x8/P8x16/P8x8), clk_dec "
-     "50 MHz: dev/ppart-9e36 9801dad2 (Plex_480p_r1.qsf); no RBF yet", -45, true, -14.6, true, true},
-    // Deblock fit (lineage label "9E3x"; ID 0x4800C88F per review 16:41, from w9's 16:40 search: min
+     "50 MHz: copilot/ppart-9e36 9801dad2 (Plex_480p_r1.qsf); no RBF yet", -45, true, -14.6, true, true},
+    // Deblock fit (lineage label "9E3x"; ID 0x4800C88F per FPGA Bug 16:41, from w9's 16:40 search: min
     // Hamming 7 vs every known ID, 9 from 48009E36, 13 from P_PART's 48002731): 48009E36 (ea4ca1e0) +
-    // the lane7 in-loop deblock DEBLOCK_EN, dev/lane7-deblock-9e36 7cb897b7. Plex_480p_r1.qsf :204 the
+    // the lane7 in-loop deblock DEBLOCK_EN, copilot/lane7-deblock-9e36 7cb897b7. Plex_480p_r1.qsf :204 the
     // ID, :218 DEBLOCK_EN; never with PLEX_P_PART_PRODUCT. CAPS adds Deblock (1u << 6;
     // VIDEO_FUNCTIONAL_FEATURES 0x0000e1ff), and deblocked streams need MPX_H264_FILTER=on. Every field
     // but the ID and the lineage is 48009E36's. Fit of record: 7cb897b7 seed 9 (sweep59), RBF 5bdd22da
-    // (review 18:39 fit-record ACK; seeds 5 b592ff44 and r2 s2 f579994c are quarantined NEGSLACK).
+    // (FPGA Bug 18:39 fit-record ACK; seeds 5 b592ff44 and r2 s2 f579994c are quarantined NEGSLACK).
     {0x4800C88Fu, "480p", kPlx300FF, false, false, 9,
-     "9E36 + lane7 in-loop deblock (DEBLOCK_EN), clk_dec 50 MHz: dev/lane7-deblock-9e36 "
+     "9E36 + lane7 in-loop deblock (DEBLOCK_EN), clk_dec 50 MHz: copilot/lane7-deblock-9e36 "
      "7cb897b7 (Plex_480p_r1.qsf); RBF s9 5bdd22da", -45, true, -14.6, true, true},
-    // P_PART ship build (lineage label "9E3x"; ID 0x48003ECB per review 18:39, from w9's idsearch3 a607a103:
+    // P_PART ship build (lineage label "9E3x"; ID 0x48003ECB per FPGA Bug 18:39, from w9's idsearch3 a607a103:
     // the only 0x4800xxxx id at min Hamming 7 vs the 65-id set, 9 from 48009E36 and 48002731, 8 from 4800C88F):
-    // 48002731 + F-PPART-SUB8 path R (review 18:16): h264_mb_ctrl H_SUB refuses P sub_mb_type != 0 with
-    // decode_error 22 (dev/ppart-r-sub8 ce74cb00; RTLINV tripwire cb676640; ID commit f32947c5,
+    // 48002731 + F-PPART-SUB8 path R (reviewer 18:16): h264_mb_ctrl H_SUB refuses P sub_mb_type != 0 with
+    // decode_error 22 (copilot/ppart-r-sub8 ce74cb00; RTLINV tripwire cb676640; ID commit f32947c5,
     // Plex_480p_r1.qsf :212 the ID, :72 PLEX_P_PART_PRODUCT, :164 PLEX_PRESENT_480P, :242 PLEX_480P_LEAN).
     // The refusal is under rtl/ only, so every field but the ID and the lineage is 48009E36's (as 48002731's).
     // A sub-8x8 stream ends the session on the MVPS error (media_player :3483-3485); nothing partial is shown.
     {0x48003ECBu, "480p", kPlx300FF, false, false, 9,
      "R1 + F-a bank-2 analog + s11 gather + analog idle blank + P_PART (P16x8/P8x16/P8x8; sub-8x8 refused, "
-     "decode_error 22), clk_dec 50 MHz: dev/ppart-r-sub8 f32947c5 (Plex_480p_r1.qsf); no RBF yet",
+     "decode_error 22), clk_dec 50 MHz: copilot/ppart-r-sub8 f32947c5 (Plex_480p_r1.qsf); no RBF yet",
      -45, true, -14.6, true, true},
-    // Track B (tonight 2026-10-06; ID 0x480058BC: release 17:28 with review 17:28; min Hamming 6 over the origin
+    // Track B (tonight 2026-10-06; ID 0x480058BC: reviewer 17:28 with FPGA Bug 17:28; min Hamming 6 over the origin
     // and crew IDs, the most any 0x4800xxxx ID reaches; the local-only S1 SPS-crop lab row 0x480051AC, 3 bits away,
     // must never ship while this row is live): C88F 7cb897b7 + fix21 43f22ffd (store only) + the read-only Status
-    // block (MPX_STATUS_BLOCK; 029A's 8cdd8cfa RTL verbatim), dev/c88f-029a-status-side cb1e5f8b,
+    // block (MPX_STATUS_BLOCK; 029A's 8cdd8cfa RTL verbatim), copilot/c88f-029a-status-side cb1e5f8b,
     // Plex_480p_r1.qsf :207 the ID, :221 DEBLOCK_EN, :227/:228 MPX_STATUS_BLOCK + rtl/plex_status_block.sv.
     // Status byte 6 [55:48] is H (the daemon's heartbeat; H[7] the core's Running), no longer first_mb_type; the
     // CONF_STR stays "v,9" and bytes 15/12 stay telemetry. Every field but the ID, the lineage and statusBlock is
     // 4800C88F's: idleBeatPlxl (13th) false, statusBlock (14th) true.
     {0x480058BCu, "480p", kPlx300FF, false, false, 9,
-     "C88F + fix21 + read-only Status block (MPX_STATUS_BLOCK), clk_dec 50 MHz: dev/c88f-029a-status-side "
+     "C88F + fix21 + read-only Status block (MPX_STATUS_BLOCK), clk_dec 50 MHz: copilot/c88f-029a-status-side "
      "cb1e5f8b (Plex_480p_r1.qsf); no RBF yet",
      -45, true, -14.6, true, true, false, true},
-    // D-PP1 joint (release 20:28 ID 0x480094DD, review 20:28 CLEAR; wW 9bb4fdde, min Hamming 7 vs
+    // D-PP1 joint (reviewer 20:28 ID 0x480094DD, FPGA Bug 20:28 CLEAR; wW 9bb4fdde, min Hamming 7 vs
     // recognised+retired). C88F 43f22ffd (in-loop deblock + fix21) + 3ECB P_PART (ea4ca1e0..f32947c5)
     // + P1 PLEX_MB_PLANE_ONLY + partitioned-bS that lifts the DEBLOCK_EN x PLEX_P_PART_PRODUCT guard.
     // Plex_480p_r1.qsf @01d2e473 :209 the ID, :72 PLEX_P_PART_PRODUCT, :223 DEBLOCK_EN, :215/:218 R1
     // macros, :244 PLEX_480P_LEAN, :305/:310/:311 clk_dec M16/DIV16. No MPX_STATUS_BLOCK. Every field
     // but the ID and the lineage is 4800C88F's (hostIdleFb/inputNav true, statusBlock false). RBF s3
-    // 3f5213ab (review 00:13/00:14 fit CLEAR). g1 CAPS 0x0000E1FF / 640x480 / max_au 0x20000 (same features
+    // 3f5213ab (Bug 00:13/00:14 fit CLEAR). g1 CAPS 0x0000E1FF / 640x480 / max_au 0x20000 (same features
     // word as C88F; P_PART is not a CAPS bit).
     {0x480094DDu, "480p", kPlx300FF, false, false, 9,
      "D-PP1 joint: C88F 43f22ffd + 3ECB P_PART + P1 + partitioned-bS, clk_dec 50 MHz: "
-     "dev/dpp1-joint-1006 01d2e473 (Plex_480p_r1.qsf); RBF s3 3f5213ab",
+     "copilot/dpp1-joint-1006 01d2e473 (Plex_480p_r1.qsf); RBF s3 3f5213ab",
      -45, true, -14.6, true, true},
     // T-DPP1-STATUS joint (tonight 2026-10-07; ID 0x48018AE0, min Hamming 8 over the fleet): the
     // D-PP1 94DD core (C88F 43f22ffd + 3ECB P_PART + P1 + partitioned-bS; 01d2e473, RBF 3f5213ab)
     // with the 029A read-only Status block on top (MPX_STATUS_BLOCK; the 8cdd8cfa RTL verbatim),
-    // dev/dpp1-status-1007 e7a38f4a on the menu-clean 94DD base bdf3dec4e. Plex_480p_r1.qsf: the
+    // qwen/dpp1-status-1007 e7a38f4a on the menu-clean 94DD base bdf3dec4e. Plex_480p_r1.qsf: the
     // ID; PLEX_P_PART_PRODUCT; DEBLOCK_EN; the R1 macros; PLEX_480P_LEAN; MPX_STATUS_BLOCK=1 and
     // rtl/plex_status_block.sv (no MPX_OSD / MPX_STATUS_SET_ARM). Status byte 6 [55:48] is H (the
     // daemon's heartbeat; H[7] the core's Running); the CONF_STR stays "v,9" and bytes 15/12 stay
     // telemetry. Every field but the ID, the lineage and statusBlock is 4800C88F's: idleBeatPlxl
     // (13th) false, statusBlock (14th) true.
     {0x48018AE0u, "480p", kPlx300FF, false, false, 9,
-     "D-PP1 joint + read-only Status block (MPX_STATUS_BLOCK), clk_dec 50 MHz: dev/dpp1-status-1007 "
+     "D-PP1 joint + read-only Status block (MPX_STATUS_BLOCK), clk_dec 50 MHz: qwen/dpp1-status-1007 "
      "e7a38f4a (Plex_480p_r1.qsf); no RBF yet",
      -45, true, -14.6, true, true, false, true},
     // T-WEDGE-COUNTERS phase 1 (ID 0x48FF65F2, min Hamming 13 over the fleet): the 48018AE0 D-PP1/94DD
     // status-block core with the detect-only stall/wedge monitor on top (PLEX_WEDGE_MON=1, select
-    // status[119], UIO WEDGE page bytes 12/15), dev/wedge-p1-1007 0a4c5f8fce0 on the wedge-p1 branch
-    // from the tip of dev/dpp1-status-1007. Same Plex_480p_r1.qsf :214 BUILD_ID, same 480p v2 layout
+    // status[119], UIO WEDGE page bytes 12/15), qwen/wedge-p1-1007 0a4c5f8fce0 on the wedge-p1 branch
+    // from the tip of qwen/dpp1-status-1007. Same Plex_480p_r1.qsf :214 BUILD_ID, same 480p v2 layout
     // (PLEX_480P_LEAN=1, no OSD echo, no bytes 15/12 echo). Every field is 48018AE0's except the new
     // wedgePage flag (15th) true: the counters are read-only side-outputs off the status telemetry (no
     // status-block byte rewrite), so the daemon owns the WEDGE page read/publish. FIT CLOSED s3 3324fcbc.
     {0x48FF65F2u, "480p", kPlx300FF, false, false, 9,
-     "detect-only stall/wedge counters on the D-PP1/18AE0 status-block core: dev/wedge-p1-1007 "
+     "detect-only stall/wedge counters on the D-PP1/18AE0 status-block core: qwen/wedge-p1-1007 "
      "0a4c5f8fce0 (Plex_480p_r1.qsf:214, PLEX_WEDGE_MON=1, select status[119], UIO WEDGE page bytes 12/15, "
      "read-only side-outputs); 480p v2 PLEX_480P_LEAN=1, no OSD echo; RBF s3 3324fcbc",
      -45, true, -14.6, true, true, false, true, true},
@@ -254,44 +255,44 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
     // 48C5385C + plex_daemon_down_osd both BUILD_IDs (239388c6b / 83413fc30). Same v2 / A/V /
     // statusBlock / spsRelaxNvenc as v10. CLOSED seed 5: 36844/41910 (88%), setup 0.374,
     // hold 0.102, CDC 0, md5 6365a3d6. Never reuse 0x48C5385C. kSelectedCoreId480p stays
-    // prod 0x487A1BD1 while owner tests.
+    // prod 0x487A1BD1 while Shawn tests.
     {0x48C51FF1u, "480p", kPlx300FF, false, false, 9,
-     "48C5385C + pairing overlay both BUILD_IDs (dev/analog-v11-pair-osd-1014 83413fc30, parent 239388c6b, "
+     "48C5385C + pairing overlay both BUILD_IDs (grok/analog-v11-pair-osd-1014 83413fc30, parent 239388c6b, "
      "Plex_480p_r1.qsf 32'h48C51FF1); 480p v2 PLEX_480P_LEAN=1, analog VGA on; RBF s5 6365a3d6",
      -45, true, -14.6, true, true, false, true, true, true},
     // Analog v12 HDMI daemon-down (ID 0x48CFEE31, Hamming 9 vs 0x48C51FF1, 12 vs 0x48C5385C):
     // 48C51FF1 + FB_FORCE_BLANK gated by FB_EN so ascal does not zero HDMI when the
     // native plex_daemon_down_osd is on VGA_* (F017 480p.jpg max=2). Same v2 / A/V /
     // statusBlock / spsRelaxNvenc / hostIdleFb as v11. Never reuse 0x48C51FF1.
-    // kSelectedCoreId480p stays prod 0x487A1BD1 while owner tests. CLOSED seed 5:
+    // kSelectedCoreId480p stays prod 0x487A1BD1 while Shawn tests. CLOSED seed 5:
     // 36794/41910 (88%), setup 0.097, hold 0.056, CDC 0, md5 052990c6.
     {0x48CFEE31u, "480p", kPlx300FF, false, false, 9,
-     "48C51FF1 + HDMI FB_FORCE_BLANK gated by FB_EN (dev/analog-v12-hdmi-osd-1014, "
+     "48C51FF1 + HDMI FB_FORCE_BLANK gated by FB_EN (grok/analog-v12-hdmi-osd-1014, "
      "Plex_480p_r1.qsf 32'h48CFEE31); 480p v2 PLEX_480P_LEAN=1, analog VGA on; RBF s5 052990c6",
      -45, true, -14.6, true, true, false, true, true, true},
-    // High core F057 CLOSED (Plex_high.qsf BUILD_ID 0x48A64AED, dev/high-next-rbf-1014
+    // High core F057 CLOSED (Plex_high.qsf BUILD_ID 0x48A64AED, grok/high-next-rbf-1014
     // bd2c4fbd4). QSF: MPX_STATUS_BLOCK, PLEX_WEDGE_MON, PLEX_INPUT_NAV, CONF_STR v,9.
     // PLEX_HOST_IDLE_FB is commented out. Min Hamming 9. Not selected.
     // kSelectedCoreId480p stays 0x487A1BD1. Seed 5 setup +0.152 hold +0.106 CDC 0, md5 353e7c6d.
     {0x48A64AEDu, "480p", kPlx300FF, false, false, 9,
-     "Plex_high.qsf 32'h48A64AED (dev/high-next-rbf-1014 bd2c4fbd4); High/CABAC; "
+     "Plex_high.qsf 32'h48A64AED (grok/high-next-rbf-1014 bd2c4fbd4); High/CABAC; "
      "status block, wedge, input nav; no host idle FB; RBF s5 353e7c6d; not selected",
      0, false, 0.0, false, true, false, true, true, false, true},
-    // 480p-prod NVENC relax (ID 0x48110015, dev fit df08dbe1e). Same daemon fields as
+    // 480p-prod NVENC relax (ID 0x48110015, grok fit df08dbe1e). Same daemon fields as
     // prod 0x487A1BD1 except spsRelaxNvenc. kSelectedCoreId480p stays 0x487A1BD1.
     // CLOSED seed 5: setup 0.430, hold 0.176. RBF md5 532e5456. Not a High core.
     {0x48110015u, "480p", kPlx300FF, false, false, 9,
      "487A1BD1 + sps_parser NVENC relax (df08dbe1e, Plex_480p_r1.qsf BUILD_ID 0x48110015); "
      "480p v2 PLEX_480P_LEAN=1, analog VGA on; RBF s5 532e5456; not selected",
      -45, true, -14.6, true, true, false, true, true, true},
-    // T-ASCAL-FOLD 48032F84 (dev/ascal-fold-1007, 6b3832ac3): the 480094DD row, the ID and lineage
+    // T-ASCAL-FOLD 48032F84 (qwen/ascal-fold-1007, 6b3832ac3): the 480094DD row, the ID and lineage
     // only different: the ascal 4-cone fold (cones A/B/C-h/C) onto the D-PP1 core, same 480p r1 qsf
     // (BUILD_ID alone), same PLX page and A/V tracking row; no status block; no RBF yet (fit pending).
     {0x48032F84u, "480p", kPlx300FF, false, false, 9,
      "ascal 4-cone fold onto the D-PP1 94DD core (C88F 43f22ffd + 3ECB P_PART + P1 + partitioned-bS), "
-     "clk_dec 50 MHz (M16/C16): dev/ascal-fold-1007 6b3832ac3 (Plex_480p_r1.qsf); no RBF yet",
+     "clk_dec 50 MHz (M16/C16): qwen/ascal-fold-1007 6b3832ac3 (Plex_480p_r1.qsf); no RBF yet",
      -45, true, -14.6, true, true},
-    // T-ASCAL-FOLD-SYNC 48038D9A (dev/asc-sync-baaeff6-1007, 99fe93e1e): the 48032F84 row, the ID
+    // T-ASCAL-FOLD-SYNC 48038D9A (qwen/asc-sync-baaeff6-1007, 99fe93e1e): the 48032F84 row, the ID
     // and lineage only different: the same 4-cone fold (A + B + C-h + C) but onto the E-port
     // (baaeff6) ascal — the upstream o_state vsync-reset (e759585c902) folded under cone A, proven
     // == plain-fold (6b3832ac3) + the 16-line E-port delta and == bchc + cone A (tb/asc-fold-proof).
@@ -299,7 +300,7 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
     // no RBF yet (fit pending).
     {0x48038D9Au, "480p", kPlx300FF, false, false, 9,
      "ascal 4-cone fold (A+B+C-h+C) onto the 94DD core, E-port ascal (= bchc+coneA ="
-     " plain-fold+E-port): dev/asc-sync-baaeff6-1007 99fe93e1e (Plex_480p_r1.qsf); no RBF yet",
+     " plain-fold+E-port): qwen/asc-sync-baaeff6-1007 99fe93e1e (Plex_480p_r1.qsf); no RBF yet",
      -45, true, -14.6, true, true},
     {0x4800F40Au, "480p", kPlx300FF, false, false, 9,
      "F40A line, clk_dec 40 MHz: 8c4c83f8 (RBF 9dcba0ba)"},
@@ -309,22 +310,22 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
     {0x2400F40Bu, "240p", kPlx300FF, true, true, 10,
      "240p OSD line, one fit: OSD menu + [127:120] echo fix c4188b00 + the later handshake; "
      "ID e6493329 (Plex_240p.qsf:194, MPX_OSD_V10 :219 at 73de0211; gate 1c537e0f); no RBF yet"},
-    // F1 ship (A) (review 12:45): the 240p v3 line c4188b00 (the 2400F40B status layout v3: bytes 15/12
-    // echoed, "v,10") plus PLEX_IDLE_FB_240P and MISTER_FB, no redraw. ID 24003997: release 12:46 (min
+    // F1 ship (A) (reviewer 12:45): the 240p v3 line c4188b00 (the 2400F40B status layout v3: bytes 15/12
+    // echoed, "v,10") plus PLEX_IDLE_FB_240P and MISTER_FB, no redraw. ID 24003997: reviewer 12:46 (min
     // Hamming 9 vs 74 IDs). The lab F1 ID 24000EFD (the redraw line + F1) is retired below.
     {0x24003997u, "240p", kPlx300FF, true, true, 10,
-     "F1 240p idle FB (A): 240p v3 c4188b00 + PLEX_IDLE_FB_240P (dev/f1-ship-240p-c4188b00, "
+     "F1 240p idle FB (A): 240p v3 c4188b00 + PLEX_IDLE_FB_240P (copilot/f1-ship-240p-c4188b00, "
      "Plex_240p.qsf FPGA_VIDEO_BUILD_ID + MPX_STATUS_BLOCK); RBF s5 9df56ef3 (8add8de1)",
      0, false, 0.0, true, false, true, true},
-    // 24F1A2C4 (dev/240p-ppart-osd-1014 57beec621): F1 24003997 + PLEX_P_PART_PRODUCT
-    // (remote PMS epoch 20) + daemon-down/pairing OSD + plex_fb_en_hold + sequential MC_WIDE
+    // 24F1A2C4 (grok/240p-ppart-osd-1014 57beec621): F1 24003997 + PLEX_P_PART_PRODUCT
+    // (reviewer epoch 20) + daemon-down/pairing OSD + plex_fb_en_hold + sequential MC_WIDE
     // + analog P1 plane-only + analog COLRAM-under-P_PART COL_MV4. Hamming 12 vs 0x48018AE0.
     // CLOSED seed 5: 37054/41910 (88%), setup 0.009, hold 0.118, CDC 0, md5 247b062f.
     {0x24F1A2C4u, "240p", kPlx300FF, true, true, 10,
      "F1 240p P_PART+OSD+FB-hold+MC_WIDE+P1+COLRAM: 24003997 + PLEX_P_PART_PRODUCT + plex_daemon_down_osd + "
-     "plex_fb_en_hold (dev/240p-ppart-osd-1014 57beec621, Plex_240p.qsf 32'h24F1A2C4); RBF s5 247b062f",
+     "plex_fb_en_hold (grok/240p-ppart-osd-1014 57beec621, Plex_240p.qsf 32'h24F1A2C4); RBF s5 247b062f",
      0, false, 0.0, true, false, true, true},
-    // 240p-prod NVENC relax (ID 0x24A10026, dev fit caa273c52). Same daemon fields as
+    // 240p-prod NVENC relax (ID 0x24A10026, grok fit caa273c52). Same daemon fields as
     // selected 0x24F1A2C4 except spsRelaxNvenc. kSelectedCoreId240p stays 0x24F1A2C4.
     // CLOSED seed 5: setup 0.444, hold 0.109. RBF md5 a39c2808. Not a High core.
     {0x24A10026u, "240p", kPlx300FF, true, true, 10,
@@ -341,13 +342,13 @@ inline constexpr FpgaBuildInfo kRecognisedFpgaBuilds[] = {
      "525ef6c5 (b594453b = 1c537e0f on d2b3cb03), v,10 with [127:120] and [103:96]; "
      "ID Plex_480i.qsf:185 (FPGA_VIDEO_BUILD_ID), "
      "MPX_OSD_V10 :230 at 525ef6c5"},
-    // 48F14A0B (dev/480i-ppart-osd-1014 2ad700e7a): 4801F40A + PLEX_P_PART_PRODUCT
-    // (remote PMS epoch 20) + daemon-down/pairing OSD + MPX_STATUS_BLOCK + sequential MC_WIDE
+    // 48F14A0B (grok/480i-ppart-osd-1014 2ad700e7a): 4801F40A + PLEX_P_PART_PRODUCT
+    // (reviewer epoch 20) + daemon-down/pairing OSD + MPX_STATUS_BLOCK + sequential MC_WIDE
     // + analog P1 plane-only + analog COLRAM-under-P_PART COL_MV4. Hamming 9 vs 0x4800C88F.
     // CLOSED seed 5: 39010/41910 (93%), setup 0.007, hold 0.091, CDC 0, md5 203158fe.
     {0x48F14A0Bu, "480i", kPlx300FF, true, true, 10,
      "480i P_PART+OSD+statusBlock+MC_WIDE+P1+COLRAM: 4801F40A + PLEX_P_PART_PRODUCT + plex_daemon_down_osd + "
-     "MPX_STATUS_BLOCK (dev/480i-ppart-osd-1014 2ad700e7a, Plex_480i.qsf 32'h48F14A0B); RBF s5 203158fe",
+     "MPX_STATUS_BLOCK (grok/480i-ppart-osd-1014 2ad700e7a, Plex_480i.qsf 32'h48F14A0B); RBF s5 203158fe",
      0, false, 0.0, false, false, false, true},
     // 480i lab (c078/c136 Plex_480i_lab.qsf): FPGA_VIDEO_BUILD_ID 32'h48C078E2, same macros as
     // the 240p lab, PLEX_DECODE_480P off. Hamming 8 vs 0x48003ECB. Product 480i stays 4801F40A
@@ -373,9 +374,27 @@ inline constexpr PlexObBuildRow kPlexObBuildRows[] = {
      "(Y/C: O[21:20] analog, O[23:22] NTSC color; O[24] reserved for 240p; "
      "ring word 87 [3:0]=status[23:20], [9:4] tied 0); ring_in restored; "
      "dead fit 0x0B59C119 is not this id; shipped PlexOB RBF md5 c8b34604"},
+    {0x0BFCE8C5u,
+     "PlexOB Y/C word 87, idle_vis=0",
+     "fpga/owenb-combo-s9/PlexOB_480p/vendor/H264.qsf MPX_PLEXOB_BUILD_ID 32'h0BFCE8C5 "
+     "(idle_vis=0, rtl/owenb-idle0-f12-1023; same Y/C map as 0x0B59C11A: O[21:20] analog, "
+     "O[23:22] NTSC color; ring word 87 [3:0]=status[23:20]); RBF md5 <pending gated fit>; "
+     "rollback is 0x0B59C11A / c8b34604"},
+    {0x0B2403A7u,
+     "PlexOB Y/C word 87, 240p",
+     "240p option O[24] inside the PlexOB core (fit artifact plexob-yc-0b2403a7): same Y/C map and ring as 0x0B59C11A; "
+     "shipped RBF md5 ecae698f; rollback is 0x0B59C11A / c8b34604"},
+    {0x0B1101C5u,
+     "MiSTerPlex 240p+ss1c",
+     "BUILD_ID 0x0B1101C5; installed as MiSTerPlex.rbf; source 5588134126b965c8095eb2fa7cf3655f958579da; "
+     "RBF md5 96eb13d2; seed 10; 0x0B2403A7 stays accepted"},
 };
 
 inline const PlexObBuildRow* recognisedPlexObBuildRow(uint32_t id) {
+    if (buildIdMutRejects(id))
+        return nullptr;
+    if (buildIdMutAccepts(id))
+        return &kPlexObBuildRows[0];
     for (const PlexObBuildRow& b : kPlexObBuildRows) {
         if (b.id == id)
             return &b;
@@ -395,8 +414,8 @@ inline constexpr FpgaBuildRetired kRetiredFpgaBuilds[] = {
      "s2 cc7b6e66 (v3 RTL behind a v2 ID), so the layout cannot be known; 480i plays as 4801F40A "
      "(94cdeef9 successor, merged OSD layout), and cc7b6e66 glasses on daemon dd0bcb08 only"},
     {0x24000EFDu,
-     "F1 lab ID: the 2400F40C redraw line 35cfd26e + PLEX_IDLE_FB_240P (RBF ca0afbe4, lab only, review "
-     "09:16); the ship build is 24003997 (240p v3 c4188b00 + F1, review 12:45)"},
+     "F1 lab ID: the 2400F40C redraw line 35cfd26e + PLEX_IDLE_FB_240P (RBF ca0afbe4, lab only, FPGA Bug "
+     "09:16); the ship build is 24003997 (240p v3 c4188b00 + F1, reviewer 12:45)"},
 };
 
 inline const FpgaBuildInfo* recognisedFpgaBuild(uint32_t id) {

@@ -1,4 +1,19 @@
 #include "plex_resolve.hpp"
+#include "remote_start_probe.hpp"
+#include "libmisterplex/track_select.hpp"
+#include "libmisterplex/embedded_text_part.hpp"
+#include "libmisterplex/opensubs_fallback.hpp"
+#include "libmisterplex/remote_h264_transcode.hpp"
+#include "libmisterplex/ob_decode_envelope.hpp"
+#include "log_redact.hpp"
+#include "libmisterplex/burn_subs_fix.hpp"
+#include "libmisterplex/remember_tracks.hpp"
+#include "libmisterplex/scrub_thumbs.hpp"
+#include "ca_bundle.hpp"
+#include "libmisterplex/tls_policy.hpp"
+#if defined(MPX_HAVE_GCAST_TLS)
+#include "tls_http.hpp"
+#endif
 #include "queue_step.hpp"
 #include "url_query_codec.hpp"
 #include "../../assets/plex-profiles/fpga_profile.hpp"
@@ -8,76 +23,630 @@
 
 #include <algorithm>
 #include <atomic>
+#include <ctime>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cerrno>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/stat.h>
 #include <iomanip>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <limits>
+#include <memory>
+#include <map>
 #include <mutex>
+#include <netdb.h>
 #include <numeric>
+#include <optional>
+#include <poll.h>
 #include <sstream>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
+
+#include "libmisterplex/curl_argv_token.hpp"
+
+extern char** environ;
 
 namespace misterplex {
 namespace {
 
-std::string shellQuote(const std::string& s) {
-    std::string o = "'";
-    for (char c : s) {
-        if (c == '\'')
-            o += "'\\''";
-        else
-            o += c;
+std::atomic<uintptr_t> metadataFetchHook{0};
+std::atomic<uintptr_t> audioPartPutHook{0};
+
+// ---- no-shell GET (plexHttpGet) ----
+bool headerNameIsToken(const std::string& n) {
+    if (n.empty())
+        return false;
+    for (unsigned char c : n) {
+        if (std::isalnum(c) || std::strchr("!#$%&'*+-.^_`|~", c))
+            continue;
+        return false;   // ':' ';' ' ' '@' controls and anything else
     }
-    o += "'";
-    return o;
+    return true;
 }
 
-std::string httpGet(const std::string& url, int timeoutSec = 15,
-                    const std::string& extraHeaders = {},
-                    const std::string& clientProfileName = defaultRequestProfileName()) {
-    // Prefer curl (present on MiSTer); -k for plex.direct certs.
-    std::ostringstream cmd;
-    cmd << "curl -sS -g -k -L --http1.1 --connect-timeout 6 --max-time " << timeoutSec
-        << " -H 'Accept: application/xml'"
-        << " -H 'X-Plex-Client-Identifier: misterplex'"
-        << " -H 'X-Plex-Product: Plex Web'"
-        << " -H 'X-Plex-Version: 4.125.0'"
-        << " -H 'X-Plex-Platform: Chrome'"
-        << " -H 'X-Plex-Platform-Version: 120.0'"
-        << " -H 'X-Plex-Device: Linux'"
-        << " -H 'X-Plex-Device-Name: Chrome'"
-        << (clientProfileName.empty() ? std::string()
-                                      : " -H " + shellQuote("X-Plex-Client-Profile-Name: " + clientProfileName))
-        << " -H 'X-Plex-Model: bundled'"
-        << " -H 'X-Plex-Provides: player'";
-    if (!extraHeaders.empty())
-        cmd << extraHeaders;
-    cmd << " " << shellQuote(url) << " 2>/dev/null";
-    FILE* p = popen(cmd.str().c_str(), "r");
-    if (!p)
-        return {};
+bool headerValueIsClean(const std::string& v) {
+    return v.find_first_of(std::string("\r\n\0", 3)) == std::string::npos;
+}
+
+[[maybe_unused]] bool headersHavePlexToken(const std::vector<std::pair<std::string, std::string>>& h) {
+    for (const auto& kv : h) {
+        std::string low;
+        for (unsigned char c : kv.first)
+            low.push_back(static_cast<char>(std::tolower(c)));
+        if (low == "x-plex-token")
+            return true;
+    }
+    return false;
+}
+
+// TLS choices for a curl child (verify against the Mozilla bundle + TLS_TRUST_FILE, --resolve for plex.direct,
+// TLS_VERIFY=0 the only insecure path), one argv item per value.
+void appendTlsArgv(std::vector<std::string>& a, const std::string& url) {
+    if (url.compare(0, 8, "https://") != 0)
+        return;
+    if (tlsVerifyOff()) {
+        logTlsOptOutOnce();
+        a.push_back("--insecure");
+        return;
+    }
+    const TlsCurlPlan p = planTlsCurl(url);
+    if (!p.https)
+        return;
+    if (p.optOut) {
+        logTlsOptOutOnce();
+        a.push_back("--insecure");
+        return;
+    }
+    const std::string ca = materializeTrustBundle(p.caFile, p.extraTrust);
+    if (!ca.empty())
+        a.insert(a.end(), {"--cacert", ca});
+    if (!p.resolveAddr.empty())
+        a.insert(a.end(), {"--resolve", p.resolveHost + ":" + std::to_string(p.resolvePort) + ":" + p.resolveAddr});
+}
+
+using HeaderList = std::vector<std::pair<std::string, std::string>>;
+
+// argv prefix for every curl the daemon starts: "-q" FIRST (curl reads no ~/.curlrc / CURL_HOME rc file),
+// -g, no -L when an X-Plex-Token header is sent (the token must not follow a redirect), TLS as discrete items.
+std::vector<std::string> curlArgvPrefix(const std::string& url, const HeaderList& headers, bool followRedirects) {
+    std::vector<std::string> a = {"curl", "-q", "-sS", "-g"};
+    // #340: -L stays with a token header too. runArgv never hands curl -L with a token: it
+    // follows the hops itself and keeps the token only for the original origin.
+    (void)headers;
+    if (followRedirects)
+        a.push_back("-L");
+    appendTlsArgv(a, url);
+    a.push_back("--http1.1");
+    return a;
+}
+
+// curl -K config line for one header. Backslash and double-quote are escaped; CR/LF/NUL (and
+// non-token names) are dropped — same filter as the old -H path (MUT_PLEXGET_HDR_UNCHECKED skips it).
+std::string curlHeaderConfigText(const HeaderList& headers) {
     std::string out;
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), p))
-        out += buf;
-    pclose(p);
+    for (const auto& kv : headers) {
+#ifndef MUT_PLEXGET_HDR_UNCHECKED
+        if (!headerNameIsToken(kv.first) || !headerValueIsClean(kv.second))
+            continue;
+#endif
+        out += "header = \"";
+        const std::string line = kv.first + ": " + kv.second;
+        for (char c : line) {
+            if (c == '"' || c == '\\')
+                out.push_back('\\');
+            out.push_back(c);
+        }
+        out += "\"\n";
+    }
     return out;
 }
 
-std::string curlHeaderArgs(const std::vector<std::pair<std::string, std::string>>& headers) {
-    std::ostringstream args;
-    for (const auto& h : headers) {
-        if (h.first.empty())
+// Attach request headers for curl. Default: argv gets "-K" "-" and the config text is returned for
+// runArgv to feed on stdin (or via /dev/fd/N when stdin already carries a body). Secrets never land
+// on argv / ps. MUT_HDR_ON_ARGV restores the old -H argv leak so tests can kill it.
+std::string appendHeaderArgv(std::vector<std::string>& a, const HeaderList& headers) {
+#ifdef MUT_HDR_ON_ARGV
+    for (const auto& kv : headers) {
+#ifndef MUT_PLEXGET_HDR_UNCHECKED
+        if (!headerNameIsToken(kv.first) || !headerValueIsClean(kv.second))
             continue;
-        args << " -H " << shellQuote(h.first + ": " + h.second);
+#endif
+        a.insert(a.end(), {"-H", kv.first + ": " + kv.second});
     }
-    return args.str();
+    return {};
+#else
+    const std::string cfg = curlHeaderConfigText(headers);
+    if (!cfg.empty())
+        a.insert(a.end(), {"-K", "-"});
+    return cfg;
+#endif
+}
+
+// The URL goes last, after "--": a URL that starts with '-' is a URL, never an option.
+void appendUrlArgv(std::vector<std::string>& a, const std::string& url) {
+#ifndef MUT_PLEXGET_NO_DASHDASH
+    a.push_back("--");
+#endif
+    a.push_back(url);
+}
+
+// FU9 (glass C5 wedge): every runArgv pipe is O_CLOEXEC. A plain pipe() leaked this call's stdin write end
+// (and stdout read end) into any child another thread spawned meanwhile (the stream curl, a ping). A `curl -K -`
+// then waits for EOF on a config pipe that child still holds; --max-time has not started, so the caller hangs.
+// posix_spawn dup2 onto 0/1/2/kRunArgvConfigFd clears CLOEXEC on the child's copy. Parent fds sit at >= 10 so a
+// dup2 target never aliases its source (dup2(fd, fd) would keep CLOEXEC).
+constexpr int kRunArgvConfigFd = 3;
+static int runArgvPipe(int fds[2]) {
+#ifdef MUT_FU9_FD_LEAK   // test-only mutant: the FU8 pipes, inherited by every concurrent spawn
+    return ::pipe(fds);
+#else
+    int raw[2];
+    if (::pipe2(raw, O_CLOEXEC) != 0)
+        return -1;
+    const int a = ::fcntl(raw[0], F_DUPFD_CLOEXEC, 10);
+    const int b = ::fcntl(raw[1], F_DUPFD_CLOEXEC, 10);
+    ::close(raw[0]);
+    ::close(raw[1]);
+    if (a < 0 || b < 0) {
+        if (a >= 0)
+            ::close(a);
+        if (b >= 0)
+            ::close(b);
+        return -1;
+    }
+    fds[0] = a;
+    fds[1] = b;
+    return 0;
+#endif
+}
+
+// FU9 nit: the token scrub rewrites only a curl argv (basename of argv[0]).
+static bool runArgvIsCurl(const std::vector<std::string>& a) {
+    if (a.empty())
+        return false;
+#ifdef MUT_FU9_SCRUB_ANY_ARGV
+    return true;
+#else
+    const auto slash = a[0].rfind('/');
+    return (slash == std::string::npos ? a[0] : a[0].substr(slash + 1)) == "curl";
+#endif
+}
+
+struct ArgvRun {
+    bool spawned = false;
+    std::string out;
+    int exitCode = -1;   // WEXITSTATUS, or -1 when the child did not exit normally
+};
+
+static void writeAllFd(int fd, const std::string& data) {
+    size_t off = 0;
+    while (off < data.size()) {
+        const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
+        if (n > 0)
+            off += static_cast<size_t>(n);
+        else if (n < 0 && errno == EINTR)
+            continue;
+        else
+            break;
+    }
+}
+
+// Boot (misterplexd_supervise.sh) starts the daemon with stdin closed or on /dev/null.
+// curl -K - would read that fd and send the resources GET with no token. The config
+// always goes to /dev/fd/N. The child's own stdin is /dev/null unless stdinData is set.
+#ifdef MUT_KCONFIG_ON_STDIN
+static bool parentStdinUnusable() {
+    struct stat st;
+    if (::fstat(0, &st) != 0)
+        return true;
+    if (!S_ISCHR(st.st_mode))
+        return false;
+    struct stat ns;
+    if (::stat("/dev/null", &ns) != 0)
+        return false;
+    return st.st_rdev == ns.st_rdev;
+}
+#endif
+
+// posix_spawnp, no shell. stdin /dev/null; stderr /dev/null, or the pipe when mergeStderr (the old "2>&1").
+// cap > 0: stop reading at cap bytes and close the pipe (a still-streaming child ends on EPIPE).
+// stdinData non-null: the child's stdin is a pipe fed with it (keeps secrets out of argv / ps). Keep it small (< pipe buf).
+// curlKConfig non-null: curl -K config text on /dev/fd/N, never on the child's stdin. Parent stdin
+// (closed, /dev/null, or a tty) cannot drop the token. MUT_KCONFIG_ON_STDIN keeps "-K -" and
+// feeds nothing when parent stdin is closed or /dev/null, which is the boot failure.
+constexpr int kRunArgvHeaderFd = 4;   // FU10 N4: curl -D dump for a followed token request
+static ArgvRun runArgvOnce(const std::vector<std::string>& args, bool mergeStderr, size_t cap,
+                           const std::string* stdinData, const std::string* curlKConfig,
+                           std::string* headerOut) {
+    ArgvRun r;
+    for (const auto& s : args)
+        if (s.find('\0') != std::string::npos)
+            return r;
+    int fds[2];
+    if (args.empty() || runArgvPipe(fds) != 0)
+        return r;
+    std::vector<std::string> own = args;   // writable, stable storage for argv
+    // FU8: the choke point for every curl in this file. A token in a URL query or a
+    // -H pair moves into the -K config (stdin or /dev/fd/N), never argv (ps on  lab).
+    // FU9 (FPGA Bug nit): only a curl argv is scrubbed; other tools keep their argv as built.
+    std::string fu8Cfg = curlKConfig ? *curlKConfig : std::string{};
+    if (runArgvIsCurl(own) && mpx::scrubPlexTokenArgv(own, fu8Cfg))
+        curlKConfig = &fu8Cfg;
+    const std::string* effectiveStdin = stdinData;
+    int kfds[2] = {-1, -1};
+#ifndef MUT_HDR_ON_ARGV
+    if (curlKConfig && !curlKConfig->empty()) {
+#ifdef MUT_KCONFIG_ON_STDIN
+        // Boot-shaped stdin: -K - reads /dev/null or a closed fd, so the token never leaves.
+        const bool dropOnParentStdin = !stdinData && parentStdinUnusable();
+#else
+        const bool dropOnParentStdin = false;
+#endif
+        if (!dropOnParentStdin) {
+            if (runArgvPipe(kfds) != 0) {
+                ::close(fds[0]);
+                ::close(fds[1]);
+                return r;
+            }
+            // FU9: the child gets the config read end at a fixed fd (dup2 clears CLOEXEC there);
+            // the parent's copy stays CLOEXEC, so no concurrent spawn inherits it. fd 0 is not used.
+            const std::string kPath = "/dev/fd/" + std::to_string(kRunArgvConfigFd);
+            bool replaced = false;
+            for (size_t i = 0; i + 1 < own.size(); ++i) {
+                if (own[i] == "-K" && own[i + 1] == "-") {
+                    own[i + 1] = kPath;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+                own.insert(own.end(), {"-K", kPath});
+        }
+    }
+#else
+    (void)curlKConfig;
+#endif
+    int hfds[2] = {-1, -1};
+    if (headerOut) {
+        if (runArgvPipe(hfds) != 0) {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            if (kfds[0] >= 0) {
+                ::close(kfds[0]);
+                ::close(kfds[1]);
+            }
+            return r;
+        }
+        // -q must stay argv[1] (curl reads ~/.curlrc unless -q comes first).
+        own.insert(own.begin() + (own.size() > 1 && own[1] == "-q" ? 2 : 1),
+                   {"-D", "/dev/fd/" + std::to_string(kRunArgvHeaderFd)});
+    }
+    int ifds[2] = {-1, -1};
+    if (effectiveStdin && runArgvPipe(ifds) != 0) {
+        if (hfds[0] >= 0) {
+            ::close(hfds[0]);
+            ::close(hfds[1]);
+        }
+        ::close(fds[0]);
+        ::close(fds[1]);
+        if (kfds[0] >= 0) {
+            ::close(kfds[0]);
+            ::close(kfds[1]);
+        }
+        return r;
+    }
+    std::vector<char*> argv;
+    for (auto& s : own)
+        argv.push_back(&s[0]);
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (effectiveStdin) {
+        posix_spawn_file_actions_adddup2(&fa, ifds[0], 0);
+        posix_spawn_file_actions_addclose(&fa, ifds[0]);
+        posix_spawn_file_actions_addclose(&fa, ifds[1]);
+    } else {
+        posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    }
+    posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+    if (mergeStderr)
+        posix_spawn_file_actions_adddup2(&fa, fds[1], 2);
+    else
+        posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addclose(&fa, fds[0]);
+    posix_spawn_file_actions_addclose(&fa, fds[1]);
+    // Close the original pipe ends in the child. dup2 leaves the source open, and a
+    // curl -K /dev/fd/N reads until EOF. If the child still holds the write end
+    // (MUT_FU9_FD_LEAK builds the pipe without CLOEXEC), that read never finishes.
+    if (kfds[0] >= 0) {
+        posix_spawn_file_actions_adddup2(&fa, kfds[0], kRunArgvConfigFd);
+        posix_spawn_file_actions_addclose(&fa, kfds[0]);
+        posix_spawn_file_actions_addclose(&fa, kfds[1]);
+    }
+    if (hfds[1] >= 0) {
+        posix_spawn_file_actions_adddup2(&fa, hfds[1], kRunArgvHeaderFd);
+        posix_spawn_file_actions_addclose(&fa, hfds[0]);
+        posix_spawn_file_actions_addclose(&fa, hfds[1]);
+    }
+    pid_t pid = -1;
+    const int sp = ::posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    ::close(fds[1]);
+    if (effectiveStdin)
+        ::close(ifds[0]);
+    if (hfds[1] >= 0) {
+        ::close(hfds[1]);
+        hfds[1] = -1;
+    }
+    if (sp != 0) {
+        ::close(fds[0]);
+        if (hfds[0] >= 0)
+            ::close(hfds[0]);
+        if (effectiveStdin)
+            ::close(ifds[1]);
+        if (kfds[0] >= 0) {
+            ::close(kfds[0]);
+            ::close(kfds[1]);
+        }
+        return r;
+    }
+    r.spawned = true;
+    if (effectiveStdin) {
+        // Small body/config: fits the pipe buffer, so writing before reading stdout cannot deadlock.
+        // main() sets SIGPIPE to SIG_IGN, so an early-exiting child gives EPIPE here, not a daemon kill.
+        writeAllFd(ifds[1], *effectiveStdin);
+        ::close(ifds[1]);
+    }
+    if (kfds[0] >= 0) {
+        writeAllFd(kfds[1], *curlKConfig);
+        ::close(kfds[1]);
+        ::close(kfds[0]);
+    }
+    char buf[4096];
+    while (cap == 0 || r.out.size() < cap) {
+        const ssize_t n = ::read(fds[0], buf, sizeof buf);
+        if (n > 0)
+            r.out.append(buf, static_cast<size_t>(n));
+        else if (n < 0 && errno == EINTR)
+            continue;
+        else
+            break;
+    }
+    ::close(fds[0]);
+    if (hfds[0] >= 0) {   // headers precede the body and are small (< pipe buf)
+        for (;;) {
+            const ssize_t n = ::read(hfds[0], buf, sizeof buf);
+            if (n > 0 && headerOut->size() < 65536)
+                headerOut->append(buf, static_cast<size_t>(n));
+            else if (n < 0 && errno == EINTR)
+                continue;
+            else if (n <= 0)
+                break;
+        }
+        ::close(hfds[0]);
+    }
+    int st = 0;
+    while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    r.exitCode = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    return r;
+}
+// #340: a curl with -L whose X-Plex-Token is a -K header (no URL query token). curl gets no -L;
+// hops are followed here (up to 5). The token line stays in the -K config only while the hop
+// has the first URL's origin; another host gets the config without it. A Location's own
+// X-Plex-Token= query is dropped. No URL found: one run without -L (fail closed).
+// #341 N4: when the URL query token and the header token differ, both lines end up in the -K config for
+// the first origin only (the query one moved by scrubPlexTokenArgv); neither leaves that origin, and PMS
+// uses the last X-Plex-Token header. Callers pass the same token in both.
+static ArgvRun runArgvFollowHeaderToken(const std::vector<std::string>& args, bool mergeStderr, size_t cap,
+                                        const std::string* stdinData, const std::string& cfgIn,
+                                        std::string* headerOut) {
+    std::vector<std::string> pre = args;
+    std::string cfg = cfgIn;
+    (void)mpx::scrubPlexTokenArgv(pre, cfg);   // an argv -H token joins the -K config first
+    std::vector<std::string> cur;
+    size_t urlIdx = 0;
+    for (size_t i = 0; i < pre.size(); ++i) {
+        if (i > 0 && (pre[i] == "-L" || pre[i] == "--location"))
+            continue;
+        cur.push_back(pre[i]);
+        if (i > 0 && pre[i].find("://") != std::string::npos && pre[i - 1] != "--resolve")
+            urlIdx = cur.size() - 1;
+    }
+    if (urlIdx == 0)
+        return runArgvOnce(cur, mergeStderr, cap, stdinData, &cfg, headerOut);
+    const std::string origin = mpx::curlUrlOrigin(cur[urlIdx]);
+    std::string cfgNoTok = mpx::curlCfgWithoutPlexToken(cfg);
+    if (cfgNoTok.empty())
+        cfgNoTok = "# no token for this origin\n";   // keep the -K pipe: argv may already name -K -
+    ArgvRun r;
+    bool same = true;
+    for (int hop = 0; hop <= 5; ++hop) {
+        std::string hdr;
+        r = runArgvOnce(cur, mergeStderr, cap, stdinData, same ? &cfg : &cfgNoTok, &hdr);
+        if (headerOut)
+            *headerOut = hdr;
+        int status = 0;
+        const std::string loc = mpx::curlRedirectFromHeaders(hdr, &status);
+        const bool redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+        if (!r.spawned || !redirect || loc.empty() || hop == 5)
+            break;
+        std::string next = mpx::curlResolveLocation(cur[urlIdx], loc);
+        mpx::curlStripTokenQuery(next);
+        const std::string o = mpx::curlUrlOrigin(next);
+        if (o.rfind("http://", 0) != 0 && o.rfind("https://", 0) != 0)
+            break;
+        same = o == origin;
+        std::fprintf(stderr, "misterplexd: curl redirect %d hop %d (%s origin)\n", status, hop + 1,
+                     same ? "same" : "other");
+        cur[urlIdx] = next;
+    }
+    return r;
+}
+
+// FU10 N4 (review should-fix): the token scrub drops -L so a redirect cannot carry the -K
+// token header to another host; that broke WAN redirects (ladder probe). A curl with -L and
+// a URL query token is now followed here, up to 5 hops: the token is re-attached only for
+// the original origin (mpx::browseRedirectNext, the #273 rule); a hop to another host goes
+// without it (and so keeps curl's own -L). No token or no -L: one run, as before.
+ArgvRun runArgv(const std::vector<std::string>& args, bool mergeStderr = false, size_t cap = 0,
+                const std::string* stdinData = nullptr, const std::string* curlKConfig = nullptr,
+                std::string* headerOut = nullptr) {
+    size_t urlIdx = 0;
+    bool hasL = false;
+    std::string token;
+    if (runArgvIsCurl(args)) {
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "-L" || args[i] == "--location") {
+                hasL = true;
+            } else if (urlIdx == 0 && args[i].find("://") != std::string::npos &&
+                       misterplex::hasPlexTokenKey(args[i])) {
+                std::string probe = args[i];
+                bool found = false;
+                token = mpx::curlStripTokenQuery(probe, &found);
+                if (found && !token.empty())
+                    urlIdx = i;
+            }
+        }
+    }
+#ifdef MUT_FU10_NO_FOLLOW   // test-only mutant: the FU8/FU9 behaviour, -L dropped, 30x returned
+    hasL = false;
+#endif
+    // #341 B1: a header token with -L always takes the same-origin follower, also when the URL
+    // carries a query token too (WAN start probe, plexMetadataHttpGet): the follower first moves the
+    // query token into the -K config, drops -L, and re-sends the token only to the first origin.
+#ifndef MUT_341_QUERY_HDR_FU10   // test-only mutant: query+header token takes the FU10 loop (-L, cfg every hop)
+    const bool hdrFollowOk = true;
+#else
+    const bool hdrFollowOk = urlIdx == 0;
+#endif
+    if (hasL && hdrFollowOk &&
+        ((curlKConfig && mpx::curlCfgHasPlexToken(*curlKConfig)) || mpx::curlArgvHasTokenHeader(args))) {
+#ifdef MUT_PLEXGET_TOKEN_REDIRECT   // test-only mutant: curl -L carries the token header to any host
+        return runArgvOnce(args, mergeStderr, cap, stdinData, curlKConfig, headerOut);
+#else
+        return runArgvFollowHeaderToken(args, mergeStderr, cap, stdinData,
+                                        curlKConfig ? *curlKConfig : std::string{}, headerOut);
+#endif
+    }
+    if (!hasL || urlIdx == 0)
+        return runArgvOnce(args, mergeStderr, cap, stdinData, curlKConfig, headerOut);
+    const std::string origin = mpx::curlUrlOrigin(args[urlIdx]);
+    std::vector<std::string> cur = args;
+    ArgvRun r;
+    for (int hop = 0; hop <= 5; ++hop) {
+        std::string hdr;
+        r = runArgvOnce(cur, mergeStderr, cap, stdinData, curlKConfig, &hdr);
+        int status = 0;
+        const std::string loc = mpx::curlRedirectFromHeaders(hdr, &status);
+        const bool redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+        if (!r.spawned || !redirect || loc.empty() || hop == 5)
+            break;
+        const std::string next = mpx::browseRedirectNext(origin, mpx::curlResolveLocation(cur[urlIdx], loc), token);
+        if (next.empty())
+            break;
+        std::fprintf(stderr, "misterplexd: curl redirect %d hop %d (%s origin)\n", status, hop + 1,
+                     mpx::curlUrlOrigin(next) == origin ? "same" : "other");
+        cur[urlIdx] = next;
+    }
+    return r;
+}
+
+std::string runArgvCapture(const std::vector<std::string>& args, const std::string* curlKConfig = nullptr) {
+    return runArgv(args, false, 0, nullptr, curlKConfig).out;
+}
+
+// The identity block every daemon GET to a PMS carries (after Accept): one header per item, in the order the old
+// shell command line used. An empty profileName leaves X-Plex-Client-Profile-Name out.
+HeaderList plexIdentityHeaders(const std::string& profileName) {
+    HeaderList h = {{"X-Plex-Client-Identifier", kPlexClientId},
+                    {"X-Plex-Product", "Plex Web"},
+                    {"X-Plex-Version", kPlexWebVersion},
+                    {"X-Plex-Platform", "Chrome"},
+                    {"X-Plex-Platform-Version", "120.0"},
+                    {"X-Plex-Device", "Linux"},
+                    {"X-Plex-Device-Name", "Chrome"}};
+    if (!profileName.empty())
+        h.push_back({"X-Plex-Client-Profile-Name", profileName});
+    h.push_back({"X-Plex-Model", "bundled"});
+    h.push_back({"X-Plex-Provides", "player"});
+    return h;
+}
+
+std::string httpGet(const std::string& url, int timeoutSec = 15,
+                    const HeaderList& extraHeaders = {},
+                    const std::string& clientProfileName = defaultRequestProfileName(),
+                    bool verifyTls = false, bool followRedirects = true, int* curlExitOut = nullptr,
+                    bool* noCa = nullptr) {
+    const auto fn = reinterpret_cast<MetadataFetchFn>(metadataFetchHook.load(std::memory_order_acquire));
+    if (fn)
+        return fn(url);
+    // Prefer curl (present on MiSTer). PMS calls stay -k for plex.direct certs.
+    // A verified call uses mpx::caBundlePath() and never -k; an empty bundle fails closed.
+    // #340: redirects are followed; the X-Plex-Token header is re-sent only to the
+    // same origin (runArgv for curl, tlsVerifiedGet for the OpenSSL client).
+    const bool https = url.compare(0, 8, "https://") == 0;
+    const bool optOut = https && tlsVerifyOff();
+    (void)verifyTls;
+#if defined(MPX_HAVE_GCAST_TLS)
+    if (https && !optOut) {
+        const std::string ca = mpx::caBundlePath();
+        if (ca.empty()) {
+            if (noCa)
+                *noCa = true;
+            return {};
+        }
+        HeaderList h = {{"Accept", "application/xml"}};
+        for (const auto& kv : plexIdentityHeaders(clientProfileName))
+            h.push_back(kv);
+        for (const auto& kv : extraHeaders) {
+#ifndef MUT_PLEXGET_HDR_UNCHECKED
+            if (!headerNameIsToken(kv.first) || !headerValueIsClean(kv.second))
+                continue;
+#endif
+            h.push_back(kv);
+        }
+        TlsVerifiedRequest q;
+        q.url = url;
+        q.headers = std::move(h);
+        q.timeoutSec = timeoutSec;
+        q.caFile = ca;
+        q.followRedirects = followRedirects;   // #340: tlsVerifiedGet keeps the token same-origin only
+        const TlsVerifiedResult got = tlsVerifiedGet(q);
+        if (curlExitOut)
+            *curlExitOut = got.transportOk ? 0 : 60;
+        return got.transportOk ? got.body : std::string{};
+    }
+#endif
+    if (https && !optOut) {
+        const std::string ca = mpx::caBundlePath();
+        if (ca.empty()) {
+            if (noCa)
+                *noCa = true;
+            return {};
+        }
+    }
+    std::vector<std::string> a = curlArgvPrefix(url, extraHeaders, followRedirects);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec), "-H", "Accept: application/xml"});
+    HeaderList hdr = plexIdentityHeaders(clientProfileName);
+    hdr.insert(hdr.end(), extraHeaders.begin(), extraHeaders.end());
+    const std::string hdrCfg = appendHeaderArgv(a, hdr);
+    appendUrlArgv(a, url);
+    const ArgvRun run = runArgv(a, false, 0, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg);
+    if (curlExitOut)
+        *curlExitOut = run.spawned ? run.exitCode : 127;   // 127: what the old "sh -c" said for a missing curl
+    return run.out;
 }
 
 std::string makeSessionId() {
@@ -98,18 +667,59 @@ std::string hostOnly(const std::string& hostOrUrl) {
         h = h.substr(p + 3);
     if (auto p = h.find('/'); p != std::string::npos)
         h = h.substr(0, p);
-    if (auto p = h.find(':'); p != std::string::npos)
-        h = h.substr(0, p);
+    if (!h.empty() && h.front() == '[') {
+        const auto rb = h.find(']');
+        if (rb != std::string::npos)
+            return h.substr(1, rb - 1);
+    }
+    // IPv4 or name:port — a single colon. Unbracketed IPv6 keeps every colon.
+    const auto colon = h.rfind(':');
+    if (colon != std::string::npos && h.find(':') == colon)
+        h = h.substr(0, colon);
     return h;
 }
 
+bool hostLooksLoopback(const std::string& hostOrUrl) {
+    const std::string h = hostOnly(hostOrUrl);
+    if (h == "localhost" || h == "::1" || h == "0:0:0:0:0:0:0:1")
+        return true;
+    if (h.rfind("127.", 0) == 0)
+        return true;
+    return false;
+}
+
+bool hostLooksIpv6Special(const std::string& hostOrUrl) {
+    std::string h = hostOnly(hostOrUrl);
+    if (h.find("plex.direct") != std::string::npos) {
+        const auto dot = h.find('.');
+        std::string label = dot == std::string::npos ? h : h.substr(0, dot);
+        for (char& c : label) {
+            if (c == '-')
+                c = ':';
+        }
+        h = label;
+    }
+    in6_addr a{};
+    if (inet_pton(AF_INET6, h.c_str(), &a) != 1)
+        return false;
+    if ((a.s6_addr[0] & 0xfe) == 0xfc)
+        return true; // ULA fc00::/7
+    if (a.s6_addr[0] == 0xfe && (a.s6_addr[1] & 0xc0) == 0x80)
+        return true; // link-local fe80::/10
+    return false;
+}
+
 bool isUnreachableHost(const std::string& hostOrUrl) {
+    if (isUnreachableIpv6Host(hostOrUrl))
+        return true;
     const std::string h = hostOnly(hostOrUrl);
     if (h.rfind("172.17.", 0) == 0 || h.rfind("172.18.", 0) == 0 ||
         h.rfind("172.20.", 0) == 0 || h.rfind("172.21.", 0) == 0)
         return true;
     if (h.find("172-17-") != std::string::npos || h.find("172-18-") != std::string::npos ||
         h.find("172-20-") != std::string::npos || h.find("172-21-") != std::string::npos)
+        return true;
+    if (hostLooksIpv6Special(hostOrUrl))
         return true;
     return false;
 }
@@ -159,13 +769,37 @@ bool isPrivateRfc1918Host(const std::string& hostOrUrl) {
     return false;
 }
 
-// Exact private IPv4 match (lab PMS vs foreign home often share the same private /24
+// Exact private IPv4 match (a PMS and a foreign home often share one private /24
 // numbering on different physical LANs — /24 is NOT sufficient).
 bool samePrivateHost(const std::string& a, const std::string& b) {
     int aa[4], bb[4];
     if (!parseIpv4Host(a, aa) || !parseIpv4Host(b, bb))
         return false;
     return aa[0] == bb[0] && aa[1] == bb[1] && aa[2] == bb[2] && aa[3] == bb[3];
+}
+
+bool samePrivateSlash24(const std::string& a, const std::string& b) {
+    int aa[4], bb[4];
+    if (!parseIpv4Host(a, aa) || !parseIpv4Host(b, bb))
+        return false;
+    return aa[0] == bb[0] && aa[1] == bb[1] && aa[2] == bb[2];
+}
+
+// LAN-origin playMedia often pins the player's VLAN gateway (203.0.113.1 next
+// to player 203.0.113.20) instead of conf PMS (203.0.113.10). That host is
+// reachable IPv4 so the ULA / plex.direct rewrite misses it. A foreign home
+// LAN on a different /24 (203.0.113.70) is not this player's gateway.
+bool isPlayerLanGateway(const std::string& host, const std::string& playerLan,
+                        const std::string& conf) {
+    if (playerLan.empty() || conf.empty() || host.empty())
+        return false;
+    if (!isPrivateRfc1918Host(host) || !isPrivateRfc1918Host(playerLan))
+        return false;
+    if (!samePrivateSlash24(host, playerLan))
+        return false;
+    if (samePrivateHost(host, conf))
+        return false;
+    return true;
 }
 
 std::string attr(const std::string& xml, const char* tag, const char* name) {
@@ -228,25 +862,567 @@ bool videoCodecIsH264(const std::string& codecRaw) {
 
 } // namespace
 
+std::string plexMetadataHttpGet(const std::string& url) { return httpGet(url, 12); }
+std::string plexMetadataHttpGet(const std::string& url, const std::string& token) {
+    if (token.empty())
+        return httpGet(url, 12);
+    return httpGet(url, 12, HeaderList{{"X-Plex-Token", token}});   // #340: header, not query
+}
+
+// FU9 test seam: the single spawn point, argv as given (no shell).
+std::string runArgvCaptureForTest(const std::vector<std::string>& args) { return runArgvCapture(args); }
+
+namespace {
+
+// plex.tv rejects /api/v2/resources with 400 when X-Plex-Client-Identifier is absent.
+bool urlHostIsPlexTv(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos)
+        return false;
+    std::string host = url.substr(scheme + 3);
+    const auto slash = host.find('/');
+    if (slash != std::string::npos)
+        host = host.substr(0, slash);
+    const auto at = host.find('@');
+    if (at != std::string::npos)
+        host = host.substr(at + 1);
+    if (!host.empty() && host.front() == '[') {
+        const auto rb = host.find(']');
+        host = rb == std::string::npos ? host : host.substr(1, rb - 1);
+    } else if (const auto colon = host.rfind(':'); colon != std::string::npos) {
+        host = host.substr(0, colon);
+    }
+    for (char& c : host)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+#ifdef MUT_PLEX_TV_HOST_SUBSTRING   // test-only: evilplex.tv would count as plex.tv
+    return host.find("plex.tv") != std::string::npos;
+#else
+    return host == "plex.tv" ||
+           (host.size() > 8 && host.compare(host.size() - 8, 8, ".plex.tv") == 0);
+#endif
+}
+
+bool extraHasHeader(const std::vector<std::pair<std::string, std::string>>& headers, const char* name) {
+    for (const auto& h : headers) {
+        if (h.first == name && !h.second.empty())
+            return true;
+    }
+    return false;
+}
+
+// Same client id the player GETs use (plexIdentityHeaders). Product is already
+// MiSTerPlex on plexHttpGet. Version matches that identity block.
+void appendPlexTvIdentityArgv(std::vector<std::string>& a, const std::string& url,
+                              const std::vector<std::pair<std::string, std::string>>& extraHeaders) {
+    if (!urlHostIsPlexTv(url))
+        return;
+#ifndef MUT_PLEX_TV_NO_CLIENT_ID
+    if (!extraHasHeader(extraHeaders, "X-Plex-Client-Identifier"))
+        a.insert(a.end(), {"-H", std::string("X-Plex-Client-Identifier: ") + kPlexClientId});
+#endif
+    // Product is already on the plexHttpGet argv (MiSTerPlex). Version is kPlexWebVersion.
+    if (!extraHasHeader(extraHeaders, "X-Plex-Version")) {
+#ifdef MUT_PLEX_VERSION_NOT_CONSTANT   // test-only: a second copy of the version
+        a.insert(a.end(), {"-H", "X-Plex-Version: 9.9.9"});
+#else
+        a.insert(a.end(), {"-H", std::string("X-Plex-Version: ") + kPlexWebVersion});
+#endif
+    }
+}
+
+} // namespace
+
 std::string plexHttpGet(const std::string& url, int timeoutSec,
-                        const std::string& extraHeaders) {
-    std::ostringstream cmd;
-    cmd << "curl -sS -g -k -L --http1.1 --connect-timeout 6 --max-time " << timeoutSec
-        << " -H 'Accept: application/xml'"
-        << " -H 'X-Plex-Product: MiSTerPlex'"
-        << " -H 'X-Plex-Provides: player'";
-    if (!extraHeaders.empty())
-        cmd << extraHeaders;
-    cmd << " '" << url << "' 2>/dev/null";
-    FILE* p = popen(cmd.str().c_str(), "r");
-    if (!p)
+                        const std::vector<std::pair<std::string, std::string>>& extraHeaders) {
+    if (url.find('\0') != std::string::npos)
         return {};
-    std::string out;
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), p))
-        out += buf;
-    pclose(p);
-    return out;
+    std::vector<std::string> a = curlArgvPrefix(url, extraHeaders, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec),
+                       "-H", "Accept: application/xml", "-H", "X-Plex-Product: MiSTerPlex",
+                       "-H", "X-Plex-Provides: player"});
+    appendPlexTvIdentityArgv(a, url, extraHeaders);
+    const std::string hdrCfg = appendHeaderArgv(a, extraHeaders);
+    appendUrlArgv(a, url);
+    return runArgvCapture(a, hdrCfg.empty() ? nullptr : &hdrCfg);
+}
+
+namespace {
+
+std::string headerField(const std::string& hdr, const char* name) {
+    const size_t nlen = std::strlen(name);
+    size_t i = 0;
+    while (i < hdr.size()) {
+        size_t eol = hdr.find('\n', i);
+        if (eol == std::string::npos)
+            eol = hdr.size();
+        std::string line = hdr.substr(i, eol - i);
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        bool match = line.size() > nlen && line[nlen] == ':';
+        for (size_t c = 0; match && c < nlen; ++c) {
+            const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(line[c])));
+            const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(name[c])));
+            if (a != b)
+                match = false;
+        }
+        if (match) {
+            size_t v = nlen + 1;
+            while (v < line.size() && (line[v] == ' ' || line[v] == '\t'))
+                ++v;
+            return line.substr(v);
+        }
+        if (eol == hdr.size())
+            break;
+        i = eol + 1;
+    }
+    return {};
+}
+
+} // namespace
+
+PlexHttpObserved plexHttpGetObserved(const std::string& url, int timeoutSec,
+                                     const std::vector<std::pair<std::string, std::string>>& extraHeaders) {
+    PlexHttpObserved r;
+    if (url.find('\0') != std::string::npos)
+        return r;
+    std::vector<std::string> a = curlArgvPrefix(url, extraHeaders, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec),
+                       "-H", "Accept: application/xml", "-H", "X-Plex-Product: MiSTerPlex",
+                       "-H", "X-Plex-Provides: player"});
+    appendPlexTvIdentityArgv(a, url, extraHeaders);
+    const std::string hdrCfg = appendHeaderArgv(a, extraHeaders);
+    appendUrlArgv(a, url);
+    std::string hdr;
+    const ArgvRun run = runArgv(a, false, 0, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg, &hdr);
+    if (!run.spawned)
+        return r;
+    r.body = run.out;
+    const remote_start::CurlHeaderDump parsed = remote_start::parseCurlHeaderDump(hdr);
+    r.httpStatus = parsed.httpStatus;
+    r.contentType = headerField(hdr, "Content-Type");
+    return r;
+}
+
+std::string plexHttpGetBytes(const std::string& url, int timeoutSec,
+                             const std::vector<std::pair<std::string, std::string>>& extraHeaders,
+                             size_t capBytes) {
+    if (url.find('\0') != std::string::npos || capBytes == 0)
+        return {};
+    std::vector<std::string> a = curlArgvPrefix(url, extraHeaders, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec), "-f",
+                       "--max-filesize", std::to_string(capBytes), "-H", "Accept: */*",
+                       "-H", "X-Plex-Product: MiSTerPlex", "-H", "X-Plex-Provides: player"});
+    appendPlexTvIdentityArgv(a, url, extraHeaders);
+    const std::string hdrCfg = appendHeaderArgv(a, extraHeaders);
+    appendUrlArgv(a, url);
+    const ArgvRun run = runArgv(a, false, capBytes, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg);
+    if (!run.spawned || run.exitCode != 0 || run.out.size() > capBytes)
+        return {};
+    return run.out;
+}
+
+namespace {
+
+std::atomic<int> putDnsInFlight{0};
+std::atomic<uintptr_t> putAddrInfoHook{0};
+std::atomic<int> putStallFd{-1};
+std::atomic<int> putConnectPolls{0};
+constexpr int kPutDnsLookupCap = 2;
+
+bool putCancelled(const std::atomic<bool>* cancel) {
+    return cancel && cancel->load(std::memory_order_acquire);
+}
+
+int callPutAddrInfo(const char* node, const char* service, const addrinfo* hints, addrinfo** res) {
+    const auto fn = reinterpret_cast<PutAddrInfoFn>(putAddrInfoHook.load(std::memory_order_acquire));
+    if (!fn)
+        return ::getaddrinfo(node, service, hints, res);
+    return fn(node, service, hints, res);
+}
+
+void notePartPutDnsLimit() {
+    std::fprintf(stderr, "misterplexd: part PUT skipped: dns lookup limit\n");
+}
+
+// Numeric hosts resolve in-process. Names go to a detached thread that only
+// touches this job, so a timeout or cancel cannot outlive TrackIo.
+addrinfo* resolvePutHost(const std::string& host, const std::string& port, bool numeric,
+                         const std::atomic<bool>* cancel) {
+    if (putCancelled(cancel))
+        return nullptr;
+    if (numeric) {
+        addrinfo hints{};
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_flags = AI_NUMERICHOST;
+        addrinfo* res = nullptr;
+        if (callPutAddrInfo(host.c_str(), port.c_str(), &hints, &res) != 0)
+            return nullptr;
+        return res;
+    }
+    int cur = putDnsInFlight.load(std::memory_order_relaxed);
+    for (;;) {
+        if (cur >= kPutDnsLookupCap) {
+            notePartPutDnsLimit();
+            return nullptr;
+        }
+        if (putDnsInFlight.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel,
+                                                std::memory_order_relaxed))
+            break;
+    }
+    struct DnsJob {
+        std::mutex mu;
+        addrinfo* res = nullptr;
+        int rc = -1;
+        bool done = false;
+        bool abandoned = false;
+    };
+    auto job = std::make_shared<DnsJob>();
+    try {
+        std::thread([job, host, port] {
+            struct Slot {
+                ~Slot() { putDnsInFlight.fetch_sub(1, std::memory_order_acq_rel); }
+            } slot;
+            addrinfo hints{};
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_family = AF_UNSPEC;
+            addrinfo* res = nullptr;
+            const int rc = callPutAddrInfo(host.c_str(), port.c_str(), &hints, &res);
+            std::lock_guard<std::mutex> g(job->mu);
+            if (job->abandoned) {
+                if (res)
+                    freeaddrinfo(res);
+                job->done = true;
+                return;
+            }
+            job->res = res;
+            job->rc = rc;
+            job->done = true;
+        }).detach();
+    } catch (...) {
+        putDnsInFlight.fetch_sub(1, std::memory_order_acq_rel);
+        return nullptr;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (putCancelled(cancel))
+            break;
+        {
+            std::lock_guard<std::mutex> g(job->mu);
+            if (job->done) {
+                addrinfo* res = job->res;
+                job->res = nullptr;
+                if (job->rc != 0 || !res) {
+                    if (res)
+                        freeaddrinfo(res);
+                    return nullptr;
+                }
+                return res;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    std::lock_guard<std::mutex> g(job->mu);
+    job->abandoned = true;
+    if (job->done && job->res) {
+        freeaddrinfo(job->res);
+        job->res = nullptr;
+    }
+    return nullptr;
+}
+
+// The 200 ms poll after a connect stays in progress. Cancel is checked on every
+// slice. A test passes a filled pipe write end here so the wait does not need
+// a routed blackhole.
+bool pollConnectFd(int fd, int timeoutSec, const std::atomic<bool>* cancel) {
+    putConnectPolls.fetch_add(1, std::memory_order_acq_rel);
+    int waited = 0;
+    const int limit = timeoutSec * 1000;
+    while (waited < limit) {
+        if (putCancelled(cancel))
+            return false;
+        pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLOUT;
+        const int slice = std::min(200, limit - waited);
+        const int pr = ::poll(&pfd, 1, slice);
+        if (pr < 0) {
+            if (errno == EINTR)
+                continue;
+            return false;
+        }
+        if (pr == 1) {
+            int so = 0;
+            socklen_t sl = sizeof so;
+            return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so, &sl) == 0 && so == 0;
+        }
+        waited += slice;
+    }
+    return false;
+}
+
+bool connectPut(int fd, const addrinfo* ai, int timeoutSec, const std::atomic<bool>* cancel) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags >= 0)
+        ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    const int rc = ::connect(fd, ai->ai_addr, ai->ai_addrlen);
+    if (rc == 0)
+        return true;
+    if (errno != EINPROGRESS)
+        return false;
+    return pollConnectFd(fd, timeoutSec, cancel);
+}
+
+} // namespace
+
+void notePartPutHttpsSkip() {
+    static std::atomic<int> once{0};
+    if (once.exchange(1) == 0)
+        std::fprintf(stderr, "misterplexd: part PUT skipped: https\n");
+}
+
+void setPutAddrInfoForTest(PutAddrInfoFn fn) {
+    putAddrInfoHook.store(reinterpret_cast<uintptr_t>(fn), std::memory_order_release);
+}
+
+void setAudioPartPutForTest(AudioPartPutFn fn) {
+    audioPartPutHook.store(reinterpret_cast<uintptr_t>(fn), std::memory_order_release);
+}
+
+void setMetadataFetchForTest(MetadataFetchFn fn) {
+    metadataFetchHook.store(reinterpret_cast<uintptr_t>(fn), std::memory_order_release);
+}
+
+void setPutConnectStallFdForTest(int fd) {
+    putStallFd.store(fd, std::memory_order_release);
+}
+
+int putConnectPollsForTest() {
+    return putConnectPolls.load(std::memory_order_acquire);
+}
+
+int putDnsLookupsInFlight() {
+    return putDnsInFlight.load(std::memory_order_acquire);
+}
+
+bool plexHttpPut(const std::string& urlIn, int timeoutSec, const std::atomic<bool>* cancel,
+                 const std::string& tokenIn) {
+    // #340: the token is an X-Plex-Token header line. A query token left in the URL by a
+    // caller is moved there too, so the request line never carries X-Plex-Token=.
+    std::string url = urlIn;
+    std::string token = tokenIn;
+    {
+        bool found = false;
+        const std::string q = mpx::curlStripTokenQuery(url, &found);
+        if (found && token.empty())
+            token = q;
+    }
+    if (url.find_first_of("\r\n") != std::string::npos || token.find_first_of("\r\n") != std::string::npos ||
+        url.find('\0') != std::string::npos || token.find('\0') != std::string::npos)
+        return false;
+    if (timeoutSec < 1)
+        timeoutSec = 1;
+    if (putCancelled(cancel))
+        return false;
+    // No shell. TLS is fail-closed here; the part PUT is plain HTTP on the LAN.
+    if (url.rfind("https://", 0) == 0) {
+        notePartPutHttpsSkip();
+        return false;
+    }
+    if (url.rfind("http://", 0) != 0)
+        return false;
+    const std::string rest = url.substr(7);
+    const auto slash = rest.find('/');
+    const std::string hostport = slash == std::string::npos ? rest : rest.substr(0, slash);
+    const std::string path = slash == std::string::npos ? std::string("/") : rest.substr(slash);
+    if (hostport.empty() || path.empty())
+        return false;
+    std::string host = hostport;
+    int port = 80;
+    const auto colon = hostport.rfind(':');
+    if (colon != std::string::npos && colon + 1 < hostport.size()) {
+        host = hostport.substr(0, colon);
+        char* end = nullptr;
+        const long p = std::strtol(hostport.c_str() + colon + 1, &end, 10);
+        if (!end || *end != '\0' || p <= 0 || p > 65535)
+            return false;
+        port = static_cast<int>(p);
+    }
+    in_addr ipv4{};
+    in6_addr ipv6{};
+    const bool numeric = inet_pton(AF_INET, host.c_str(), &ipv4) == 1 || inet_pton(AF_INET6, host.c_str(), &ipv6) == 1;
+    addrinfo* res = resolvePutHost(host, std::to_string(port), numeric, cancel);
+    if (!res)
+        return false;
+    const int stall = putStallFd.load(std::memory_order_acquire);
+    if (stall >= 0) {
+        freeaddrinfo(res);
+        return pollConnectFd(stall, timeoutSec, cancel);
+    }
+    int fd = -1;
+    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+        if (putCancelled(cancel))
+            break;
+        fd = ::socket(ai->ai_family, SOCK_STREAM, ai->ai_protocol);
+        if (fd < 0)
+            continue;
+        if (connectPut(fd, ai, timeoutSec, cancel))
+            break;
+        ::close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0 || putCancelled(cancel)) {
+        if (fd >= 0)
+            ::close(fd);
+        return false;
+    }
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags >= 0)
+        ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    timeval tv{};
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+    const std::string req = "PUT " + path + " HTTP/1.0\r\nHost: " + hostport +
+                            (token.empty() ? std::string{} : "\r\nX-Plex-Token: " + token) +
+                            "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    size_t off = 0;
+    while (off < req.size()) {
+        if (putCancelled(cancel) || std::chrono::steady_clock::now() >= deadline) {
+            ::close(fd);
+            return false;
+        }
+        const ssize_t n = ::send(fd, req.data() + off, req.size() - off, MSG_NOSIGNAL);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
+            ::close(fd);
+            return false;
+        }
+        off += static_cast<size_t>(n);
+    }
+    std::string resp;
+    char buf[128];
+    while (resp.size() < 64) {
+        if (putCancelled(cancel) || std::chrono::steady_clock::now() >= deadline)
+            break;
+        const ssize_t n = ::recv(fd, buf, sizeof buf, 0);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
+            break;
+        }
+        if (n == 0)
+            break;
+        resp.append(buf, buf + n);
+        if (resp.find("\r\n") != std::string::npos)
+            break;
+    }
+    ::close(fd);
+    const auto sp = resp.find(' ');
+    if (sp == std::string::npos || sp + 3 > resp.size())
+        return false;
+    const int code = std::atoi(resp.c_str() + sp + 1);
+    return code >= 200 && code < 300;
+}
+
+namespace {
+
+// One thread for prefs fsync and the part PUT. The PUT slot keeps only the latest URL.
+struct TrackIo {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::atomic<bool> stop{false};
+    bool save = false;
+    std::optional<std::pair<std::string, std::string>> putUrl;   // url, token (#340)
+    std::thread thr;
+    TrackIo() : thr([this] { loop(); }) {}
+    ~TrackIo() {
+        {
+            std::lock_guard<std::mutex> g(mu);
+            stop.store(true);
+            putUrl.reset();
+        }
+        cv.notify_all();
+        if (thr.joinable())
+            thr.join();
+    }
+    void loop() {
+        for (;;) {
+            bool doSave = false;
+            std::string url;
+            std::string tok;
+            {
+                std::unique_lock<std::mutex> g(mu);
+                cv.wait(g, [&] { return stop.load() || save || putUrl.has_value(); });
+                if (stop.load()) {
+                    doSave = save;
+                    save = false;
+                    putUrl.reset();
+                    if (!doSave)
+                        return;
+                } else {
+                    doSave = save;
+                    save = false;
+                    if (putUrl) {
+                        url = std::move(putUrl->first);
+                        tok = std::move(putUrl->second);
+                        putUrl.reset();
+                    }
+                }
+            }
+            if (doSave) {
+                processShowTracks().flush();
+                processRememberTracks().flush();
+            }
+            if (stop.load())
+                return;
+            if (!url.empty())
+                (void)plexHttpPut(url, 8, &stop, tok);
+        }
+    }
+};
+
+TrackIo& trackIo() {
+    static TrackIo io;
+    return io;
+}
+
+} // namespace
+
+void enqueueShowTrackSave() {
+    TrackIo& io = trackIo();
+    {
+        std::lock_guard<std::mutex> g(io.mu);
+        io.save = true;
+    }
+    io.cv.notify_one();
+}
+
+void enqueuePartStreamPut(const std::string& url, const std::string& token) {
+    if (url.empty())
+        return;
+    TrackIo& io = trackIo();
+    {
+        std::lock_guard<std::mutex> g(io.mu);
+        io.putUrl = std::make_pair(url, token);
+    }
+    io.cv.notify_one();
+}
+
+void stopTrackIoForTest() {
+    TrackIo& io = trackIo();
+    {
+        std::lock_guard<std::mutex> g(io.mu);
+        io.stop.store(true);
+        io.putUrl.reset();
+    }
+    io.cv.notify_all();
+    if (io.thr.joinable())
+        io.thr.join();
 }
 
 const std::vector<ModeResolveRow>& modeResolveTable() {
@@ -295,7 +1471,20 @@ const std::vector<PlexTranscodeProfile>& plexTranscodeProfiles() {
     return profiles;
 }
 
+bool isPlexBasePlaceholder(const std::string& raw) {
+    // Shipped examples use YOUR-PLEX-SERVER / ANOTHER-PLEX-SERVER / <your-plex-server>.
+    // A value still holding one is unset, never a host to dial.
+    std::string l;
+    for (char c : raw)
+        l += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return l.find("your-plex-server") != std::string::npos ||
+           l.find("another-plex-server") != std::string::npos ||
+           l.find('<') != std::string::npos || l.find('>') != std::string::npos;
+}
+
 std::string normalizePlexBase(const std::string& raw) {
+    if (isPlexBasePlaceholder(raw))
+        return {};
     std::string s = raw;
     // trim
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' ||
@@ -381,19 +1570,6 @@ std::vector<std::string> mergePlexServers(const std::string& serversCsv,
 }
 
 namespace {
-// Debug opt-in lab FFmpeg ladder. Product default is empty: resolve remote
-// Parts/transcode URLs directly against the PMS (token, relay/https).
-std::string ladderProxyUrl() {
-    // MPX_LADDER_URL preferred (lab/product); then legacy names. No hardcoded host.
-    if (const char* v = std::getenv("MPX_LADDER_URL"))
-        return v[0] ? std::string(v) : std::string();
-    const char* mpx = std::getenv("MPX_REMOTE_LADDER_PROXY");
-    if (mpx)
-        return mpx[0] ? std::string(mpx) : std::string();
-    const char* proxy = std::getenv("REMOTE_LADDER_PROXY");
-    return (proxy && proxy[0]) ? std::string(proxy) : std::string();
-}
-
 // One label for 240p/480i/480p (shared noproxy path; not three copies).
 const char* fpgaModeName(const std::string& mode) {
     if (mode == "480i")
@@ -404,9 +1580,8 @@ const char* fpgaModeName(const std::string& mode) {
 }
 } // namespace
 
-bool ladderProxyConfigured() {
-    return !ladderProxyUrl().empty();
-}
+// #275: the lab ladder helper is gone; misterplexd resolves against PMS only.
+bool ladderProxyConfigured() { return false; }
 
 std::string urlDecode(const std::string& in) {
     std::string out;
@@ -457,7 +1632,7 @@ std::string fpgaModeForLadder(const WeakLadder& weak) {
                          (weak.profileName == "480i" || weak.profileName == "480p" ||
                           weak.profileName == "fpga-h264-480p" || confW >= 480 || confH >= 480);
     const std::string live = CoreGate::process().pairedRaster();
-    // F705: a 480-tier weak ladder on a live 240p core (remote PMS 624x468 on prod Plex.rbf)
+    // F705: a 480-tier weak ladder on a live 240p core (reviewer 624x468 on prod Plex.rbf)
     // must keep the 480 PMS geometry until menu reload lands on Utility 240p.
     // F719/R16: once the decision maps to the 240p core (624x468, 320x240, …), use
     // the 320x240 ladder so the SPS gate never sees pic_width_in_mbs 39 on 0x24F1A2C4.
@@ -709,26 +1884,6 @@ bool fpga480pMinFpsOk(int fpsNum, int fpsDen) {
     return static_cast<long long>(fpsNum) * 1001 >= 24000LL * fpsDen;
 }
 
-namespace {
-// MPX_BROWSE_V2, the helper's server-transcode relay (mpx-menu /menu/tsrc/...): the explicit fps
-// the ladder must get instead of fps=src (a probe of the relay would open a second transcode on
-// the owning server). It is the rate the ladder itself picks for fps=src (content_fps in
-// remote_fpga_ladder_proxy: 24 and 30 families pass, the 60 family halves); any other rate, or
-// none, is false and the play takes the original Part with fps=src as before.
-bool tsrcRelayLadderFps(int num, int den, int& outNum, int& outDen) {
-    if (fpsIsTrue24(num, den) || fpsIsTrue30(num, den)) {
-        outNum = num;
-        outDen = den;
-        return true;
-    }
-    if ((num == 60 && den == 1) || (num == 60000 && den == 1001)) {
-        outNum = num / 2;
-        outDen = den;
-        return true;
-    }
-    return false;
-}
-} // namespace
 
 std::string fpgaNtscSourceProfileName(const std::string& prototype, const std::string& raster,
                                       bool filteringOff) {
@@ -881,7 +2036,7 @@ DecisionVideo parseDecisionVideo(const std::string& xml) {
         const std::string tag = xml.substr(m, xml.find('>', m) - m);
         if (v.codec.empty()) v.codec = lowerCopy(xmlAttr(tag, "videoCodec"));
         // Media@videoProfile is the SOURCE profile ("high" for the home PMS's Constrained Baseline variant
-        // output, lab-runs/home-pms-hwenc-1011 variant-key6): never used. Stream@profile is logged only.
+        // output, glass-runs/home-pms-hwenc-1011 variant-key6): never used. Stream@profile is logged only.
 #ifdef MUT_DECISION_PROFILE_FALLBACK   // test-only mutant: 35c510937's Media@videoProfile fallback
         if (v.profile.empty()) v.profile = lowerCopy(xmlAttr(tag, "videoProfile"));
 #endif
@@ -927,7 +2082,7 @@ std::string decisionCoreMismatch(const DecisionVideo& v, const WeakLadder& weak)
     if (v.level == 0 || v.refFrames == 0)
         return "level/refs " + std::to_string(v.level) + "/" + std::to_string(v.refFrames) + " (unreported)";
 #endif
-    // Round E 1011 (remote PMS 29729): Stream level/refFrames/profile are absent or 0 (or the SOURCE's) in a transcode
+    // Round E 1011 (reviewer 29729): Stream level/refFrames/profile are absent or 0 (or the SOURCE's) in a transcode
     // decision: unknown, never a mismatch. Only codec and output size count; the first-AU SPS gate owns the rest.
     int w = 0, h = 0;
     parseResolution(weak.videoResolution, w, h);
@@ -939,6 +2094,10 @@ std::string decisionCoreMismatch(const DecisionVideo& v, const WeakLadder& weak)
 WeakLadder lowerPmsLadder(const WeakLadder& weak) {
     WeakLadder w = weak;
     w.pmsLowered = true;
+    // A forced transcode stays on the 30 fps cap. 60 is direct-play only.
+#ifndef MUT_480P60_LOWER_KEEPS60
+    w.directPlayFpsCap = 30;
+#endif
     int rw = 0, rh = 0;
     parseResolution(w.videoResolution, rw, rh);
     const bool tier480 = rh >= 480 || rw >= 480;
@@ -1062,7 +2221,7 @@ std::string plexVideoEncodeFlags(const WeakLadder& weak) {
     // "-profile:v baseline -refs 1 -bf 0" also bind a hardware encoder that ignores -x264opts (H1/H2).
     // High core (MPX_HIGH_NO_CAVLC) cannot take the baseline CAVLC ladder.
     // Main + cabac=1, still one ref, no B, no 8x8, no weighted pred.
-    // 101: remote PMS still emitted CAVLC with these flags while they started with -c:v libx264.
+    // 101: reviewer still emitted CAVLC with these flags while they started with -c:v libx264.
     // A hardware transcoder drops that encoder pin and the rest of the block with it,
     // including -profile:v main. High leaves the encoder unnamed so -profile:v main binds.
     const char* profile = weak.highCabac ? "main" : "baseline";
@@ -1095,7 +2254,141 @@ WeakLadder owenbWeakLadder(bool wan) {
     w.h264ProfileParam = "baseline,main,high";
     w.h264Level = 41;
     w.clientProfileName.clear();
+    w.directPlayFpsCap = 30;
     return w;
+}
+
+namespace {
+bool envFlagOn(const char* e) {
+    if (!e || !e[0])
+        return false;
+    std::string v = e;
+    for (char& c : v)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
+// Above 30 fps and at most 60 fps. 60/1 and 60000/1001 pass; 30-family and
+// anything faster than 60 do not.
+bool allow480p60Fps(int num, int den) {
+    if (num <= 0 || den <= 0)
+        return false;
+    const long long n = num;
+    const long long d = den;
+#ifndef MUT_480P60_NO_FPS_MAX
+    if (n > 60LL * d)
+        return false;
+#endif
+#ifndef MUT_480P60_ANY_FPS
+    if (n <= 30LL * d)
+        return false;
+#endif
+    return true;
+}
+
+bool allow480p60Geometry(int width, int height) {
+    if (width <= 0 || height <= 0)
+        return false;
+#ifdef MUT_480P60_NO_BOX
+    return true;
+#else
+#ifndef MUT_480P60_NO_WIDTH
+    if (width > kAllow480p60MaxWidth)
+        return false;
+#endif
+#ifndef MUT_480P60_NO_HEIGHT
+    if (height > kAllow480p60MaxHeight)
+        return false;
+#endif
+    return true;
+#endif
+}
+} // namespace
+
+bool allow480p60Enabled() {
+#ifdef MUT_ALLOW_480P60_IGNORED
+    return false;
+#endif
+#ifdef MUT_ALLOW_480P60_FORCED
+    return true;
+#endif
+    if (const char* e = std::getenv("MPX_ALLOW_480P60"); e && e[0])
+        return envFlagOn(e);
+    return envFlagOn(std::getenv("ALLOW_480P60"));
+}
+
+bool owenbApplyAllow480p60(WeakLadder& weak, const Allow480p60Source& src) {
+#ifndef MUT_480P60_LEGACY_TOO
+    if (!weak.owenb)
+        return false;
+#endif
+#ifndef MUT_480P60_ON_LOWERED
+    if (weak.pmsLowered)
+        return false;
+#endif
+    if (!allow480p60Enabled())
+        return false;
+    if (!allow480p60Geometry(src.width, src.height))
+        return false;
+    if (!allow480p60Fps(src.fpsNum, src.fpsDen))
+        return false;
+#ifndef MUT_480P60_NO_CODEC
+    if (!videoCodecIsH264(src.codec))
+        return false;
+#endif
+#ifndef MUT_480P60_NO_BITDEPTH
+    if (src.bitDepth > 8)
+        return false;
+#endif
+#ifndef MUT_480P60_NO_BITRATE
+    if (src.bitrateKbps > 0 && weak.maxVideoBitrateKbps > 0 &&
+        src.bitrateKbps > weak.maxVideoBitrateKbps)
+        return false;
+#endif
+    weak.directPlayFpsCap = 60;
+    return true;
+}
+
+bool owenbApplyAllow480p60FromMeta(WeakLadder& weak, const std::string& metadataXml,
+                                   int width, int height, int fpsNum, int fpsDen) {
+    Allow480p60Source src;
+    src.width = width;
+    src.height = height;
+    src.fpsNum = fpsNum;
+    src.fpsDen = fpsDen;
+    size_t sp = 0;
+    while ((sp = metadataXml.find("<Stream", sp)) != std::string::npos) {
+        const auto end = metadataXml.find('>', sp);
+        if (end == std::string::npos)
+            break;
+        const std::string slice = metadataXml.substr(sp, end - sp);
+        const bool video = slice.find("streamType=\"1\"") != std::string::npos ||
+                           slice.find("type=\"video\"") != std::string::npos;
+        if (video) {
+            src.codec = lowerCopy(attrIn(slice, "codec"));
+            const std::string br = attrIn(slice, "bitrate");
+            if (!br.empty())
+                src.bitrateKbps = static_cast<int>(std::strtol(br.c_str(), nullptr, 10));
+            const std::string bd = attrIn(slice, "bitDepth");
+            if (!bd.empty())
+                src.bitDepth = static_cast<int>(std::strtol(bd.c_str(), nullptr, 10));
+            break;
+        }
+        sp = end + 1;
+    }
+    if (src.codec.empty())
+        src.codec = lowerCopy(attr(metadataXml, "Media", "videoCodec"));
+    if (src.bitrateKbps <= 0) {
+        const std::string br = attr(metadataXml, "Media", "bitrate");
+        if (!br.empty())
+            src.bitrateKbps = static_cast<int>(std::strtol(br.c_str(), nullptr, 10));
+    }
+    if (src.bitDepth <= 0) {
+        const std::string bd = attr(metadataXml, "Media", "bitDepth");
+        if (!bd.empty())
+            src.bitDepth = static_cast<int>(std::strtol(bd.c_str(), nullptr, 10));
+    }
+    return owenbApplyAllow480p60(weak, src);
 }
 
 std::string plexClientProfileExtra(const WeakLadder& weak, bool namedProfile) {
@@ -1113,7 +2406,11 @@ std::string plexClientProfileExtra(const WeakLadder& weak, bool namedProfile) {
           << "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height"
           << "&value=720&replace=true)+"
           << "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.frameRate"
+#ifdef MUT_480P60_PROFILE_STALE
           << "&value=30&replace=true)+"
+#else
+          << "&value=" << (weak.directPlayFpsCap == 60 ? 60 : 30) << "&replace=true)+"
+#endif
           << "add-limitation(scope=videoAudioCodec&scopeName=" << weak.audioCodec
           << "&type=upperBound&name=audio.channels&value=2&replace=true)";
         return o.str();
@@ -1276,7 +2573,7 @@ bool resolveAborted() {
 }
 
 bool plexPrewarmProbeEnabled() {
-    // Unset is on. 075 remote PMS: the status-only GET drains the universal start into
+    // Unset is on. 075 reviewer: the status-only GET drains the universal start into
     // /dev/null for the full 12s max-time, then a second GET waits on the body.
     // That is the ~20s of idle chevron between the decision and "resolved".
     // MPX_PREWARM=0 keeps the two-GET path.
@@ -1288,7 +2585,7 @@ bool plexPrewarmProbeEnabled() {
 
 // Remote (location=wan) start/decision buffer hint. The 2026-09-26 snapshot added
 // "&acceptWav=1&mediaBufferSize=102400": 102400 KiB at the 2500 kbps ladder is ~335 s, the
-// a lab MiSTer remote EOFs (Fifth Element 330.6 s, Quantum Leap 335.6 s from offset 0; lead's
+//  lab remote EOFs (Fifth Element 330.6 s, Quantum Leap 335.6 s from offset 0; reviewer's
 // playbar-keepalive archaeology 1011). Every release before it sent neither. Default: none.
 // MPX_REMOTE_MEDIA_BUFFER_KB=<KiB> re-adds mediaBufferSize only, for the A/B proof.
 std::string remoteMediaBufferParams() {
@@ -1332,9 +2629,15 @@ std::string buildUniversalTranscodeUrl(const std::string& base,
     // installed, PMS answers directPlay=1 with "Direct play OK" and serves the source part (High,
     // 1920x814 on 198.51.100.153), which the Baseline core refuses at the SPS gate (profile_idc 100).
     const bool fpgaBaselineOnly = !weak.owenb && isFpgaPlexProfile(weak) && !weak.highCabac;
-    const bool forceTranscode =
-        weak.owenb ? weak.pmsLowered
-                   : ((wan && weak.highCabac) || strictBaseline || fpgaBaselineOnly);
+    // #207 r3: the decision (built from this URL) always says directPlay=0&directStream=0; a forced
+    // remote start repeats it (glass 347e48b: start directPlay=1 on the decided session -> PMS 400).
+    // #201/#234: subtitles=burn is ignored on a direct stream. Any burn pick must
+    // transcode the video (not only when BURN_SUBS_FIX is on).
+    const bool forceTranscode = misterplex::remoteStartForcesTranscode(
+        misterplex::remoteH264TranscodeEnabled(), wan,
+        weak.burnSubtitles || burnSubsFixForcesTranscode(weak.burnSubtitles && weak.burnSubsFixImage) ||
+        (weak.owenb ? weak.pmsLowered
+                    : ((wan && weak.highCabac) || strictBaseline || fpgaBaselineOnly)));
     q << base << "/video/:/transcode/universal/start.mp4"
       << "?hasMDE=1"
       << "&path=" << urlEncodeQuery(metadataKey)
@@ -1361,19 +2664,28 @@ std::string buildUniversalTranscodeUrl(const std::string& base,
           << urlEncodeQuery(weak.fpgaFpsDen == 1 ? std::to_string(weak.fpgaFpsNum)
               : std::to_string(weak.fpgaFpsNum) + "/" + std::to_string(weak.fpgaFpsDen));
     // Phase 4: PMS-side burn-in (preferred over dual-A9 FFmpeg subtitles filter).
+    if (weak.audioStreamId > 0)
+        q << "&audioStreamID=" << weak.audioStreamId;
     if (weak.burnSubtitles) {
         q << "&subtitles=burn";
         if (weak.subtitleStreamId >= 0)
             q << "&subtitleStreamID=" << weak.subtitleStreamId;
+    } else if (weak.subtitleStreamId >= 0) {
+        // subtitleStreamID=0 is off (Plex clients send that to clear the default).
+        q << "&subtitleStreamID=" << weak.subtitleStreamId;
     }
     // PMS universal offset is SECONDS (companion / scrubber use ms).
     const int64_t offSec = universalOffsetSeconds(offsetMs);
     if (offSec > 0)
         q << "&offset=" << offSec;
-    // FPGA ladders prefer header token (local PMS). Shared/remote servers often
-    // require query token on the start URL for libav (no custom auth hooks).
+    // #340: token is r.httpHeaders (libav), never this URL. WAN used to require a
+    // query token for subprocess ffmpeg; MUT_340_PLAYABLE_QUERY restores that.
+#ifdef MUT_340_PLAYABLE_QUERY
     if (!token.empty() && (!isFpgaPlexProfile(weak) || wan))
         q << "&X-Plex-Token=" << urlEncodeQuery(token);
+#else
+    (void)token;
+#endif
     return q.str();
 }
 
@@ -1413,9 +2725,9 @@ std::string plexFfmpegHeaders(const std::string& sessionId, const std::string& t
                               const WeakLadder& weak, bool forceLadderCaps,
                               const std::string& targetUrl) {
     std::ostringstream o;
-    o << "X-Plex-Client-Identifier: misterplex\r\n"
+    o << "X-Plex-Client-Identifier: " << kPlexClientId << "\r\n"
       << "X-Plex-Product: Plex Web\r\n"
-      << "X-Plex-Version: 4.125.0\r\n"
+      << "X-Plex-Version: " << kPlexWebVersion << "\r\n"
       << "X-Plex-Platform: Chrome\r\n"
       << "X-Plex-Platform-Version: 120.0\r\n"
       << "X-Plex-Device: Linux\r\n"
@@ -1435,6 +2747,31 @@ std::string plexFfmpegHeaders(const std::string& sessionId, const std::string& t
     if (!token.empty())
         o << "X-Plex-Token: " << token << "\r\n";
     return o.str();
+}
+
+// #340: a libav playable URL never carries X-Plex-Token=. owenb_av_source sends
+// r.httpHeaders as libav "headers". MUT_340_PLAYABLE_QUERY restores the old query.
+static void appendPlayableTokenQuery(std::string& url, const std::string& token) {
+#ifdef MUT_340_PLAYABLE_QUERY
+    if (token.empty())
+        return;
+    url += (url.find('?') == std::string::npos ? "?" : "&") + std::string("X-Plex-Token=") +
+           urlEncodeQuery(token);
+#else
+    (void)url;
+    (void)token;
+#endif
+}
+
+static void ensurePlayableTokenHeader(ResolveResult& r, const std::string& token, const WeakLadder& weak = {}) {
+    if (token.empty())
+        return;
+    if (r.httpHeaders.find("X-Plex-Token:") != std::string::npos)
+        return;
+    if (r.httpHeaders.empty())
+        r.httpHeaders = plexFfmpegHeaders(makeSessionId(), token, weak);
+    else
+        r.httpHeaders += "X-Plex-Token: " + token + "\r\n";
 }
 
 bool hasHeader(const std::vector<std::pair<std::string, std::string>>& headers,
@@ -1480,32 +2817,20 @@ PlexHttpNoBodyResult plexHttpGetNoBodyResult(
     // (docs/evidence/timeline-stuck-20260730T173000Z).
     PlexHttpNoBodyResult r;
     const bool defaultIdentity = !hasHeader(headers, "X-Plex-Client-Identifier");
-    std::ostringstream cmd;
-    cmd << "curl -sS -g -k -L --http1.1 --connect-timeout 6 --max-time " << timeoutSec
-        << " -o /dev/null -w '%{http_code}' -H 'Accept: application/xml'";
-    if (defaultIdentity) {
-        cmd << " -H 'X-Plex-Client-Identifier: misterplex'"
-            << " -H 'X-Plex-Product: Plex Web'"
-            << " -H 'X-Plex-Version: 4.125.0'"
-            << " -H 'X-Plex-Platform: Chrome'"
-            << " -H 'X-Plex-Platform-Version: 120.0'"
-            << " -H 'X-Plex-Device: Linux'"
-            << " -H 'X-Plex-Device-Name: Chrome'"
-            << ((hasHeader(headers, "X-Plex-Client-Profile-Name") || defaultRequestProfileName().empty())
-                    ? std::string()
-                    : " -H " + shellQuote("X-Plex-Client-Profile-Name: " + defaultRequestProfileName()))
-            << " -H 'X-Plex-Model: bundled'"
-            << " -H 'X-Plex-Provides: player'";
-    }
-    cmd << curlHeaderArgs(headers) << " " << shellQuote(url) << " 2>/dev/null";
-    FILE* p = popen(cmd.str().c_str(), "r");
-    if (!p)
+    std::vector<std::string> a = curlArgvPrefix(url, headers, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec), "-o", "/dev/null", "-w",
+                       "%{http_code}", "-H", "Accept: application/xml"});
+    HeaderList hdr;
+    if (defaultIdentity)
+        hdr = plexIdentityHeaders(hasHeader(headers, "X-Plex-Client-Profile-Name") ? std::string()
+                                                                                  : defaultRequestProfileName());
+    hdr.insert(hdr.end(), headers.begin(), headers.end());
+    const std::string hdrCfg = appendHeaderArgv(a, hdr);
+    appendUrlArgv(a, url);
+    const ArgvRun run = runArgv(a, false, 0, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg);
+    if (!run.spawned)
         return r;
-    std::string out;
-    char buf[64];
-    while (fgets(buf, sizeof(buf), p))
-        out += buf;
-    (void)pclose(p);
+    const std::string& out = run.out;
     r.httpStatus = parseCurlHttpCode(out);
     // curl may exit non-zero on 404 with -f; we do not use -f, so status is authoritative.
     r.ok = plexHttpStatusOk(r.httpStatus);
@@ -1530,39 +2855,28 @@ PlexStartProbe plexHttpGetStatusAndBody(
     PlexStartProbe r;
     // httpGet() identity block plus the probe headers; status is appended by -w as
     // a bare 3-digit code directly after the body (no newline — body may be binary).
-    std::ostringstream cmd;
-    cmd << "curl -sS -g -k -L --http1.1 --connect-timeout 6 --max-time " << timeoutSec
-        << " -w '%{http_code}'"
-        << " -H 'Accept: application/xml'"
-        << " -H 'X-Plex-Client-Identifier: misterplex'"
-        << " -H 'X-Plex-Product: Plex Web'"
-        << " -H 'X-Plex-Version: 4.125.0'"
-        << " -H 'X-Plex-Platform: Chrome'"
-        << " -H 'X-Plex-Platform-Version: 120.0'"
-        << " -H 'X-Plex-Device: Linux'"
-        << " -H 'X-Plex-Device-Name: Chrome'"
-        << ((clientProfileName.empty() || hasHeader(headers, "X-Plex-Client-Profile-Name"))
-                ? std::string()
-                : " -H " + shellQuote("X-Plex-Client-Profile-Name: " + clientProfileName))
-        << " -H 'X-Plex-Model: bundled'"
-        << " -H 'X-Plex-Provides: player'"
-        << curlHeaderArgs(headers) << " " << shellQuote(url) << " 2>/dev/null";
-    FILE* p = popen(cmd.str().c_str(), "r");
-    if (!p)
-        return r;
-    std::string out;
-    char buf[4096];
-#ifdef MUT_PREWARM_FGETS   // test-only mutant: the C1 FAIL read (fgets/strcat stops at the first NUL of TS data)
-    while (fgets(buf, sizeof(buf), p))
-        out += buf;
+    std::vector<std::string> a = curlArgvPrefix(url, headers, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec), "-w", "%{http_code}", "-H",
+                       "Accept: application/xml"});
+    HeaderList hdr = plexIdentityHeaders(hasHeader(headers, "X-Plex-Client-Profile-Name") ? std::string()
+                                                                                           : clientProfileName);
+    hdr.insert(hdr.end(), headers.begin(), headers.end());
+    const std::string hdrCfg = appendHeaderArgv(a, hdr);
+    appendUrlArgv(a, url);
+#ifdef MUT_341_PROBE_ONCE   // test-only mutant: the WAN start probe bypasses the redirect router (one curl, -L)
+    const ArgvRun run = runArgvOnce(a, false, 0, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg, nullptr);
 #else
-    // The body is MPEG-TS (NUL bytes): read it byte-exact, or the trailing -w status is lost (http=0,
-    // "remote universal start dead" on a lab MiSTer C1, 2 of 2 with MPX_PREWARM=1).
-    size_t n = 0;
-    while ((n = fread(buf, 1, sizeof(buf), p)) > 0)
-        out.append(buf, n);
+    const ArgvRun run = runArgv(a, false, 0, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg);
 #endif
-    (void)pclose(p);
+    if (!run.spawned)
+        return r;
+    // The body is MPEG-TS (NUL bytes): it is read byte-exact, or the trailing -w status is lost (http=0,
+    // "remote universal start dead" on  lab C1, 2 of 2 with MPX_PREWARM=1).
+#ifdef MUT_PREWARM_FGETS   // test-only mutant: the C1 FAIL read (a C string stops at the first NUL of TS data)
+    const std::string out = std::string(run.out.c_str());
+#else
+    const std::string& out = run.out;
+#endif
     if (out.size() < 3)
         return r;
     r.httpStatus = parseCurlHttpCode(out.substr(out.size() - 3));
@@ -1570,8 +2884,215 @@ PlexStartProbe plexHttpGetStatusAndBody(
     return r;
 }
 
+PlexStartProbe plexHttpGetStatusAndHead(
+    const std::string& url, const std::vector<std::pair<std::string, std::string>>& headers,
+    const std::string& clientProfileName, int timeoutSec, size_t capBytes) {
+    PlexStartProbe r;
+    if (url.find('\0') != std::string::npos || capBytes == 0)
+        return r;
+    std::vector<std::string> a = curlArgvPrefix(url, headers, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec), "-D", "-", "-H",
+                       "Accept: application/xml"});
+    // FU8: one -K - config carrying identity + caller headers (was two configs, both dropped).
+    HeaderList hh = plexIdentityHeaders(hasHeader(headers, "X-Plex-Client-Profile-Name") ? std::string()
+                                                                                       : clientProfileName);
+    hh.insert(hh.end(), headers.begin(), headers.end());
+    const std::string hdrCfg = appendHeaderArgv(a, hh);
+    appendUrlArgv(a, url);
+    const ArgvRun run = runArgv(a, false, capBytes, nullptr, hdrCfg.empty() ? nullptr : &hdrCfg);
+    if (!run.spawned)
+        return r;
+    const remote_start::CurlHeaderDump parsed = remote_start::parseCurlHeaderDump(run.out);
+    r.httpStatus = parsed.httpStatus;
+    r.body = parsed.body;
+    return r;
+}
+
+// rs9: one attempt of the remote universal start probe (the resolve's probeOnce, callable from a
+// fake-PMS latency test). capBytes > 0 (the default: MPX_REMOTE_PROBE_CAP_KB unset = 64 KiB) returns as soon
+// as the headers and the first capBytes of media arrive. capBytes == 0 is the legacy path: a 12 s GET that
+// drains the endless transcode body until --max-time, then (MPX_PREWARM=0, the prod boot line) a second 12 s
+// body GET = the ~24.1 s of every glass remote start (1025: ms=24101; gw2 24203 ms; gw3 24196 ms).
+RemoteStartProbeResult remoteStartProbeOnce(const std::string& start,
+                                            const std::vector<std::pair<std::string, std::string>>& probeHdr,
+                                            const std::string& profileName, size_t capBytes, bool prewarm) {
+    RemoteStartProbeResult r;
+#ifdef MUT_RS9_IGNORE_CAP   // test-only mutant: the byte cap is dropped (legacy drain)
+    capBytes = 0;
+#endif
+    int http = 0;
+    std::string body;
+    bool capped = capBytes > 0;
+#ifdef MUT_RS9_CAP0_CAPPED   // test-only mutant (review M2): cap=0 still takes the capped GET (returns empty)
+    capped = true;
+#endif
+    if (capped) {
+        const auto probe = plexHttpGetStatusAndHead(start, probeHdr, profileName, 12, capBytes);
+        http = probe.httpStatus;
+        body = probe.body;
+    } else if (prewarm) {
+        const auto probe = plexHttpGetStatusAndBody(start, probeHdr, profileName, 12);
+        http = probe.httpStatus;
+        body = probe.body;
+    } else {
+        http = plexHttpGetNoBodyResult(start, probeHdr, 12).httpStatus;
+    }
+    // 206/200 with body is ideal; 0-byte 200 or 4xx/5xx => dead transcoder.
+    bool alive = plexHttpStatusOk(http) && http != 204;
+    if (alive) {
+        if (capBytes == 0 && !prewarm)
+            body = httpGet(start, 12, probeHdr, profileName);
+        if (body.size() < 64 || body.find("<html") != std::string::npos ||
+            body.find("Bad Request") != std::string::npos || body.find("MediaContainer") != std::string::npos)
+            alive = false;
+    }
+    r.httpStatus = http;
+    r.body = std::move(body);
+    r.alive = alive;
+    return r;
+}
+
 namespace {
-// MPX_BROWSE_V2 (lead Q4): the ladder on lab-pc fetches its src with ffprobe and ffmpeg and
+
+// OpenSubtitles.com REST (Api-Key + optional Bearer). Never logs secrets.
+std::string opensubsHttp(const std::string& method, const std::string& url, const std::string& body,
+                         const std::string& apiKey, const std::string& bearer, int timeoutSec,
+                         int* httpCodeOut = nullptr) {
+    if (httpCodeOut)
+        *httpCodeOut = 0;
+    if (url.find('\0') != std::string::npos || apiKey.empty())
+        return {};
+    HeaderList hdr = {{"Api-Key", apiKey},
+                      {"User-Agent", "misterplexd v1"},
+                      {"Accept", "application/json"},
+                      {"Content-Type", "application/json"}};
+    if (!bearer.empty())
+        hdr.emplace_back("Authorization", "Bearer " + bearer);
+    std::vector<std::string> a = curlArgvPrefix(url, hdr, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec)});
+    const bool postBody = (method == "POST" && !body.empty());
+    if (method == "POST") {
+        a.push_back("-X");
+        a.push_back("POST");
+        if (postBody) {
+            // Body (login JSON carries OPENSUBTITLES_PASSWORD) goes over stdin, never argv: not visible in ps.
+            a.push_back("--data-binary");
+            a.push_back("@-");
+        }
+    }
+    // Api-Key / Bearer: curl -K via stdin, or -K /dev/fd/N when the body already owns stdin (no temp file).
+#ifdef MUT_OPENSUBS_KEY_ON_ARGV
+    for (const auto& kv : hdr)
+        a.insert(a.end(), {"-H", kv.first + ": " + kv.second});
+    const std::string hdrCfg;
+#else
+    const std::string hdrCfg = appendHeaderArgv(a, hdr);
+#endif
+    appendUrlArgv(a, url);
+    if (httpCodeOut)   // status on its own last line, split off below (before "-- url")
+        a.insert(a.end() - 2, {"-w", "\n%{http_code}"});
+    std::string out =
+        postBody ? runArgv(a, false, 0, &body, hdrCfg.empty() ? nullptr : &hdrCfg).out
+                 : runArgvCapture(a, hdrCfg.empty() ? nullptr : &hdrCfg);
+    if (httpCodeOut) {
+        const auto nl = out.rfind('\n');
+        if (nl != std::string::npos) {
+            *httpCodeOut = parseCurlHttpCode(out.substr(nl + 1));
+            out.erase(nl);
+        }
+    }
+    return out;
+}
+
+std::string tryOpenSubsFallback(const std::string& metadataXml, ResolveResult& r) {
+    using namespace opensubs;
+    logKeyPresenceOnce();
+    if (!fallbackEnabled())
+        return {};
+    // A PMS text stream is the soft-sidecar path. Explicit Off stays Off.
+    if (!shouldQueryOpenSubs(r.tracks, r.partId, r.trackPick.subtitlesOff, pendingPlayMediaSubtitleId())) {
+        std::fprintf(stderr, "misterplexd: opensubtitles: skipped (play has a text subtitle or subs are off)\n");
+        return {};
+    }
+
+    Guids g = parseGuidsFromXml(metadataXml);
+    if (g.title.empty() && !r.title.empty())
+        g.title = r.title;
+    const std::string path = cachePath(r.ratingKey, g.imdb, "en");
+    if (shouldServeOpenSubsFromCache(fallbackEnabled(), true, cacheReadable(path))) {
+        std::fprintf(stderr, "misterplexd: opensubtitles: source=cache plex_writes=0 path=%s\n", path.c_str());
+        return path;
+    }
+    const std::string key = apiKey();
+    if (key.empty())
+        return {};
+    // Quota backoff is checked before any request (login/search), not just before /download.
+    static std::atomic<int64_t> quotaBackoffUntilSec{0};
+    const int64_t nowSec = static_cast<int64_t>(::time(nullptr));
+    if (nowSec < quotaBackoffUntilSec.load()) {
+        std::fprintf(stderr, "misterplexd: opensubtitles: skipped (quota backoff)\n");
+        return {};
+    }
+    std::string bearer;
+    const std::string user = username();
+    const std::string pass = password();
+    // Login is optional: no user or password = anonymous download on the Api-Key alone.
+    const bool anon = !shouldLogin(user, pass);
+    if (!anon) {
+        const std::string login =
+            opensubsHttp("POST", "https://api.opensubtitles.com/api/v1/login", loginBodyJson(user, pass),
+                         key, {}, 12);
+        bearer = parseLoginToken(login);
+    }
+    const std::string searchUrl = buildSearchUrl(g, "en");
+    if (searchUrl.empty())
+        return {};
+    const std::string searchJson = opensubsHttp("GET", searchUrl, {}, key, bearer, 15);
+    const auto hits = parseSearchHits(searchJson);
+    if (hits.empty()) {
+        std::fprintf(stderr, "misterplexd: opensubtitles: search hits=0 pick file_id=0\n");
+        return {};
+    }
+    const int64_t fileId = hits.front().fileId;
+    std::fprintf(stderr, "misterplexd: opensubtitles: search hits=%zu pick file_id=%lld\n", hits.size(),
+                 static_cast<long long>(fileId));
+    int dlCode = 0;
+    const std::string dlJson =
+        opensubsHttp("POST", "https://api.opensubtitles.com/api/v1/download", downloadBodyJson(fileId), key,
+                     bearer, 12, &dlCode);
+    const DownloadStatus st = classifyDownload(dlCode, dlJson);
+    if (st == DownloadStatus::QuotaExceeded) {
+        // 406: daily download limit (anonymous: 5/day per IP). Back off until reset_time_utc (else 24 h).
+        const int64_t until = quotaBackoffUntil(dlJson, nowSec);
+        quotaBackoffUntilSec.store(until);
+        std::fprintf(stderr, "misterplexd: opensubtitles: download limit reached (406, %s); backing off %llds\n",
+                     anon ? "anonymous" : "account", static_cast<long long>(until - nowSec));
+        return {};
+    }
+    if (st != DownloadStatus::Ok) {
+        std::fprintf(stderr, "misterplexd: opensubtitles: download failed http=%d\n", dlCode);
+        return {};
+    }
+    const std::string link = parseDownloadLink(dlJson);
+    if (!subsLinkAllowed(link)) {
+        std::fprintf(stderr, "misterplexd: opensubtitles: download link rejected (not https opensubtitles host)\n");
+        return {};
+    }
+    // Download the srt (no Api-Key on the CDN hop — link is a signed URL).
+    std::vector<std::string> a = curlArgvPrefix(link, {}, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", "20", "-H", "User-Agent: misterplexd v1",
+                      "--proto", "=https", "--proto-redir", "=https", "--max-filesize", kMaxSrtBytesArg});
+    appendUrlArgv(a, link);
+    const std::string srt = runArgvCapture(a);
+    if (srt.empty() || (srt.find("-->") == std::string::npos && srt.find("WEBVTT") == std::string::npos))
+        return {};
+    if (!writeCache(path, srt))
+        return {};
+    std::fprintf(stderr, "misterplexd: opensubtitles: source=download plex_writes=0 path=%s\n", path.c_str());
+    return path;
+}
+
+// MPX_BROWSE_V2 (reviewer Q4): the ladder on buildhost fetches its src with ffprobe and ffmpeg and
 // sends no X-Plex headers. An owning server's transcode handed to it therefore carries, as
 // query parameters, the X-Plex set libav sends for the daemon's own universal fetches
 // (plexFfmpegHeaders). Names already in the query are kept as they are.
@@ -1606,23 +3127,20 @@ struct LadderStartProbe {
 // GET url the way the ladder's ffmpeg does (no X-Plex headers, Range: bytes=0-) and read at
 // most 16 KiB. media: a 2xx (or an unfinished stream past the cap) of >= 64 bytes that is not
 // an XML/HTML error page.
-LadderStartProbe probeStartLikeLadder(const std::string& url, int timeoutSec) {
+// Daemon resolve no longer calls this (#275). The shell-path unit test still does.
+[[maybe_unused]] LadderStartProbe probeStartLikeLadder(const std::string& url, int timeoutSec) {
     LadderStartProbe r;
-    std::ostringstream cmd;
-    cmd << "curl -sS -g -k -L --http1.1 --connect-timeout 6 --max-time " << timeoutSec
-        << " -A Lavf -H 'Range: bytes=0-' -o - -w '\\n%{http_code}' " << shellQuote(url)
-        << " 2>/dev/null";
-    FILE* p = popen(cmd.str().c_str(), "r");
-    if (!p)
-        return r;
     constexpr size_t kCap = 16384;
-    std::string out;
-    char buf[4096];
-    size_t n = 0;
-    while (out.size() < kCap && (n = fread(buf, 1, sizeof(buf), p)) > 0)
-        out.append(buf, n);
+    std::vector<std::string> a = curlArgvPrefix(url, {}, true);
+    a.insert(a.end(), {"--connect-timeout", "6", "--max-time", std::to_string(timeoutSec), "-A", "Lavf", "-H",
+                       "Range: bytes=0-", "-o", "-", "-w", "\\n%{http_code}"});
+    appendUrlArgv(a, url);
+    // runArgv closes the pipe at the cap before it waits: a still-streaming curl ends on EPIPE.
+    const ArgvRun run = runArgv(a, false, kCap);
+    if (!run.spawned)
+        return r;
+    const std::string& out = run.out;
     const bool capped = out.size() >= kCap;
-    (void)pclose(p); // closes the pipe first: a still-streaming curl ends on EPIPE
     std::string body = out;
     if (!capped) {
         const size_t nl = out.rfind('\n');
@@ -1759,6 +3277,229 @@ PlexEndpoint splitPlexHostPort(const std::string& address, const std::string& po
     return ep;
 }
 
+bool ipv6FromPmsHost(const std::string& hostOrUrl, std::string& out) {
+    out.clear();
+    std::string h = hostOrUrl;
+    if (auto p = h.find("://"); p != std::string::npos)
+        h = h.substr(p + 3);
+    if (auto p = h.find('/'); p != std::string::npos)
+        h = h.substr(0, p);
+    if (auto p = h.find('@'); p != std::string::npos)
+        h = h.substr(p + 1);
+    std::string cand;
+    if (!h.empty() && h[0] == '[') {
+        const auto close = h.find(']');
+        if (close == std::string::npos)
+            return false;
+        cand = h.substr(1, close - 1);
+    } else if (std::count(h.begin(), h.end(), ':') >= 2) {
+        cand = h; // bare IPv6 literal: more than one colon, so no host:port reading
+    } else {
+        if (auto p = h.find(':'); p != std::string::npos)
+            h = h.substr(0, p);
+        if (h.find("plex.direct") == std::string::npos)
+            return false;
+        cand = h.substr(0, h.find('.'));
+        if (cand.find('-') == std::string::npos)
+            return false;
+        for (char& c : cand)
+            if (c == '-')
+                c = ':'; // plex.direct writes "::" as "--"
+    }
+    if (auto z = cand.find('%'); z != std::string::npos)
+        cand = cand.substr(0, z); // zone id (fe80::1%wlan0)
+    unsigned char b[16];
+    if (cand.empty() || inet_pton(AF_INET6, cand.c_str(), b) != 1)
+        return false;
+    char txt[INET6_ADDRSTRLEN]{};
+    if (!inet_ntop(AF_INET6, b, txt, sizeof(txt)))
+        return false;
+    out = txt;
+    return true;
+}
+
+bool isUnreachableIpv6Host(const std::string& hostOrUrl) {
+    std::string v6;
+    if (!ipv6FromPmsHost(hostOrUrl, v6))
+        return false;
+    unsigned char b[16];
+    if (inet_pton(AF_INET6, v6.c_str(), b) != 1)
+        return false;
+    if ((b[0] & 0xfe) == 0xfc)
+        return true; // ULA fc00::/7
+    if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80)
+        return true; // link-local fe80::/10
+    if (b[0] == 0xfe && (b[1] & 0xc0) == 0xc0)
+        return true; // site-local fec0::/10 (deprecated, still never routed)
+    return false;
+}
+
+bool probePmsIdentity(const std::string& base, const std::string& machineId, int timeoutSec) {
+    const std::string b = normalizePlexBase(base);
+    if (b.empty())
+        return false;
+    const std::string body = httpGet(b + "/identity", timeoutSec < 1 ? 1 : timeoutSec, {},
+                                     defaultRequestProfileName(), false, false);
+    if (body.find("MediaContainer") == std::string::npos)
+        return false;
+    if (machineId.empty())
+        return true;
+#ifdef MUT_336_SUBSTRING_ID
+    return body.find(machineId) != std::string::npos;
+#else
+    // #336 review: parse <MediaContainer machineIdentifier="..."> and compare exactly.
+    return attr(body, "MediaContainer", "machineIdentifier") == machineId;
+#endif
+}
+
+namespace {
+// #329: the play server's machine id for the burn PUT owner check. Tokenless /identity
+// (no token on argv/URL/log); cached per base, misses retried.
+std::string burnPutIdentityFromPms(const std::string& base) {
+    static std::mutex mu;
+    static std::map<std::string, std::string> cache;
+    const std::string b = normalizePlexBase(base);
+    if (b.empty())
+        return {};
+    {
+        std::lock_guard<std::mutex> g(mu);
+        const auto it = cache.find(b);
+        if (it != cache.end())
+            return it->second;
+    }
+    const std::string body =
+        httpGet(b + "/identity", 3, {}, defaultRequestProfileName(), false, false);
+    const std::string k = "machineIdentifier=\"";
+    const size_t a = body.find(k);
+    const size_t e = a == std::string::npos ? a : body.find('"', a + k.size());
+    if (e == std::string::npos)
+        return {};
+    const std::string id = body.substr(a + k.size(), e - a - k.size());
+    std::lock_guard<std::mutex> g(mu);
+    cache[b] = id;
+    return id;
+}
+const bool kBurnPutIdentityInstalled = [] {
+    if (!burnPutIdentityLookup())
+        burnPutIdentityLookup() = burnPutIdentityFromPms;
+    return true;
+}();
+}  // namespace
+
+namespace {
+// End of the JSON value (object/array/string/scalar) starting at s[i]; npos if unbalanced.
+size_t jsonValueEnd(const std::string& s, size_t i) {
+    int depth = 0;
+    bool str = false;
+    for (size_t k = i; k < s.size(); ++k) {
+        const char c = s[k];
+        if (str) {
+            if (c == '\\')
+                ++k;
+            else if (c == '"')
+                str = false;
+            continue;
+        }
+        if (c == '"')
+            str = true;
+        else if (c == '{' || c == '[')
+            ++depth;
+        else if (c == '}' || c == ']') {
+            if (--depth == 0)
+                return k + 1;
+        }
+    }
+    return std::string::npos;
+}
+// Raw scalar after "key": inside an object text (string quotes stripped); "" if absent.
+std::string jsonScalar(const std::string& obj, const char* key) {
+    const std::string k = std::string("\"") + key + "\"";
+    size_t p = obj.find(k);
+    if (p == std::string::npos)
+        return {};
+    p = obj.find(':', p + k.size());
+    if (p == std::string::npos)
+        return {};
+    ++p;
+    while (p < obj.size() && std::isspace(static_cast<unsigned char>(obj[p])))
+        ++p;
+    size_t e = p;
+    if (p < obj.size() && obj[p] == '"') {
+        e = obj.find('"', p + 1);
+        return e == std::string::npos ? std::string() : obj.substr(p + 1, e - p - 1);
+    }
+    while (e < obj.size() && obj[e] != ',' && obj[e] != '}' &&
+           !std::isspace(static_cast<unsigned char>(obj[e])))
+        ++e;
+    return obj.substr(p, e - p);
+}
+} // namespace
+
+std::vector<std::string> localIpv4BasesFromResources(const std::string& json,
+                                                     const std::string& machineIdentifier) {
+    std::vector<std::string> out;
+    if (machineIdentifier.empty())
+        return out;
+    for (size_t i = json.find('{'); i != std::string::npos && i < json.size();) {
+        const size_t e = jsonValueEnd(json, i);
+        if (e == std::string::npos)
+            break;
+        const std::string res = json.substr(i, e - i);
+        i = json.find('{', e);
+        if (jsonScalar(res, "clientIdentifier") != machineIdentifier)
+            continue;
+        const size_t c = res.find("\"connections\"");
+        const size_t arr = c == std::string::npos ? c : res.find('[', c);
+        if (arr == std::string::npos)
+            return out;
+        const size_t arrEnd = jsonValueEnd(res, arr);
+        for (size_t q = res.find('{', arr); q != std::string::npos && q < arrEnd;) {
+            const size_t qe = jsonValueEnd(res, q);
+            if (qe == std::string::npos)
+                break;
+            const std::string conn = res.substr(q, qe - q);
+            q = res.find('{', qe);
+            const std::string addr = jsonScalar(conn, "address");
+            struct in_addr a4;
+            if (jsonScalar(conn, "local") != "true" || jsonScalar(conn, "relay") == "true" ||
+                jsonScalar(conn, "IPv6") == "true" || inet_pton(AF_INET, addr.c_str(), &a4) != 1)
+                continue;
+            const std::string port = jsonScalar(conn, "port");
+            const std::string base = "http://" + addr + ":" + (port.empty() ? "32400" : port);
+            if (std::find(out.begin(), out.end(), base) == out.end())
+                out.push_back(base);
+        }
+        return out;
+    }
+    return out;
+}
+
+std::string fetchPlexTvResourcesJson(const std::string& token, int timeoutSec) {
+    if (token.empty())
+        return {};
+    return httpGet(
+        "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1",
+        timeoutSec < 1 ? 1 : timeoutSec,
+        HeaderList{{"Accept", "application/json"},
+                   {"X-Plex-Token", token},
+                   {"X-Plex-Client-Identifier", "misterplex"}},
+        defaultRequestProfileName(), true, false);
+}
+
+std::vector<std::string> plexTvLocalIpv4Bases(const std::string& machineIdentifier,
+                                              const std::string& token, int timeoutSec) {
+    if (machineIdentifier.empty() || token.empty())
+        return {};
+    const std::string body = httpGet(
+        "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=0",
+        timeoutSec < 1 ? 1 : timeoutSec,
+        HeaderList{{"Accept", "application/json"},
+                   {"X-Plex-Token", token},
+                   {"X-Plex-Client-Identifier", "misterplex-cast-lookup"}},
+        defaultRequestProfileName(), true, false);
+    return localIpv4BasesFromResources(body, machineIdentifier);
+}
+
 std::string buildPlexBase(const std::string& protocol, const std::string& address,
                           const std::string& port, const std::string& lanFallback) {
     const std::string addr = urlDecode(address);
@@ -1839,8 +3580,101 @@ bool splitUrlBase(const std::string& base, std::string& scheme, std::string& hos
 
 } // namespace
 
+bool isLoopbackPmsHost(const std::string& hostOrUrl) {
+    std::string h = hostOnly(hostOrUrl);
+    for (char& c : h)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "0.0.0.0" ||
+           h.rfind("127.", 0) == 0;
+}
+
+std::string rewriteLoopbackPmsBase(const std::string& selectedBase,
+                                   const std::string& lanFallback) {
+    if (!isLoopbackPmsHost(selectedBase))
+        return selectedBase;
+    const std::string fb = normalizePlexBase(lanFallback);
+    if (fb.empty() || isLoopbackPmsHost(fb))
+        return selectedBase;
+    return fb;
+}
+
+bool castHostOnPlayerLan(const std::string& base, const std::string& playerLan,
+                         const std::string& conf) {
+    const std::string n = normalizePlexBase(base);
+    if (n.empty())
+        return false;
+    const PlexEndpoint ep = splitPlexHostPort(n, "32400");
+    return !ep.host.empty() && isPlayerLanGateway(ep.host, playerLan, normalizePlexBase(conf));
+}
+
+std::string preferReachablePmsBase(const std::vector<std::string>& candidates,
+                                   const std::string& confLanFallback,
+                                   const std::string& playerLan) {
+    const std::string conf = normalizePlexBase(confLanFallback);
+    const bool confLoop = !conf.empty() && hostLooksLoopback(conf);
+    // Local Plex player rule: talk to the local PMS on 127.0.0.1, not the
+    // ULA / link-local address Plex Web published from another NIC.
+    if (confLoop)
+        return conf;
+    for (const std::string& raw : candidates) {
+        if (raw.empty() || isUnreachableHost(raw) || hostLooksLoopback(raw))
+            continue;
+        const std::string open = companionOpenablePmsBase(raw, conf, playerLan);
+        if (open.empty() || isUnreachableHost(open) || hostLooksLoopback(open))
+            continue;
+        return open;
+    }
+    if (!conf.empty())
+        return conf;
+    return {};
+}
+
+bool applyPmsBaseToEndpoint(const std::string& base, std::string& address, std::string& port,
+                            std::string& protocol) {
+    const std::string n = normalizePlexBase(base);
+    if (n.empty())
+        return false;
+    const PlexEndpoint ep = splitPlexHostPort(n, "32400");
+    if (ep.host.empty())
+        return false;
+    address = ep.host;
+    port = ep.port.empty() ? "32400" : ep.port;
+    protocol = !ep.protocol.empty() ? ep.protocol : "http";
+    return true;
+}
+
+PlexEndpoint reachableTimelinePms(const std::string& address, const std::string& port,
+                                  const std::string& protocol, const std::string& lanFallback,
+                                  const std::string& playerLan) {
+    PlexEndpoint raw = splitPlexHostPort(address, port);
+    if (!protocol.empty())
+        raw.protocol = protocol;
+    if (raw.protocol.empty())
+        raw.protocol = "http";
+    if (raw.port.empty())
+        raw.port = port.empty() ? "32400" : port;
+
+    const bool rewrite = raw.host.empty() || isUnreachableHost(raw.host) ||
+                         raw.host.find("plex.direct") != std::string::npos ||
+                         isPlayerLanGateway(raw.host, playerLan, lanFallback);
+    if (!rewrite)
+        return raw;
+
+    const std::string joined = joinPlexHostPort(raw.protocol, raw.host, raw.port);
+    const std::string open = companionOpenablePmsBase(joined, lanFallback, playerLan);
+    if (open.empty())
+        return raw;
+    PlexEndpoint out = splitPlexHostPort(open, raw.port);
+    if (out.protocol.empty())
+        out.protocol = "http";
+    if (out.port.empty())
+        out.port = raw.port;
+    return out;
+}
+
 std::string companionOpenablePmsBase(const std::string& selectedBase,
-                                     const std::string& confLanFallback) {
+                                     const std::string& confLanFallback,
+                                     const std::string& playerLan) {
     const std::string conf = normalizePlexBase(confLanFallback);
     std::string selected = selectedBase;
     while (!selected.empty() && (selected.back() == '/' || selected.back() == ' '))
@@ -1851,6 +3685,8 @@ std::string companionOpenablePmsBase(const std::string& selectedBase,
     // Bare host[:port] → assume http
     if (selected.find("://") == std::string::npos) {
         if (isUnreachableHost(selected))
+            return conf;
+        if (isPlayerLanGateway(selected, playerLan, conf))
             return conf;
         if (selected.find(':') != std::string::npos)
             return std::string("http://") + selected;
@@ -1863,9 +3699,17 @@ std::string companionOpenablePmsBase(const std::string& selectedBase,
     if (port.empty())
         port = "32400";
 
+    // Plex Web on the PMS host publishes 127.0.0.1 / ULA. That is this box's
+    // loopback only when conf says so (local player rule).
+    if (hostLooksLoopback(host) && !conf.empty() && !hostLooksLoopback(conf))
+        return conf;
+
     // Already plain HTTP and reachable from MiSTer — keep (remote shared PMS),
-    // unless it is a *foreign* private host (home 192.0.2.67 while conf is lab PMS).
+    // unless it is a *foreign* private host (home 203.0.113.70 while conf is  lab)
+    // or the player's own VLAN gateway (203.0.113.1 next to  lab).
     if (scheme == "http" && !isUnreachableHost(host)) {
+        if (isPlayerLanGateway(host, playerLan, conf))
+            return conf;
         if (isPrivateRfc1918Host(host) && !conf.empty() && isPrivateRfc1918Host(conf) &&
             !samePrivateHost(host, conf)) {
             // Not openable from this MiSTer; caller should resolve public IP.
@@ -1881,7 +3725,8 @@ std::string companionOpenablePmsBase(const std::string& selectedBase,
         return {};
     }
 
-    // https or plex.direct: prefer dotted IPv4 HTTP so static libav can open the URL.
+    // https or plex.direct: public TLS stays on the plex.direct name (#368). Private
+    // same-LAN still opens dotted IPv4 HTTP.
     std::string ip;
     if (host.find("plex.direct") != std::string::npos && dottedIpv4FromDashedHost(host, ip)) {
         if (isUnreachableHost(ip)) {
@@ -1891,20 +3736,31 @@ std::string companionOpenablePmsBase(const std::string& selectedBase,
         }
         // Foreign private plex.direct (owner home LAN) is not reachable from lab MiSTer.
         // Do NOT collapse onto conf PLEX_BASE — that 404s foreign ratingKeys.
+        if (isPlayerLanGateway(ip, playerLan, conf))
+            return conf;
         if (isPrivateRfc1918Host(ip) && !conf.empty() && isPrivateRfc1918Host(conf) &&
             !samePrivateHost(ip, conf)) {
             return {};
         }
+        // Public plex.direct: keep TLS so SNI matches the certificate (#368).
+        // Private same-LAN still opens http://ip (companionOpenable LAN tests).
+        if (scheme == "https" && !isPrivateRfc1918Host(ip))
+            return std::string("https://") + host + ":" + port;
         return std::string("http://") + ip + ":" + port;
     }
 
-    // Non-plex https host: try http on same host:port (many PMS set httpsRequired=0).
+    // Non-plex https host: keep TLS on a DNS name (#368). Raw IPv4 has no SNI.
     if (scheme == "https" && !host.empty()) {
+        if (isPlayerLanGateway(host, playerLan, conf))
+            return conf;
         if (isPrivateRfc1918Host(host) && !conf.empty() && isPrivateRfc1918Host(conf) &&
             !samePrivateHost(host, conf)) {
             return {};
         }
-        return std::string("http://") + host + ":" + port;
+        in_addr a{};
+        if (inet_pton(AF_INET, host.c_str(), &a) == 1)
+            return std::string("http://") + host + ":" + port;
+        return std::string("https://") + host + ":" + port;
     }
 
     // Last resort: conf LAN only when selected was already that LAN family.
@@ -1919,12 +3775,38 @@ std::string companionPublicPmsBaseFromResources(const std::string& machineIdenti
     // connection address (public IPv4) as plain HTTP.
     const std::string url =
         "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1";
-    // httpGet already sends Accept: application/xml; override with JSON + token.
+    // Verify with the daemon CA and do not follow redirects. The token header
+    // must not be sent on to another host, and must not travel with -k.
+    int curlExit = -1;
+    bool noCa = false;
     const std::string body = httpGet(
         url, 15,
-        curlHeaderArgs({{"Accept", "application/json"},
-                        {"X-Plex-Token", token},
-                        {"X-Plex-Client-Identifier", "misterplex-cast-lookup"}}));
+        HeaderList{{"Accept", "application/json"},
+                   {"X-Plex-Token", token},
+                   {"X-Plex-Client-Identifier", "misterplex-cast-lookup"}},
+        defaultRequestProfileName(), true, false, &curlExit, &noCa);
+    if (noCa) {
+        std::fprintf(stderr, "misterplexd: plex.tv resources lookup: no CA bundle\n");
+        return {};
+    }
+    // 35 is a handshake or connect failure. 51/58/60/77 are certificate checks.
+    if (curlExit == 35) {
+        std::fprintf(stderr,
+                     "misterplexd: plex.tv resources lookup: TLS handshake/connect error (curl %d)\n",
+                     curlExit);
+        return {};
+    }
+    if (curlExit == 51 || curlExit == 58 || curlExit == 60 || curlExit == 77) {
+        std::fprintf(stderr, "misterplexd: plex.tv resources lookup: TLS verify failed (curl %d)\n",
+                     curlExit);
+        return {};
+    }
+    // 6 resolve, 7 connect, 28 timeout. These are not a lookup miss.
+    if (curlExit == 6 || curlExit == 7 || curlExit == 28) {
+        std::fprintf(stderr, "misterplexd: plex.tv resources lookup: network error (curl %d)\n",
+                     curlExit);
+        return {};
+    }
     if (body.empty() || body.find(machineIdentifier) == std::string::npos) {
         std::fprintf(stderr,
                      "misterplexd: plex.tv resources lookup miss machine=%s body=%zu\n",
@@ -2156,7 +4038,7 @@ std::string companionPublicPmsBaseFromResources(const std::string& machineIdenti
                      body.find("\"clientIdentifier\"") != std::string::npos ? 1 : 0);
     } else {
         std::fprintf(stderr, "misterplexd: plex.tv public base %s for machine=%s\n",
-                     best.c_str(), machineIdentifier.c_str());
+                     misterplex::logUrl(best).c_str(), machineIdentifier.c_str());
     }
     return best;
 }
@@ -2169,6 +4051,9 @@ bool ensureUniversalDecision(const std::string& startUrl, const std::string& ses
 std::string buildUniversalDecisionUrl(const std::string& startUrl,
                                       const std::string& sessionId,
                                       const std::string& token, const WeakLadder& weak) {
+    // #340: the decision URL never carries the token (it goes as a header via decisionHeaders). The
+    // parameter stays so tests can pass a real token and assert it is absent (E6t, test_remote_buffer_params).
+    (void)token;
     if (startUrl.find("/video/:/transcode/universal/") == std::string::npos)
         return {};
     // Derive base + path from start URL
@@ -2188,9 +4073,16 @@ std::string buildUniversalDecisionUrl(const std::string& startUrl,
     // Mirror ladder params from start URL when present
     auto qparam = [&](const char* name) -> std::string {
         std::string key = std::string(name) + "=";
-        auto p = startUrl.find(key);
-        if (p == std::string::npos)
-            return {};
+        // Anchor on '?' or '&' so a key ending in name= (e.g. xsubtitles=) does not alias.
+        size_t p = 0;
+        for (;;) {
+            p = startUrl.find(key, p);
+            if (p == std::string::npos)
+                return {};
+            if (p > 0 && (startUrl[p - 1] == '&' || startUrl[p - 1] == '?'))
+                break;
+            ++p;
+        }
         p += key.size();
         auto e = startUrl.find('&', p);
         return startUrl.substr(p, e == std::string::npos ? std::string::npos : e - p);
@@ -2230,14 +4122,16 @@ std::string buildUniversalDecisionUrl(const std::string& startUrl,
                 << "&maxVideoBitrate=" << br;
     if (wan) {
         decisionUrl << remoteMediaBufferParams();
-        // remote PMS decides the session on this request. The start URL's videoProfile
+        // reviewer decides the session on this request. The start URL's videoProfile
         // arrives too late (096: start said main, the AU was still Baseline CAVLC).
         // container and videoFrameRate stay off: a shared PMS answers those with HTTP 400.
         // Baseline cores need the same early pin. A WAN decision that omits
         // videoProfile lets the shared PMS encode the source (profile_idc 100);
         // the start URL's videoProfile arrives after that session exists.
         const bool fpgaBaseline = isFpgaPlexProfile(weak) && !weak.highCabac;
-        if (weak.highCabac || fpgaBaseline)
+        // #207 REMOTE_H264_TRANSCODE: always pin H.264 on a remote decision.
+        if (misterplex::remoteDecisionPinsCodec(misterplex::remoteH264TranscodeEnabled(), wan,
+                                                weak.highCabac || fpgaBaseline))
             decisionUrl << "&videoCodec=" << vcodec << "&audioCodec=" << acodec
                         << "&videoProfile=" << (fpgaBaseline ? "baseline" : vprofile)
                         << "&videoLevel=" << vlevel;
@@ -2260,9 +4154,26 @@ std::string buildUniversalDecisionUrl(const std::string& startUrl,
                                                     std::to_string(weak.fpgaFpsDen));
         }
     }
-    // Query token for non-FPGA always; for FPGA WAN (libav/shared) also.
+    // #340: the decision GET sends the token as a header (ensureUniversalDecision's
+    // decisionHeaders), never in this URL.
+#ifdef MUT_340_DECISION_QUERY   // test-only mutant: the old query token
     if (!token.empty() && (!isFpgaPlexProfile(weak) || wan))
         decisionUrl << "&X-Plex-Token=" << urlEncodeQuery(token);
+#endif
+    // The decision creates the session. Start-URL subtitle params arrive too
+    // late (same as videoProfile). Copy the burn only when the fix is on, so
+    // an unset flag still sends today's decision.
+#ifndef MUT_BURN_SUBS_FIX_DECISION_OMIT
+    if (burnSubsFixEnabled() && weak.burnSubsFixImage) {
+        const std::string burn = qparam("subtitles");
+        if (burn == "burn") {
+            decisionUrl << "&subtitles=burn";
+            const std::string sid = qparam("subtitleStreamID");
+            if (!sid.empty())
+                decisionUrl << "&subtitleStreamID=" << sid;
+        }
+    }
+#endif
     return decisionUrl.str();
 }
 
@@ -2314,7 +4225,7 @@ bool ensureUniversalDecision(const std::string& startUrl, const std::string& ses
                      askedMain ? "main" : "missing", noDirect ? "0" : "other",
                      sawCabac ? "cabac=1" : "no-cabac=1");
     }
-    const std::string body = httpGet(decisionUrl, 20, curlHeaderArgs(decisionHeaders),
+    const std::string body = httpGet(decisionUrl, 20, decisionHeaders,
                                     decisionProfileName);
     if (body.empty())
         return false;
@@ -2478,10 +4389,73 @@ WeakLadder fitWeakLadderToAspect(const WeakLadder& weak,
     return fitted;
 }
 
+void applyTrackPickToLadder(WeakLadder& playWeak, const ResolveResult& r, bool havePref) {
+    if (!r.trackPick.valid)
+        return;
+    // Soft text stays Direct Play when the overlay will paint it (softOverlayAllowed
+    // is always on for SRT/ASS/SSA). Image / embedded that the user explicitly
+    // chose still burn. Default off / skipped PGS/VobSub never silently burns (G10),
+    // even when SUBTITLES=burn is in conf. Audio is named. A remembered subtitle is
+    // named on the PLAY URL the way setStreams names an explicit pick.
+    // BURN_SUBS_FIX on: a pick the overlay will not paint (PGS/VobSub/image)
+    // keeps subtitles=burn, and the URL builder forces a video transcode.
+    // mov_text overlays even with SOFT_SUBS off (#260) and is never burned.
+    // The resolve log prints the pick id either way; this is what the URL reads.
+    if (r.trackPick.rememberedSubtitle) {
+#ifdef MUT_R3_REMEMBER_CODEC_ONLY
+        const RememberWire w = rememberSubtitleWire(r.trackPick);
+#else
+        const RememberWire w = rememberSubtitleWire(r.trackPick, &r.tracks, r.partId);
+#endif
+        playWeak.burnSubtitles = w.burn;
+        playWeak.subtitleStreamId = w.subtitleStreamId;
+        playWeak.burnSubsFixImage = w.burn && burnSubsFixBurnsImage(r.trackPick);
+        (void)havePref;
+    } else {
+        const bool subOn = r.trackPick.subtitleStreamId > 0 && !r.trackPick.subtitlesOff;
+        if (subOn) {
+#if defined(MUT_BURN_SUBS_FIX_DROP_TEXT)
+            // Test-only: flag on still drops burn for overlay-unpaintable picks
+            // (PGS / mov_text). Soft text correctly stays off the burn URL.
+            if (subtitleCodecKeepsDirectPlay(r.trackPick.subtitleCodec)) {
+                playWeak.burnSubtitles = false;
+            } else if (burnSubsFixEnabled()) {
+                playWeak.burnSubtitles = false;
+            } else {
+                playWeak.burnSubtitles = true;
+                playWeak.subtitleStreamId = r.trackPick.subtitleStreamId;
+            }
+#else
+            // #201-r3 (final spec): SRT/ASS go to the overlay and never burn. A pick the
+            // band will not paint (playerSubtitleKind) burns as on the tip; BURN_SUBS_FIX
+            // forces the transcode for image subs only. Never both painted and burned.
+            if (subtitlePickMayBurn(r.tracks, r.trackPick, r.partId)) {
+                playWeak.burnSubtitles = true;
+                playWeak.subtitleStreamId = r.trackPick.subtitleStreamId;
+                playWeak.burnSubsFixImage = burnSubsFixBurnsImage(r.trackPick);
+            } else {
+                playWeak.burnSubtitles = false;
+            }
+#endif
+        } else {
+            playWeak.subtitleStreamId = 0;
+            playWeak.burnSubtitles = false;
+            (void)havePref;
+        }
+    }
+    if (r.trackPick.audioStreamId > 0)
+        playWeak.audioStreamId = r.trackPick.audioStreamId;
+}
+
+bool directH264Allowed(bool wantDirect, bool isH264, bool burnSubtitles) {
+    return wantDirect && isH264 && !burnSubtitles;
+}
+
 ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::string& plexBase,
                                 const std::string& token, int64_t offsetMs, bool weakAlways,
                                 const WeakLadder& weakIn, bool preferDirectH264, int decodeW,
-                                int decodeH, bool forceLadder, const std::string& gateDetail) {
+                                int decodeH, bool forceLadder, const std::string& gateDetail,
+                                bool includeMarkers) {
     ResolveResult r;
     // The configured backend stays FpgaH264 while a verified PlexOB core is loaded.
     // That path rewrites the ladder to 624x480 baseline and directPlay=0. The ring
@@ -2491,7 +4465,23 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
     const bool fpgaBackend = session == VideoBackend::FpgaH264;
     WeakLadder playWeak =   // BUG1 pre-play: lowered below once the metadata shows a CAVLC source above the hard cap
         ladderForPlaySession(session, weakIn, !plexTargetIsPrivateLan(plexBase));
+    // #207 r3: a forced remote PlexOB play asks for the FPGA 640x480 profile, not 1280x720/6000k.
+    const bool remoteBaseEarly = !plexTargetIsPrivateLan(plexBase);
+    if (playWeak.owenb && misterplex::remoteUsesFpga640(misterplex::remoteH264TranscodeEnabled(),
+                                                        remoteBaseEarly)) {
+        playWeak.videoResolution = "640x480";
+        playWeak.maxVideoBitrateKbps = misterplex::remoteFpgaKbps(playWeak.maxVideoBitrateKbps);
+        std::fprintf(stderr, "misterplexd: remote ladder FPGA 640x480 %dk (REMOTE_H264_TRANSCODE=1)\n",
+                     playWeak.maxVideoBitrateKbps);
+    } else if (playWeak.owenb && remoteBaseEarly) {
+        const int beforeCap = playWeak.maxVideoBitrateKbps;
+        misterplex::applyRemoteOwenbCap(playWeak.videoResolution, playWeak.maxVideoBitrateKbps, true,
+                                        true);
+        std::fprintf(stderr, "misterplexd: remote OwenB cap 640x480 %dk (was %dk)\n",
+                     playWeak.maxVideoBitrateKbps, beforeCap);
+    }
     const WeakLadder& weak = playWeak;
+    bool audioNeedsTranscode = false;   // explicit non-default audio: never hand back a direct Part
     if (session == VideoBackend::OwenbRing && !weakIn.owenb) {
         std::fprintf(stderr,
                      "misterplexd: PlexOB session ladder %s %dk (not FPGA %s)\n",
@@ -2499,22 +4489,15 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
                      weakIn.videoResolution.c_str());
     }
     // forceLadder with no helper: PMS universal of the same item (never a direct Part,
-    // never a hard refuse). The lab ladder remains debug opt-in.
+    // never a hard refuse).
     // FPGA raster mode chosen by the weak-universal block below; "" off the FPGA path.
     std::string fpgaMode;
-    // 240p/480i title without a numeric rate: the ladder proxy probes it (&fps=src) when
-    // configured; without a helper, PMS universal uses 24000/1001.
-    bool fpgaFpsSrc = false;
+    // No ladder helper (#275): a title with no numeric rate uses PMS universal at
+    // 24000/1001. fps=src is not probed.
     std::string key = urlDecode(rawKeyOrPath);
-    if (key.empty() || key == "test" || key == "testsrc") {
-        r.ok = true;
-        r.playable = "testsrc";
-        r.detail = "test pattern";
-        r.durationMs = 120000;
-        r.sourceFpsHint = 30;
-        r.fpsNum = 30;
-        r.fpsDen = 1;
-        r.sourceAspect = {4, 3, true};
+    if (key.empty()) {
+        r.ok = false;
+        r.detail = "empty play key";
         return r;
     }
 
@@ -2555,16 +4538,10 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
         const char* ff = "/media/fat/misterplex/bin/ffmpeg";
         if (::access(ff, X_OK) != 0)
             ff = "ffmpeg";
-        std::string cmd = std::string(ff) + " -hide_banner -nostdin -i " + shellQuote(key) +
-                          " -f null -t 0 - 2>&1";
-        FILE* p = ::popen(cmd.c_str(), "r");
-        std::string ident;
-        if (p) {
-            char buf[512];
-            while (std::fgets(buf, sizeof(buf), p))
-                ident.append(buf);
-            ::pclose(p);
-        }
+        // argv + posix_spawnp, stdout and stderr on one pipe (the old "2>&1"), stdin /dev/null; no shell.
+        // An ffmpeg that cannot be started leaves ident empty, as a failed popen did.
+        const std::vector<std::string> ffArgv = {ff, "-hide_banner", "-nostdin", "-i", key, "-f", "null", "-t", "0", "-"};
+        const std::string ident = runArgv(ffArgv, true).out;
         int w = 0, h = 0, n = 0, d = 0, ax = 0, ay = 0;
         if (parseFfmpegIdentify(ident.c_str(), w, h, n, d, ax, ay)) {
             r.mediaWidth = w;
@@ -2604,25 +4581,31 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
         // Still try without token (local unauth servers)
     }
 
-    // Fetch metadata for title/duration/viewOffset
+    // Fetch metadata for title/duration/viewOffset. Markers ride this GET (no second round trip).
     std::string metaUrl = plexBase + key;
-    std::string metaHeaders;
-    if (fpgaBackend) {
-        if (!token.empty())
-            metaHeaders = curlHeaderArgs({{"X-Plex-Token", token}});
-    } else {
-        if (metaUrl.find('?') == std::string::npos)
-            metaUrl += "?";
-        else
-            metaUrl += "&";
-        if (!token.empty())
-            metaUrl += "X-Plex-Token=" + urlEncodeQuery(token);
+    if (includeMarkers) {
+        metaUrl += (metaUrl.find('?') == std::string::npos) ? "?" : "&";
+        metaUrl += "includeMarkers=1";
     }
+    // CHAPTERS unset/off: the metadata GET stays as it is (no includeChapters).
+    if (chaptersEnabled()) {
+        metaUrl += (metaUrl.find('?') == std::string::npos) ? "?" : "&";
+        metaUrl += "includeChapters=1";
+    }
+    // #340: every backend sends the metadata token as a header.
+    HeaderList metaHeaders;
+    if (!token.empty())
+        metaHeaders = HeaderList{{"X-Plex-Token", token}};
+#ifdef MUT_340_META_QUERY   // test-only mutant: the old non-FPGA query token
+    if (!fpgaBackend && !token.empty())
+        metaUrl += std::string(metaUrl.find('?') == std::string::npos ? "?" : "&") + "X-Plex-Token=" +
+                   urlEncodeQuery(token);
+#endif
     std::string xml = httpGet(metaUrl, 12, metaHeaders);
     // A 404 or 401 from PMS still returns a BODY (an HTML error page), so
     // "response is not empty" does not mean "item exists". Without this check a
     // ratingKey that was deleted or renumbered by a library re-scan sails
-    // through every branch below, finds no Part, and lands on the test pattern —
+    // through every branch below, finds no Part, and ends in a refused resolve —
     // which looks like a playback bug instead of a missing item, and silently
     // invalidates any measurement taken against it.
     // Show/season cast keys (Plex Web details Play on a series) have no Media —
@@ -2650,15 +4633,18 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
                              key.c_str(), dirType.empty() ? "directory" : dirType.c_str(),
                              nextKey.c_str());
                 return resolvePlayTarget(nextKey, plexBase, token, offsetMs, weakAlways, weak,
-                                         preferDirectH264, decodeW, decodeH, forceLadder, gateDetail);
+                                         preferDirectH264, decodeW, decodeH, forceLadder, gateDetail,
+                                         includeMarkers);
             }
         }
     }
     const bool metaFound = xml.find("<MediaContainer") != std::string::npos;
     if (metaFound) {
-        r.title = attr(xml, "Video", "title");
+        // One unescape. Titles arrive as THE &#39;BURBS; a second pass would
+        // turn a stored `&amp;lt;` into `<`.
+        r.title = plexDisplayText(attr(xml, "Video", "title"));
         if (r.title.empty())
-            r.title = attr(xml, "Directory", "title");
+            r.title = plexDisplayText(attr(xml, "Directory", "title"));
         auto d = attr(xml, "Video", "duration");
         if (d.empty())
             d = attr(xml, "Media", "duration");
@@ -2668,6 +4654,17 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
         if (!vo.empty())
             r.viewOffsetMs = std::strtoll(vo.c_str(), nullptr, 10);
         r.ratingKey = attr(xml, "Video", "ratingKey");
+        r.type = attr(xml, "Video", "type");
+        r.parentKey = attr(xml, "Video", "parentKey");
+        r.grandparentKey = attr(xml, "Video", "grandparentKey");
+        if (const std::string pi = attr(xml, "Video", "parentIndex"); !pi.empty())
+            r.parentIndex = static_cast<int>(std::strtol(pi.c_str(), nullptr, 10));
+        if (const std::string ix = attr(xml, "Video", "index"); !ix.empty())
+            r.index = static_cast<int>(std::strtol(ix.c_str(), nullptr, 10));
+        if (includeMarkers)
+            r.markers = markers::parseMarkers(xml, r.durationMs);
+        if (chaptersEnabled())
+            r.chapters = chapters::parseChapters(xml, r.durationMs);
         // Match-source-Hz / Content FPS: Media@videoFrameRate + video Stream@frameRate
         r.videoFrameRate = attr(xml, "Media", "videoFrameRate");
         if (r.videoFrameRate.empty())
@@ -2790,6 +4787,119 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
             if (xml.find("<Stream") != std::string::npos)
                 r.hasAudio = foundAudio;
         }
+        r.tracks = parseStreamCatalog(xml);
+        r.showKey = showMemoryKeyFromXml(xml);
+        r.partId = partIdFromXml(xml);
+        // SCRUB_THUMBS unset/off: no index kind, no extra GET. The metadata URL
+        // above is unchanged either way.
+        r.scrubIndexKind.clear();
+        if (scrubThumbsEnabled()) {
+            const scrub_thumbs::PartIndex ix = scrub_thumbs::partIndexFromXml(xml);
+            if (ix.partId > 0 && r.partId <= 0)
+                r.partId = ix.partId;
+            r.scrubIndexKind = ix.kind;
+        }
+        r.partKey = partKeyFromXml(xml, r.partId);
+        const std::optional<ShowPreference> pref =
+            r.showKey.empty() ? std::nullopt : processShowTracks().find(r.showKey);
+        r.trackPick = pickTracks(r.tracks, pref ? &*pref : nullptr, r.partId);
+        // REMEMBER_TRACKS on: restore this show's saved Program-menu / setStreams
+        // choice. Unset leaves the pickTracks result. playMedia ids below still
+        // name the streams for this play.
+        if (rememberTracksEnabled() && !r.showKey.empty()) {
+            if (const std::optional<RememberedChoice> remembered = processRememberTracks().find(r.showKey)) {
+                r.trackPick = applyRememberedTracks(r.tracks, *remembered, r.trackPick, r.partId);
+                std::fprintf(stderr, "misterplexd: remember tracks show=%s audio=%d subtitle=%d off=%d\n",
+                             r.showKey.c_str(), r.trackPick.audioStreamId, r.trackPick.subtitleStreamId,
+                             r.trackPick.subtitlesOff ? 1 : 0);
+            }
+        }
+        if (pendingPlayMediaAudioId() > 0) {
+            const TrackPick defaultPick = r.trackPick;
+            r.trackPick = pickAudioForPlay(r.tracks, r.trackPick, pendingPlayMediaAudioId(), r.partId);
+            // Also non-default when PMS already marks the pick selected (an earlier part PUT) but the container's
+            // first audio stream differs: a direct Part would still play the first stream.
+            audioNeedsTranscode = audioPickIsNonDefault(defaultPick, r.trackPick) ||
+                                  (r.trackPick.audioStreamId > 0 &&
+                                   r.trackPick.audioStreamId != firstAudioStreamId(r.tracks, r.partId));
+            std::fprintf(stderr, "misterplexd: audio pick id=%d applied=%d codec=%s lang=%s nonDefault=%d\n",
+                         pendingPlayMediaAudioId(), r.trackPick.audioStreamId, r.trackPick.audioCodec.c_str(),
+                         r.trackPick.audioLanguage.c_str(), audioNeedsTranscode ? 1 : 0);
+        }
+        {
+            // PMS universal start.mp4 ignores the audioStreamID URL param and transcodes the part's selected
+            // audio, so write the pick to the part BEFORE playback starts (what Plex clients do). A later
+            // play of the part without a pick puts the original selection back.
+            const int want = pendingPlayMediaAudioId();
+            const int pmsSel = pmsSelectedAudioId(r.tracks, r.partId);
+            const AudioPartPutPlan pl =
+                processAudioSelection().plan(r.partId, pmsSel, want > 0 ? r.trackPick.audioStreamId : 0);
+            if (pl.putAudioId > 0) {
+                std::string putUrl = plexBase + partAudioSelectionPath(r.partId, pl.putAudioId);
+                // #340: the token goes as an X-Plex-Token header, never in the PUT URL.
+#ifdef MUT_340_PUT_TOKEN_QUERY   // test-only mutant: the old query token
+                if (!token.empty())
+                    putUrl += "&X-Plex-Token=" + urlEncodeQuery(token);
+#endif
+                const auto putFn = reinterpret_cast<AudioPartPutFn>(audioPartPutHook.load(std::memory_order_acquire));
+                const bool ok = putFn ? putFn(putUrl, token) : plexHttpPut(putUrl, 8, nullptr, token);
+                std::fprintf(stderr, "misterplexd: audio part PUT /library/parts/%d audioStreamID=%d restore=%d ok=%d\n",
+                             r.partId, pl.putAudioId, pl.restore ? 1 : 0, ok ? 1 : 0);
+                if (ok && pl.restore) {
+                    r.trackPick = pickAudioForPlay(r.tracks, r.trackPick, pl.putAudioId, r.partId);
+                    audioNeedsTranscode = false;
+                } else if (!ok && !pl.restore) {
+                    processAudioSelection().forget(r.partId);
+                }
+            }
+        }
+        if (pendingPlayMediaSubtitleId() >= 0) {
+            SetStreamsRequest forced;
+            forced.hasSubtitle = true;
+            forced.subtitleStreamId = pendingPlayMediaSubtitleId();
+            r.trackPick = pickFromSetStreams(r.tracks, r.trackPick, forced, r.partId);
+        }
+        applyTrackPickToLadder(playWeak, r, static_cast<bool>(pref) || pendingPlayMediaSubtitleId() >= 0);
+        // FU14: BURN_SUBS_FIX follows the painter already on main (#201-r3). The part PUT
+        // (#234) runs only when that flag is explicitly on. Off: this block does not run.
+        // #324: the PUT also needs a server the signed-in user owns (burnPartPutGate).
+        // Skipped: no plan, so no restore record and no PUT; one log line when a PUT
+        // would have run. Allowed: restore-record behaviour as before.
+        const BurnPutGate burnGate = burnPartPutGate(plexBase);
+        if (burnGate != BurnPutGate::Allowed) {
+            const int burnPick =
+                playWeak.burnSubtitles && playWeak.subtitleStreamId > 0 ? playWeak.subtitleStreamId : 0;
+            if (burnPick > 0 && burnPick != pmsSelectedSubtitleId(r.tracks, r.partId))
+                std::fprintf(stderr, "misterplexd: %s part=%d subtitleStreamID=%d\n",
+                             burnPutSkipReason(burnGate), r.partId, burnPick);
+        } else {
+            const int burnPick =
+                playWeak.burnSubtitles && playWeak.subtitleStreamId > 0 ? playWeak.subtitleStreamId : 0;
+            const SubtitlePartPutPlan pl = processSubtitleSelection().plan(
+                r.partId, pmsSelectedSubtitleId(r.tracks, r.partId), burnPick);
+#ifndef MUT_BURN_SUBS_SELECT_NO_PUT
+            if (pl.put) {
+                std::string putUrl = plexBase + partSubtitleSelectionPath(r.partId, pl.putSubtitleId);
+                if (const std::string lan = plexDirectLanHttp(putUrl); !lan.empty())
+                    putUrl = lan;
+                // #340: the token goes as an X-Plex-Token header, never in the PUT URL.
+#ifdef MUT_340_PUT_TOKEN_QUERY   // test-only mutant: the old query token
+                if (!token.empty())
+                    putUrl += "&X-Plex-Token=" + urlEncodeQuery(token);
+#endif
+                const auto putFn = reinterpret_cast<AudioPartPutFn>(audioPartPutHook.load(std::memory_order_acquire));
+                const bool ok = putFn ? putFn(putUrl, token) : plexHttpPut(putUrl, 8, nullptr, token);
+                std::fprintf(stderr,
+                             "misterplexd: subtitle part PUT /library/parts/%d subtitleStreamID=%d restore=%d ok=%d\n",
+                             r.partId, pl.putSubtitleId, pl.restore ? 1 : 0, ok ? 1 : 0);
+                if (!ok && !pl.restore)
+                    processSubtitleSelection().forget(r.partId);
+            }
+#else
+            (void)pl;
+#endif
+        }
+        r.softSubPath = tryOpenSubsFallback(xml, r);
     }
 
     // STREAM product path: prefer direct H.264 Part (elementary after demux) so host
@@ -2876,7 +4986,7 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
     const bool wantDirect = !fpgaBackend &&
         key.rfind("/library", 0) == 0 &&
         (preferDirectH264 || (mediaMatchesDecode && lightDirectProfile));
-    const bool directH264 = wantDirect && isH264;
+    const bool directH264 = directH264Allowed(wantDirect, isH264, playWeak.burnSubtitles || audioNeedsTranscode);
     if (directH264) {
         const std::string prof = videoProfileNote();
         const std::string profSuffix = prof.empty() ? "" : (" profile=" + prof);
@@ -2885,11 +4995,11 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
             if (partKey[0] != '/')
                 partKey = "/" + partKey;
             r.playable = plexBase + partKey;
-            if (!token.empty())
-                r.playable += (r.playable.find('?') == std::string::npos ? "?" : "&") +
-                              std::string("X-Plex-Token=") + urlEncodeQuery(token);
+            appendPlayableTokenQuery(r.playable, token);
+            ensurePlayableTokenHeader(r, token, playWeak);
             r.ok = true;
             r.transcoded = false;
+            r.transcodeUrl = buildUniversalTranscodeUrl(plexBase, key, token, makeSessionId(), 0, playWeak);
             r.detail = std::string("direct H.264 Part (") +
                        (preferDirectH264 ? "STREAM" : "media_covers_decode") + profSuffix + ")";
             return r;
@@ -2906,6 +5016,7 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
             }
             r.ok = true;
             r.transcoded = false;
+            r.transcodeUrl = buildUniversalTranscodeUrl(plexBase, key, token, makeSessionId(), 0, playWeak);
             r.detail = std::string("direct H.264 Part file (") +
                        (preferDirectH264 ? "STREAM" : "media_covers_decode") + profSuffix + ")";
             return r;
@@ -2916,6 +5027,47 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
     // Reason the universal ladder was rejected by validateWeakLadder(); surfaces
     // in r.detail instead of the old misleading "remote transcoder" text.
     std::string whyBuild;
+    // ALLOW_480P60: raise the owenb profile frame-rate cap before the universal
+    // request is built. Flag off leaves directPlayFpsCap at 30 (tip behavior).
+#ifndef MUT_480P60_RESOLVE_SKIP
+    if (metaOk && owenbApplyAllow480p60FromMeta(playWeak, xml, r.mediaWidth, r.mediaHeight,
+                                                r.fpsNum, r.fpsDen)) {
+        std::fprintf(stderr,
+                     "misterplexd: ALLOW_480P60 direct-play %dx%d @ %d/%d "
+                     "(frameRate cap 60; 1280x720, 8-bit, bitrate, codec unchanged)\n",
+                     r.mediaWidth, r.mediaHeight, r.fpsNum, r.fpsDen);
+    }
+#endif
+    // reviewer-DIRECT-1030: REMOTE_H264_TRANSCODE on + remote + the source already fits the OB core
+    // (8-bit H.264, <= 1280x720 and <= 108k MB/s, <= 8000k, known fps/refs): direct-play the Part.
+    const bool rdirForced = metaFound && misterplex::remoteDirectForced(key);
+    if (rdirForced)
+        std::fprintf(stderr, "misterplexd: remote direct fallback: %s forced to the 480p transcode\n",
+                     key.c_str());
+    if (metaFound && !rdirForced && key.rfind("/library", 0) == 0 && misterplex::remoteH264TranscodeEnabled() &&
+        std::strcmp(plexLocationForBase(plexBase), "wan") == 0) {
+        const misterplex::RemoteDirectPmsCheck rd = misterplex::remoteDirectCheckFromPmsXml(xml);
+        const bool fits = rd.fits;
+        std::string pk = attr(xml, "Part", "key");
+        std::fprintf(stderr, "misterplexd: remote direct check %s %s %dbit %dx%d L%d %dk %dfps refs=%d fits=%d\n",
+                     rd.codec.c_str(), rd.profile.c_str(), rd.bitDepth, rd.mw, rd.mh, rd.level, rd.bitrateKbps,
+                     rd.fpsHint, rd.refFrames, fits ? 1 : 0);
+        if (misterplex::remoteDirectPlay(true, true, fits,
+                                         !playWeak.burnSubtitles && !audioNeedsTranscode && !pk.empty())) {
+            if (pk[0] != '/')
+                pk = "/" + pk;
+            r.ok = true;
+            r.transcoded = false;
+            r.playable = plexBase + pk;
+            appendPlayableTokenQuery(r.playable, token);
+            ensurePlayableTokenHeader(r, token, playWeak);
+            r.detail = "remote direct Part (fits core: " + rd.codec + " " + rd.profile + " " +
+                       std::to_string(rd.mw) + "x" + std::to_string(rd.mh) + " L" + std::to_string(rd.level) + " " +
+                       std::to_string(rd.bitrateKbps) + "k) part=" + pk;
+            misterplex::setRemoteDirectLastKey(key);
+            return r;
+        }
+    }
     // Prefer weak universal for dual A9 (STREAM=0 cast path / non-H.264 STREAM)
     if ((weakAlways || fpgaBackend) && key.rfind("/library", 0) == 0) {
         WeakLadder requested = weak;
@@ -2936,40 +5088,8 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
             // reserved 480 experiment ladders.
             fpgaMode = fpgaModeForLadder(weak);
             const bool allowReserved = fpgaMode != "240p";
-            // True 480i with the lab ladder (MPX_FPGA_MODE=480i, PLEX_DECODE_CODED_640)
-            // maps x one-to-one across 640 px, so anything narrower leaves 16 stale
-            // columns. Without a helper, PMS FPGA profiles are 624: that is the product
-            // noproxy path for every raster (mode table, not a 480i-only refuse).
-            if (fpgaMode == "480i" && ladderProxyConfigured()) {
-                const int codedW = fpga480pCodedWidthCeiling();
-                if (codedW != 640) {
-                    r.detail = "FPGA 480i raster: coded width limit is " + std::to_string(codedW) +
-                               ", not 640 (set FPGA_480P_CODED_W=640); a " +
-                               std::to_string(codedW) +
-                               "-wide picture leaves stale columns; refusing (no 624 fallback)";
-                    std::fprintf(stderr, "misterplexd: ERROR %s\n", r.detail.c_str());
-                    return r;
-                }
-            }
             if (fpsMissing) {
-                const bool proxyProbe = ladderProxyConfigured();
-                if (fpgaRasterNtsc(fpgaMode) && proxyProbe && !attr(xml, "Part", "key").empty()) {
-                    // Lab helper probes the Part and keeps its rate (&fps=src).
-                    fpgaFpsSrc = true;
-                    std::fprintf(stderr,
-                                 "misterplexd: FPGA %s raster fps not in metadata (vfr=%s "
-                                 "frameRate=%s): ladder &fps=src, the proxy probes the source "
-                                 "rate\n",
-                                 fpgaModeName(fpgaMode),
-                                 r.videoFrameRate.c_str(), r.frameRate.c_str());
-                } else if (fpgaRasterNtsc(fpgaMode) && proxyProbe) {
-                    r.detail = std::string("FPGA ") + fpgaModeName(fpgaMode) +
-                               " raster: no numeric frame rate in metadata (vfr=" +
-                               r.videoFrameRate + " frameRate=" + r.frameRate +
-                               ") and no Part to probe it; refusing (no remap)";
-                    std::fprintf(stderr, "misterplexd: ERROR %s\n", r.detail.c_str());
-                    return r;
-                } else {
+                {
                     // No helper, or 480p: PMS universal at the product clock. Remote
                     // metadata often omits numeric fps; 24000/1001 is the noproxy default
                     // for every raster.
@@ -2985,11 +5105,10 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
             // Every FPGA raster: 24-family is 24000/1001, 30-family is 30000/1001.
             // 60-family becomes 30000/1001 (2:2 on 59.94). PAL dumps to film on
             // 480p; 240p/480i refuse anything outside 24/30/60-family.
-            const bool fpsProxySet = ladderProxyConfigured();
             const bool ntscRaster = fpgaRasterNtsc(fpgaMode);
             const char* raster = fpgaModeName(fpgaMode);
-            // fps=src: the rate stays unknown (0/0) until the proxy probes it.
-            if (!fpgaFpsSrc) {
+            // No ladder proxy: apply the product clock directly.
+            {
                 int outNum = 0, outDen = 0;
                 const bool fpsChanged =
                     fpgaContentFps(exactNum, exactDen, ntscRaster, outNum, outDen);
@@ -3033,8 +5152,7 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
                     }
                 }
                 const char* route =
-                    fpsProxySet ? "ladder proxy fps=src"
-                    : std::strcmp(plexLocationForBase(plexBase), "wan") == 0
+                    std::strcmp(plexLocationForBase(plexBase), "wan") == 0
                         ? "no ladder proxy; remote PMS universal"
                         : "no ladder proxy; PMS source-rate profile";
                 if (fpsChanged && src60)
@@ -3121,79 +5239,29 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
         }
         const WeakLadder transcodeWeak = fitWeakLadderToAspect(requested, r.sourceAspect);
         const std::string session = makeSessionId();
+        r.sessionId = session;
 const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, session,
                                                               offsetMs > 0 ? offsetMs : 0,
                                                               transcodeWeak, &whyBuild);
+        if (!start.empty())
+            r.transcodeUrl = start;
         const bool remoteBase = std::strcmp(plexLocationForBase(plexBase), "wan") == 0;
-        // conf MPX_H264_PROTOTYPE=idr: PMS universal is never all-IDR. Prefer the lab
-        // FFmpeg ladder for every remote cast when a proxy is configured (fallback
-        // block below builds /ladder.ts). Skip dead/working remote universal alike.
+        // #275: no ladder helper; FPGA always takes PMS universal.
         if (fpgaBackend && metaOk) {
-            const char* prototypeIdr = std::getenv("MPX_H264_PROTOTYPE");
-            const std::string proxyEarly = ladderProxyUrl();
-            const bool helperOn = !proxyEarly.empty();
-            const bool idrLadder =
-                prototypeIdr && std::string(prototypeIdr) == "idr" && helperOn;
-            // 480 coded path needs pad+setsar 624x480; PMS universal often ships
-            // 624x416 DAR letterbox which never presents on e12 glass.
-            const bool ladder480 =
-                helperOn &&
-                (fpgaMode == "480p" || fpgaMode == "480i" ||
-                 transcodeWeak.profileName == "fpga-h264-480p" ||
-                 transcodeWeak.profileName == "480p");
-            // NTSC raster + 30-family rate: with a proxy the lab ladder carries the source
-            // rate (&fps=src). Without one, PMS universal uses the source-rate profile. An
-            // unknown rate (fps=src) always takes the ladder: the proxy probes it.
-            const bool ntscLadder30 = helperOn &&
-                                      fpgaRasterNtsc(fpgaMode) &&
-                                      (fpsIsTrue30(r.fpsNum, r.fpsDen) || fpgaFpsSrc);
-            // 240p on the 480p ABI (480-tier conf ladder) uses the proxy's 240crf16 rung
-            // for every family, as 480p/480i use the pad ladder.
-            int ladder240W = 0, ladder240H = 0;
-            parseResolution(weak.videoResolution, ladder240W, ladder240H);
-            const bool ladder240 = helperOn && fpgaMode == "240p" &&
-                                   (weak.profileName == "480p" ||
-                                    weak.profileName == "fpga-h264-480p" ||
-                                    ladder240W >= 480 || ladder240H >= 480);
-            // forceLadder takes the helper only when one is configured. With none,
-            // fall through to PMS universal (never a direct Part).
-            if ((forceLadder && helperOn) || (remoteBase && idrLadder) || ladder480 ||
-                ntscLadder30 || ladder240) {
-                // Fall through past universal to the Part/proxy path.
-                if (forceLadder)   // SPS-gate L3 (s2): the gate fallback's own first detail, ahead of the chain
-                    r.detail = "gate fallback: " + gateDetail + "; skip PMS universal → lab ladder";
-                else
-                r.detail = ladder480 ? "480p conf; skip PMS universal → lab pad ladder"
-                           : (remoteBase && idrLadder)
-                               ? "remote all-IDR conf; skip PMS universal → lab ladder"
-                           : fpgaFpsSrc
-                               ? "NTSC raster fps unknown; skip PMS universal → lab ladder fps=src"
-                           : ntscLadder30
-                               ? "NTSC raster 30-family fps; skip PMS universal → lab ladder"
-                               : "240p raster on the 480p ABI; skip PMS universal → 240crf16 ladder";
-            } else if (remoteBase &&
-                       ensureUniversalDecision(start, session, token, transcodeWeak)) {
+            if (ensureUniversalDecision(start, session, token, transcodeWeak)) {
                 goto remote_universal_decision_ok;
-            } else if (!remoteBase &&
-                       ensureUniversalDecision(start, session, token, transcodeWeak)) {
-                goto remote_universal_decision_ok;
-            } else if (fpgaBackend && !remoteBase && helperOn) {
-                if (fpgaRasterNtsc(fpgaMode) && fpsIsTrue30(r.fpsNum, r.fpsDen)) {
-                    r.detail = std::string("FPGA ") + fpgaModeName(fpgaMode) + " raster fps " +
-                               std::to_string(r.fpsNum) + "/" + std::to_string(r.fpsDen) +
-                               ": ladder helper configured and PMS profile " +
-                               plexRequestProfileName(transcodeWeak) + " (variant " +
-                               transcodeWeak.fpgaProfileVariant + ")" +
-                               " decision failed; refusing (no remap)";
+            } else {
+                if (misterplex::remoteTranscodeStopApplies(misterplex::remoteH264TranscodeEnabled(),
+                                                           remoteBase, metaFound)) {
+                    r.detail = "remote PMS H.264 transcode decision failed; no direct Part on remote "
+                               "(REMOTE_H264_TRANSCODE=1)";
+                    if (!whyBuild.empty())
+                        r.detail += " (" + whyBuild + ")";
                     std::fprintf(stderr, "misterplexd: ERROR %s\n", r.detail.c_str());
                     return r;
                 }
-                r.detail =
-                    "FPGA H.264 universal profile decision failed; direct/software fallback forbidden";
-                return r;
-            } else {
-                r.detail = remoteBase ? "remote universal decision failed; trying Part"
-                                      : "universal decision failed; trying direct part";
+                r.detail = remoteBase ? "remote universal decision failed; checking the original Part"
+                                      : "universal decision failed; checking the original Part";
                 if (forceLadder)
                     r.detail = "gate fallback: " + gateDetail + "; " + r.detail;
                 if (!whyBuild.empty())
@@ -3207,6 +5275,20 @@ const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, sessi
             if (remoteBase) {
                 const std::vector<std::pair<std::string, std::string>> probeHdr =
                     plexStartProbeHeaders(session, token, transcodeWeak, start);
+                // #207 r3: log the exact start request (tokens REDACTED) so a 400 can be diffed.
+                std::string startLog = misterplex::redactUrlTokens(start);
+                if (startLog.size() > 4096)
+                    startLog.resize(4096);
+                std::fprintf(stderr, "misterplexd: remote universal start url=%s\n", startLog.c_str());
+                for (const auto& hv : probeHdr) {
+                    const std::string val = hv.first.find("Token") != std::string::npos
+                                                ? std::string("REDACTED")
+                                                : misterplex::redactPlexBody(hv.second, 16384);
+                    const auto parts = misterplex::remoteHdrLogChunks(val, 400);
+                    for (std::size_t pi = 0; pi < parts.size(); ++pi)
+                        std::fprintf(stderr, "misterplexd: remote universal start hdr %s [%zu/%zu]: %s\n",
+                                     hv.first.c_str(), pi + 1, parts.size(), parts[pi].c_str());
+                }
                 if (transcodeWeak.highCabac) {
                     // VideoEncodeFlags is percent-encoded, so the header holds cabac%3D1.
                     bool sawHeader = false;
@@ -3237,44 +5319,73 @@ const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, sessi
                 // Unset: one ranged GET (status + leading bytes). MPX_PREWARM=0
                 // keeps the two-GET drain that held 075 for ~20s after the decision.
                 const bool prewarmProbe = plexPrewarmProbeEnabled();
+                int probeCapKb =
+                    remote_start::probeCapKb(std::getenv("MPX_REMOTE_PROBE_CAP_KB"));
+                // #276: never drain 37–72 MB. "0" is not a rollback here.
+                if (probeCapKb <= 0)
+                    probeCapKb = remote_start::kDefaultProbeCapKb;
+                const size_t probeCapBytes = static_cast<size_t>(probeCapKb) * 1024u;
+                // fr-resume-1025: a cold remote transcoder needs more than one 24 s try (glass 1025: dead at
+                // 24.1 s, the repeat from idle showed picture at +31.7 s). Retry inside a budget.
+                const int probeBudgetS =
+                    remote_start::budgetSeconds(std::getenv("MPX_REMOTE_START_BUDGET_S"));
+                const int probeTries = remote_start::attemptsForBudget(probeBudgetS);
                 int probeHttp = 0;
                 std::string probeBody;
                 const auto probeStart = std::chrono::steady_clock::now();
-                if (prewarmProbe) {
-                    const auto probe = plexHttpGetStatusAndBody(start, probeHdr,
-                                                                plexRequestProfileName(transcodeWeak, start),
-                                                                12);
-                    probeHttp = probe.httpStatus;
-                    probeBody = probe.body;
-                } else {
-                    const auto probe = plexHttpGetNoBodyResult(start, probeHdr, 12);
-                    probeHttp = probe.httpStatus;
-                }
-                // 206/200 with body is ideal; 0-byte 200 or 4xx/5xx ⇒ dead transcoder.
-                startAlive = plexHttpStatusOk(probeHttp) && probeHttp != 204;
-                // Companion cannot see body size via no-body helper; do a tiny GET.
-                if (startAlive) {
-                    if (!prewarmProbe)
-                        probeBody = httpGet(start, 12, curlHeaderArgs(probeHdr),
-                                            plexRequestProfileName(transcodeWeak, start));
-                    if (probeBody.size() < 64 || probeBody.find("<html") != std::string::npos ||
-                        probeBody.find("Bad Request") != std::string::npos ||
-                        probeBody.find("MediaContainer") != std::string::npos) {
-                        startAlive = false;
+                auto probeOnce = [&]() -> remote_start::Attempt {
+                    const RemoteStartProbeResult pr = remoteStartProbeOnce(
+                        start, probeHdr, plexRequestProfileName(transcodeWeak, start), probeCapBytes, prewarmProbe);
+                    probeHttp = pr.httpStatus;
+                    probeBody = pr.body;
+                    remote_start::Attempt a;
+                    a.http = pr.httpStatus;
+                    a.bytes = pr.body.size();
+                    a.alive = pr.alive;
+                    // #276: stop this attempt's session when it is dead so a retry
+                    // does not leave a live transcoder (only the first session used to stop).
+                    if (!pr.alive) {
+                        const std::string stopUrl = remote_start::abandonedStopUrl(plexBase, session);
+                        if (!stopUrl.empty())
+                            (void)plexHttpGetNoBodyResult(stopUrl, probeHdr, 4);
                     }
-                }
+                    return a;
+                };
+                const remote_start::Outcome probeRun = remote_start::runProbe(
+                    probeTries, probeOnce, [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
+                startAlive = probeRun.alive;
                 const auto probeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                          std::chrono::steady_clock::now() - probeStart)
                                          .count();
+                // bytes= is from the capped read when cap_kb>0 (see probeCapBytes), not full entity length.
                 std::fprintf(stderr,
-                             "misterplexd: remote start probe ms=%lld http=%d bytes=%zu prewarm=%d\n",
+                             "misterplexd: remote start probe ms=%lld http=%d bytes=%zu bytes_capped=%d "
+                             "prewarm=%d attempts=%d/%d budget_s=%d cap_kb=%d\n",
                              static_cast<long long>(probeMs), probeHttp, probeBody.size(),
-                             prewarmProbe ? 1 : 0);
+                             probeCapKb > 0 ? 1 : 0, prewarmProbe ? 1 : 0, probeRun.attempts,
+                             probeTries, probeBudgetS, probeCapKb);
                 if (!startAlive) {
+                    r.remoteUniversalStartHttp = probeHttp;
                     std::fprintf(stderr,
                                  "misterplexd: remote universal start dead http=%d — "
                                  "shared PMS transcoder produced no media\n",
                                  probeHttp);
+                    // #207: log WHY PMS refused the start (body truncated, tokens REDACTED).
+                    std::string why = probeBody;
+                    if (why.empty() && probeHttp >= 400)
+                        why = plexHttpGetStatusAndBody(start, probeHdr,
+                                                       plexRequestProfileName(transcodeWeak, start), 8)
+                                  .body;
+                    std::fprintf(stderr, "misterplexd: remote universal start body http=%d: %s\n", probeHttp,
+                                 misterplex::redactPlexBody(why).c_str());
+                    // The probe started a transcode session on that server; nothing will play it. Stop it
+                    // (best effort, token in a header only, never fatal) instead of leaving it to PMS's idle kill.
+                    const std::string stopUrl = remote_start::abandonedStopUrl(plexBase, session);
+                    if (!stopUrl.empty()) {
+                        const auto stop = plexHttpGetNoBodyResult(stopUrl, probeHdr, 4);
+                        std::fprintf(stderr, "misterplexd: abandoned remote start stop http=%d ok=%d\n",
+                                     stop.httpStatus, stop.ok ? 1 : 0);
+                    }
                 }
             }
             {
@@ -3287,7 +5398,11 @@ const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, sessi
                 std::string partKey = dv.partKey;
                 if (partKey.empty())
                     partKey = attr(xml, "Part", "key");
-                const bool takePart = decisionIsDirectPlay(dv) && partMm.empty() && !partKey.empty();
+                // #207: a remote play never takes the source Part when REMOTE_H264_TRANSCODE is on.
+                const bool takePart = misterplex::remoteMayTakePart(
+                    misterplex::remoteH264TranscodeEnabled(), remoteBase,
+                    !transcodeWeak.burnSubtitles && !audioNeedsTranscode && decisionIsDirectPlay(dv) &&
+                        partMm.empty() && !partKey.empty());
                 if (takePart || startAlive) {
                 r.ok = true;
                 r.httpHeaders = plexFfmpegHeaders(session, token, transcodeWeak,
@@ -3305,9 +5420,8 @@ const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, sessi
                         partKey = "/" + partKey;
                     r.transcoded = false;
                     r.playable = plexBase + partKey;
-                    if (!token.empty())
-                        r.playable += (r.playable.find('?') == std::string::npos ? "?" : "&") +
-                                      std::string("X-Plex-Token=") + urlEncodeQuery(token);
+                    appendPlayableTokenQuery(r.playable, token);
+                    ensurePlayableTokenHeader(r, token, transcodeWeak);
                     r.detail = "PMS direct " + transcodeWeak.profileName + " " +
                                transcodeWeak.videoResolution + " " + key +
                                " part=" + partKey + " part_mismatch=";
@@ -3341,213 +5455,63 @@ const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, sessi
                 }
             }
             // Remote decision OK but start body empty: try direct Part / lab proxy below.
-            r.detail = "remote PMS transcoder returned empty body; trying direct Part";
-        } else if (fpgaBackend && !remoteBase && ladderProxyConfigured()) {
-            r.detail =
-                "FPGA H.264 universal profile decision failed; direct/software fallback forbidden";
-            return r;
+            r.detail = "remote PMS transcoder returned no media; checking the original Part";
         } else {
-            r.detail = remoteBase ? "remote universal decision failed; trying Part"
-                                  : "universal decision failed; trying direct part";
+            r.detail = remoteBase ? "remote universal decision failed; checking the original Part"
+                                  : "universal decision failed; checking the original Part";
             if (forceLadder)
                 r.detail = "gate fallback: " + gateDetail + "; " + r.detail;
         }
     }
 
-    // Fallback: direct Part stream URL from metadata, or lab ladder proxy for remote.
+    // #207 ( lab log 10-30: decision=transcode, start probe http=400, then "resolved direct Part" of the
+    // HEVC original): with REMOTE_H264_TRANSCODE on, a remote play with no ladder helper never falls back
+    // to the original Part. It errors with the PMS reason instead (HEVC refused / H.264 black screen).
+    if (misterplex::remoteTranscodeStopApplies(
+            misterplex::remoteH264TranscodeEnabled(),
+            std::strcmp(plexLocationForBase(plexBase), "wan") == 0, metaFound)) {
+        r.detail = "remote PMS H.264 transcode unavailable (" + r.detail +
+                   "); no original Part on a remote server (REMOTE_H264_TRANSCODE=1)";
+        std::fprintf(stderr, "misterplexd: ERROR %s\n", r.detail.c_str());
+        return r;
+    }
+    // Fallback: direct Part stream URL from metadata (no ladder proxy since #275).
+    if (metaFound) {
+        // #207: never hand the core a direct Part outside its decode envelope on a remote server (LAN unchanged).
+        const ObSourceEntropy se = parseObSourceEntropy(xml);
+        misterplex::ObDirectSource ds;
+        ds.codec = se.codec;
+        ds.profile = se.profile;
+        ds.bitrateKbps = se.bitrateKbps;
+        ds.width = std::atoi(attr(xml, "Media", "width").c_str());
+        ds.height = std::atoi(attr(xml, "Media", "height").c_str());
+        const auto vs = xml.find("streamType=\"1\"");
+        if (vs != std::string::npos) {
+            const auto ts = xml.rfind("<Stream", vs);
+            const auto te = xml.find('>', vs);
+            if (ts != std::string::npos && te != std::string::npos)
+                ds.level = std::atoi(attrIn(xml.substr(ts, te - ts), "level").c_str());
+        }
+        const bool decodable = misterplex::obDirectDecodable(ds);
+        if (!misterplex::directFallbackAllowed(misterplex::remoteH264TranscodeEnabled(),
+                                               std::strcmp(plexLocationForBase(plexBase), "wan") == 0, decodable)) {
+            r.ok = false;
+            r.detail = "direct Part outside the OB decode envelope (" + ds.codec + " " + ds.profile + " " +
+                       std::to_string(ds.width) + "x" + std::to_string(ds.height) + " L" +
+                       std::to_string(ds.level) + " " + std::to_string(ds.bitrateKbps) +
+                       "k) after: " + r.detail + " (REMOTE_H264_TRANSCODE=1)";
+            std::fprintf(stderr, "misterplexd: ERROR %s\n", r.detail.c_str());
+            return r;
+        }
+    }
     if (metaFound) {
         auto partKey = attr(xml, "Part", "key");
         if (!partKey.empty()) {
             if (partKey[0] != '/')
                 partKey = "/" + partKey;
             std::string partUrl = plexBase + partKey;
-            if (!token.empty())
-                partUrl += (partUrl.find('?') == std::string::npos ? "?" : "&") +
-                           std::string("X-Plex-Token=") + urlEncodeQuery(token);
+            appendPlayableTokenQuery(partUrl, token);
 
-            // Lab host FFmpeg proxy: re-ladder remote Parts into FPGA all-IDR mpegts.
-            // Debug opt-in: MPX_REMOTE_LADDER_PROXY / REMOTE_LADDER_PROXY non-empty.
-            const std::string proxy = ladderProxyUrl();
-            const char* prototypeNow = std::getenv("MPX_H264_PROTOTYPE");
-            const bool idrNeed =
-                prototypeNow && std::string(prototypeNow) == "idr";
-            int ladderW = 0, ladderH = 0;
-            parseResolution(weak.videoResolution, ladderW, ladderH);
-            const bool tier480Ladder =
-                weak.profileName == "480p" || weak.profileName == "fpga-h264-480p" ||
-                ladderW >= 480 || ladderH >= 480;
-            // Local 480 FOAR PMS universal often emits 624x416 (DAR letterbox) without
-            // pad; that fails first-present on e12. Lab ladder forces pad+setsar.
-            // NTSC raster + 30-family rate (or fps=src): the ladder &fps= carries it.
-            const bool ntscFps30 = fpgaBackend && fpgaRasterNtsc(fpgaMode) &&
-                                   (fpsIsTrue30(r.fpsNum, r.fpsDen) || fpgaFpsSrc);
-            // A 240p raster on a 480-tier conf ladder (MPX_FPGA_MODE=240p on the 480p
-            // ABI) decodes coded 320x240 into the 640-pitch DPB: every family takes the
-            // 320x240 ladder rung there, never the 624/640x480 pad ladder.
-            const bool raster240Ladder = fpgaBackend && fpgaMode == "240p" && tier480Ladder;
-            const bool pad480 = tier480Ladder && !raster240Ladder;
-            const bool wantProxy =
-                fpgaBackend && !proxy.empty() &&
-                (forceLadder ||   // SPS-gate L3 b1: the gate fallback takes the ladder whatever the conf terms
-                 std::strcmp(plexLocationForBase(plexBase), "wan") == 0 ||
-                 !mediaVideoIsH264(xml) || idrNeed || tier480Ladder || ntscFps30);
-            if (wantProxy) {
-                std::string proxyBase = proxy;
-                while (!proxyBase.empty() && proxyBase.back() == '/')
-                    proxyBase.pop_back();
-                int pw = pad480 ? 624 : 320;
-                int ph = pad480 ? 480 : 240;
-                // AU32 240p: default ~2.5 Mbps all-IDR (was 800k/1Mbps for 8KiB ring).
-                int pbr = pad480 ? 1500 : 2500;
-                if (ladderW > 0 && !raster240Ladder)
-                    pw = ladderW;
-                if (ladderH > 0 && !raster240Ladder)
-                    ph = ladderH;
-                // Coded 480 FPGA rectangle: 624×480 (39 MB) by default; TRUE640
-                // 640×480 (40 MB, PLEX_DECODE_CODED_640 cores) only with the
-                // MPX_FPGA_480P_CODED_W=640 opt-in. The ladder proxy encodes
-                // exactly this w, so the switch holds end to end.
-                if (pad480) {
-                    const int maxCodedW = fpga480pCodedWidthCeiling();
-                    if (pw > maxCodedW || pw == 0)
-                        pw = maxCodedW;
-                    if (ph == 0 || ph > 480)
-                        ph = 480;
-                }
-                if (weak.maxVideoBitrateKbps > 0)
-                    pbr = weak.maxVideoBitrateKbps;
-                const int brCap = pad480 ? 2500 : 3000;
-                if (pbr > brCap)
-                    pbr = brCap;
-                if (pw <= 0)
-                    pw = pad480 ? 624 : 320;
-                if (ph <= 0)
-                    ph = pad480 ? 480 : 240;
-                // Prefer measured source fps when true24; else product 24000/1001.
-                // NTSC rasters (240p, 480i) always ask the proxy for the source rate
-                // (&fps=src, DAEMON-FPS-SRC-ALWAYS-1003): it probes the Part and keeps
-                // a 24/30-family rate (60-family halved), so no metadata rate can turn
-                // into a remap on the ladder. A numeric metadata rate stays the expected
-                // rate (pacing, and the demux PTS identity check, which refuses a stream
-                // at any other rate); fps-less titles stay 0/0.
-                const bool ntscSrc = fpgaBackend && fpgaRasterNtsc(fpgaMode);
-                std::string fpsQ = "24000/1001";
-                if (fpgaFpsSrc || ntscSrc)
-                    fpsQ = "src";
-                else if (r.fpsNum > 0 && r.fpsDen > 0)
-                    fpsQ = std::to_string(r.fpsNum) + "/" + std::to_string(r.fpsDen);
-                if (ntscSrc && !fpgaFpsSrc)
-                    std::fprintf(stderr,
-                                 "misterplexd: FPGA %s raster fps=src to the ladder proxy "
-                                 "(metadata rate %d/%d stays the expected rate)\n",
-                                 fpgaModeName(fpgaMode), r.fpsNum, r.fpsDen);
-                // MPX_BROWSE_V2 only (weak fields empty for every cast): the ladder input a
-                // browse play ticket chose (lead Q4). The helper's own URL wins: for
-                // "server-transcode" that is its relay (mpx-menu 59044aa, /menu/tsrc/<slug>/<rk>/
-                // o<ms>, contract §9.3), which carries the offset in its path (no &offset_ms) and
-                // gets an explicit fps (tsrcRelayLadderFps), else the original Part. With no helper
-                // URL, "server-transcode" asks the owning server for its own transcode at the
-                // offset, used only when it streams the way the ladder will fetch it (no X-Plex
-                // headers); else the metadata Part as before.
-                std::string ladderSrc =
-                    weak.ladderSrcOverride.empty() ? partUrl : weak.ladderSrcOverride;
-                bool ladderSrcAtOffset = false;
-                if (weak.ladderServerTranscode && !weak.ladderSrcOverride.empty()) {
-                    int tn = 0, td = 0;
-                    if (tsrcRelayLadderFps(r.fpsNum, r.fpsDen, tn, td)) {
-                        fpsQ = std::to_string(tn) + "/" + std::to_string(td);
-                        ladderSrcAtOffset = true;
-                        std::fprintf(stderr,
-                                     "misterplexd: browse ladder input: the helper's "
-                                     "server-transcode relay (offset in its path, fps %s)\n",
-                                     fpsQ.c_str());
-                    } else {
-                        ladderSrc = partUrl;
-                        std::fprintf(stderr,
-                                     "misterplexd: browse ladder input: the server-transcode "
-                                     "relay needs a 24/30/60-family metadata rate (got %d/%d); "
-                                     "the original Part instead\n",
-                                     r.fpsNum, r.fpsDen);
-                    }
-                }
-                if (weak.ladderServerTranscode && weak.ladderSrcOverride.empty()) {
-                    WeakLadder ow = weak;
-                    ow.ladderServerTranscode = false;
-                    const WeakLadder owFit = fitWeakLadderToAspect(ow, r.sourceAspect);
-                    const std::string tsSession = makeSessionId();
-                    const bool tsWan = std::strcmp(plexLocationForBase(plexBase), "wan") == 0;
-                    std::string tsStart;
-                    const std::string tsSrc = ownerTranscodeLadderSrc(
-                        plexBase, key, token, tsSession, offsetMs, owFit, tsWan, &tsStart);
-                    std::string tsWhy;
-                    if (tsStart.empty()) {
-                        tsWhy = "no transcode URL for this raster";
-                    } else if (!ensureUniversalDecision(tsStart, tsSession, token, owFit,
-                                                        /*forceLadderCaps=*/tsWan)) {
-                        tsWhy = "its transcode decision failed";
-                    } else {
-                        const LadderStartProbe pr = probeStartLikeLadder(tsSrc, 12);
-                        if (!pr.media)
-                            tsWhy = "its transcode does not stream without headers (http=" +
-                                    std::to_string(pr.httpStatus) + " bytes=" +
-                                    std::to_string(pr.bytes) + ")";
-                    }
-                    if (tsWhy.empty()) {
-                        ladderSrc = tsSrc;
-                        ladderSrcAtOffset = universalOffsetSeconds(offsetMs) > 0;
-                        std::fprintf(stderr,
-                                     "misterplexd: browse ladder input: the owning server's own "
-                                     "transcode %s %d kbps (start %s)\n",
-                                     owFit.videoResolution.c_str(), owFit.maxVideoBitrateKbps,
-                                     ladderSrcAtOffset ? "at the offset" : "at 0");
-                    } else {
-                        std::fprintf(stderr,
-                                     "misterplexd: browse ladder input: owning server: %s; the "
-                                     "original Part instead\n",
-                                     tsWhy.c_str());
-                    }
-                }
-                r.playable = proxyBase + "/ladder.ts?src=" + urlEncodeQuery(ladderSrc) +
-                             "&w=" + std::to_string(pw) + "&h=" + std::to_string(ph) +
-                             "&br=" + std::to_string(pbr) + "&fps=" + fpsQ;
-                r.viaLadderProxy = true;   // SPS-gate L3: the stream is the ladder helper's (GatePlayContext)
-                // 240p: 2x lanczos intermediate then downscale before encode (less blocky).
-                if (!pad480)
-                    r.playable += "&hq=1";
-                // Bake resume/seek into the ladder so FFmpeg -ss runs on the Part;
-                // live mpegts is not demux-seekable (EPERM → bounce to title).
-                if (offsetMs > 0 && !ladderSrcAtOffset)
-                    r.playable += "&offset_ms=" + std::to_string(offsetMs);
-                r.ok = true;
-                r.transcoded = true;
-                r.httpHeaders.clear();
-                // fps=src keeps the rate unknown (0/0): pacing follows the stream PTS
-                // and the demux skips its rate-identity check, so nothing is guessed.
-                // An NTSC raster never takes the 24000/1001 default either.
-                if ((r.fpsNum <= 0 || r.fpsDen <= 0) && !fpgaFpsSrc && !ntscSrc) {
-                    r.fpsNum = 24000;
-                    r.fpsDen = 1001;
-                }
-                const char* why =
-                    pad480 ? "480p pad ladder"
-                    : (idrNeed ? "all-IDR conf"
-                       : fpgaFpsSrc ? (fpgaMode == "240p" ? "240p raster fps=src"
-                                                          : "480i raster fps=src")
-                       : ntscFps30 ? (fpgaMode == "240p" ? "240p raster fps passthrough"
-                                                         : "480i raster fps passthrough")
-                       : raster240Ladder ? "240p raster 240crf16 rung"
-                       : forceLadder ? "gate fallback rung"
-                                     : "remote PMS transcoder unavailable");
-                r.detail = std::string("lab ladder proxy ") + std::to_string(pw) + "x" +
-                           std::to_string(ph) + "@" + std::to_string(pbr) + "k (" + why + ")";
-                if (offsetMs > 0)
-                    r.detail += " offset_ms=" + std::to_string(offsetMs);
-                if (forceLadder)   // T1f: the result's detail starts "gate fallback: "
-                    r.detail = "gate fallback: " + gateDetail + "; " + r.detail;
-                std::fprintf(stderr, "misterplexd: %s base=%s → %s\n", r.detail.c_str(),
-                             plexBase.c_str(), proxyBase.c_str());
-                return r;
-            }
 
             // FPGA needs annex-B H.264 AUs. Direct Part is only viable when the
             // source is already H.264 (remote shared PMS often has a dead transcoder).
@@ -3573,16 +5537,20 @@ const std::string start = buildUniversalTranscodeUrl(plexBase, key, token, sessi
                            "; PMS universal failed (never a direct Part)";
                 return r;
             }
-            r.playable = partUrl;
-            r.ok = true;
-            r.transcoded = false;
-            r.httpHeaders = plexFfmpegHeaders(makeSessionId(), token, weak);
-            r.detail = fpgaBackend ? "direct H.264 Part (remote transcoder unavailable)"
-                                   : "direct Part stream";
-            return r;
+            // The early direct-H.264 gate already refused a burn. This fallback
+            // must not hand the Part back: a direct Part does not burn subtitles.
+            if (!playWeak.burnSubtitles && !audioNeedsTranscode) {
+                r.playable = partUrl;
+                r.ok = true;
+                r.transcoded = false;
+                r.httpHeaders = plexFfmpegHeaders(makeSessionId(), token, weak);
+                r.detail = fpgaBackend ? "direct H.264 Part (remote transcoder unavailable)"
+                                       : "direct Part stream";
+                return r;
+            }
         }
         auto file = attr(xml, "Part", "file");
-        if (!file.empty()) {
+        if (!file.empty() && !playWeak.burnSubtitles && !audioNeedsTranscode) {
             r.playable = urlDecode(file);
             r.ok = true;
             r.detail = "Part file path";
@@ -3629,13 +5597,14 @@ PlayQueue fetchPlayQueue(const std::string& queueIdOrContainerKey, const std::st
 
     std::string url = base + "/playQueues/" + id + "?";
     if (!extraQuery.empty())
-        url += extraQuery + "&";
+        url += extraQuery;
     else
-        url += "own=1&";
+        url += "own=1";
+    HeaderList pqHeaders;   // #340: token as a header
     if (!token.empty())
-        url += "X-Plex-Token=" + urlEncodeQuery(token);
+        pqHeaders.push_back({"X-Plex-Token", token});
 
-    const std::string xml = httpGet(url, 20);
+    const std::string xml = httpGet(url, 20, pqHeaders);
     if (xml.empty() || xml.find("MediaContainer") == std::string::npos) {
         q.detail = "play queue fetch failed id=" + id + " bytes=" + std::to_string(xml.size());
         return q;
@@ -3705,7 +5674,7 @@ PlayQueue parsePlayQueueXml(const std::string& xml, const std::string& id, const
         item.playQueueItemId = attrIn(slice, "playQueueItemID");
         if (item.playQueueItemId.empty())
             item.playQueueItemId = attrIn(slice, "playQueueItemId");
-        item.title = attrIn(slice, "title");
+        item.title = plexDisplayText(attrIn(slice, "title"));
         item.type = openTagAttr(slice, "type");
         auto d = attrIn(slice, "duration");
         if (!d.empty())

@@ -1,4 +1,18 @@
 # MiSTerPlex settings → /media/fat/linux/misterplex.conf
+#
+# BOOT_NET_ADDR (exact key). scripts/misterplexd-boot.sh and
+# scripts/misterplexd-boot-mast.sh wait for this IPv4 on BOOT_NET_IF (eth0
+# unless set). Env BOOT_NET_ADDR overrides this line. If both are unset the
+# address wait is skipped and the daemon still starts. This template does not
+# bake an address. Lab card fragments are not part of the public source tree.
+# BOOT_NET_ADDR=192.0.2.20
+#
+# FRIENDLY_NAME and PLAYER_ID (exact keys). Env BOOT_NAME / FRIENDLY_NAME and
+# BOOT_ID / PLAYER_ID / MPX_ID override them. When name and id are both unset,
+# the boot scripts derive misterplex- plus the last three octets of the IPv4
+# at runtime (192.0.2.20 -> misterplex-0.2.20).
+# FRIENDLY_NAME=
+# PLAYER_ID=
 # After edits, reboot, or:
 #   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh stop
 #   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh start
@@ -13,8 +27,6 @@ MPX_LEGACY_CORE_PREFIX=999800cf
 # PLEX_BASE=http://YOUR-PLEX-SERVER:32400
 # Optional: comma-separated additional servers (or use multiple PLEX_BASE= lines).
 # PLEX_SERVERS=http://SERVER-A:32400,http://SERVER-B:32400
-# Optional home server when several are signed in: a name or address. Unset uses the first.
-# PLEX_HOME=
 # PLEX_BASE=http://ANOTHER-PLEX-SERVER:32400
 # PLEX_HOST=YOUR-PLEX-SERVER
 # Optional static token (cast often supplies transient X-Plex-Token)
@@ -22,11 +34,255 @@ MPX_LEGACY_CORE_PREFIX=999800cf
 
 # Optional AirPlay helper on another computer. Leave unset to use the
 # on-card helper at 127.0.0.1:18781. 192.0.2.10 is a documentation example.
-# GCAST_XCODE=http://192.0.2.10:18780
+# AIRPLAY_XCODE=http://192.0.2.10:18780
+# GCAST_XCODE is the old name for AIRPLAY_XCODE. An existing GCAST_XCODE= line
+# still works when AIRPLAY_XCODE is unset.
+# AIRPLAY_MIRROR=1 opts in to screen mirroring (SETUP type 110) and the FPGA
+# feed. Default off: unset does not advertise mirroring. A card that mirrors
+# sets 1. Env AIRPLAY_MIRROR overrides this line.
+# AIRPLAY_MIRROR=0
+
+# --- PlexOB direct play -------------------------------------------------------
+# A new card turns the Tip A switches on (the set below, plus soft subtitles
+# and the Program-menu Subtitles row). Delete a line to leave that switch off.
+# Subtitle burn stays off.
+# ALLOW_480P60=1 lets a source at or under 854x480 and at most 60 fps direct-play
+# (the PlexOB core can do 480p60). Default off: the client profile caps frame
+# rate at 30, so 60 fps is transcoded. 720p60 and anything wider than 854 stay
+# transcoded either way. 1280x720, 8-bit, bitrate, and H.264 caps still apply.
+# Env MPX_ALLOW_480P60 or ALLOW_480P60 overrides this line.
+ALLOW_480P60=1
+
+# PAUSE_DIM=1 scales painted OSD/UI RGB to about 40% while playback is paused,
+# and after PAUSE_DIM_IDLE_MIN minutes (default 5) on a still PlexUI, library
+# page, or menu. Resume, play, or a new UI frame restores full brightness.
+# Default off: the pause bar matches the build without this flag. The FPGA
+# picture is not scaled. Env MPX_PAUSE_DIM or PAUSE_DIM overrides this line.
+PAUSE_DIM=1
+# PAUSE_DIM_IDLE_MIN=5
+
+# YT_NEXT_PREV=1 honors YouTube lounge next/previous (skip within the queue).
+# Default off: those commands stay ignored. A video that ends still advances
+# the queue. Play, pause, seek, and stop are unchanged either way.
+# Env MPX_YT_NEXT_PREV or YT_NEXT_PREV overrides this line.
+YT_NEXT_PREV=1
+
+# YT_LIVE=1 casts a YouTube livestream (and a premiere that has started) by
+# copy-remuxing its HLS manifest to MPEG-TS with the on-card helper ffmpeg.
+# The player opens 127.0.0.1, not the manifest. Default off: a VOD cast uses
+# the https selector and the googlevideo URL, as before. Needs local yt-dlp
+# and /media/fat/misterplex/bin/ffmpeg. A healthy remote AIRPLAY_XCODE still
+# takes YouTube through that helper, which is VOD-only.
+# Env MPX_YT_LIVE or YT_LIVE overrides this line.
+# YT_LIVE=0
+
+# YT_VOLUME=1 honors YouTube lounge setVolume / getVolume. setVolume with an
+# integer 0-100 calls the player setVolumePercent, and the phone gets
+# onVolumeChanged at that level. getVolume replies the last applied level
+# (100 until a set). Default off: both commands still reply onVolumeChanged
+# 100 and the player volume is unchanged.
+# Env MPX_YT_VOLUME or YT_VOLUME overrides this line.
+YT_VOLUME=1
+
+# YT_CAST_TITLE=1 shows the YouTube video title on the play bar and the phone
+# now-playing line. The title is the one the local yt-dlp resolve already
+# extracted (player videoDetails.title). That resolve does not request
+# captions. Default off: the OSD title is unchanged.
+# Env MPX_YT_CAST_TITLE or YT_CAST_TITLE overrides this line.
+YT_CAST_TITLE=1
+
+# Persistent yt-dlp cache on writable SD (the root filesystem is read-only).
+# Env MPX_YT_CACHE_DIR overrides this line.
+# YT_CACHE_DIR=/media/fat/misterplex/yt-cache
+
+# Resident stdlib Python 3.9+ Android resolver, only while PlexOB/legacy Plex is
+# open (never Spelunkr). Default on; startup is async and an unready/failed
+# helper immediately falls back to one-shot yt-dlp with the SD cache above.
+# Worker runs nice 10, capped at 96 MiB RSS, with 1-60s crash respawn backoff.
+# MPX_YT_WARM / MPX_YT_WARM_SOCK / MPX_YT_WARM_SCRIPT env override these keys.
+# YT_WARM=0
+# YT_WARM_SOCK=/media/fat/misterplex/yt-warm.sock
+# YT_WARM_SCRIPT=/media/fat/misterplex/yt_warm_helper.py
+# Socket/endpoint marker, .lock and .log stay on SD. vfat uses an abstract
+# AF_UNIX address named by YT_WARM_SOCK plus a small "abstract" marker on SD.
+# Deploy/restart inhibition: MPX_DEPLOYING=1, /tmp/misterplex-deploy.lock,
+# /tmp/misterplex-restart.lock, /tmp/misterplexd-boot.lock.d, or a held flock
+# on /media/fat/misterplex/run/candidate-deploy.lock stops/blocks the helper.
+# Scripts without a lock must create /tmp/misterplex-deploy.lock before work
+# and remove it afterward. No generic deploy lock currently exists.
+
+# Whole YouTube resolve ladder budget in seconds (10-120, default 90).
+# Android first avoids JS-player work without deno/node; other clients fall back
+# within the same budget. Env MPX_YT_RESOLVE_TIMEOUT overrides this line.
+# YT_RESOLVE_TIMEOUT=90
+
+# YT_CAPTIONS=1 shows YouTube lounge captions on the HDMI caption band.
+# setSubtitlesTrack with a language asks the local yt-dlp (the same binary as
+# playback) to write that subtitle, then paints it in time with the picture.
+# An empty track hides it. getSubtitlesTrack tells the phone which language
+# is on. Default off: setSubtitlesTrack is ignored, getSubtitlesTrack still
+# replies with the video id only, and no caption text is painted. SOFT_SUBS
+# is a separate switch and is not required.
+# Env MPX_YT_CAPTIONS or YT_CAPTIONS overrides this line.
+# YT_CAPTIONS=0
+
+# MARK_WATCHED=1 adds program-menu rows for the playing item, and for the
+# focused movie or episode while browsing: Mark watched, Mark unwatched, and
+# Remove from Continue Watching. Those call PMS /:/scrobble, /:/unscrobble, and
+# PUT /actions/removeFromContinueWatching. Playback progress still uses
+# /:/timeline. Default off: the menu matches a build without this flag.
+# Env MPX_MARK_WATCHED or MARK_WATCHED overrides this line.
+# MARK_WATCHED=0
+
+# REPORT_CODE=1 shows a short code on the Ready card and the phone status
+# page, and writes a redacted log pack under /media/fat/misterplex/reports/.
+# The code is the file name. Nothing is uploaded. Default off: the card and
+# the page match a build without this flag. Unset is off.
+# Env MPX_REPORT_CODE or REPORT_CODE overrides this line.
+REPORT_CODE=1
+
+# AMBIENT=1 cycles library art on the idle screen (the OwenB Ready card stays
+# on top). Art comes from this server's recently added titles. One title holds;
+# two or more change about every 12 seconds. IDLE_SCREEN is unchanged.
+# Default off: the idle field stays black and nothing is fetched. Unset is off.
+# A stage card that must stay quiet sets this to 0. Env MPX_AMBIENT or AMBIENT overrides this line.
+AMBIENT=1
+
+# THEME_MUSIC=1 plays a short generated pad on the plexui Home screen while
+# nothing is playing (GH#193 / #235). Uses the one-shot MrAudio path. Default
+# off: unset is off. Env MPX_THEME_MUSIC or THEME_MUSIC overrides this line.
+# THEME_MUSIC=0
+
+# ZAPAROO=1 plays a Plex movie or episode when a card text hits
+# GET or POST /misterplex/zaparoo?text=<card>. The card is a Zaparoo
+# launcher token (**launch.plex:/library/metadata/<ratingKey>), a plex:
+# URI, a /library/metadata/<ratingKey> path, or the ratingKey alone.
+# Playback is the cast play path on this card's PMS. Default off: the
+# route answers "zaparoo off" and does not play. Unset is off.
+# A stage card that must stay quiet sets this to 0. Env MPX_ZAPAROO or ZAPAROO overrides this line.
+ZAPAROO=1
+
+# FILTER_4_3=1 adds a "4:3" chip on the library grid, after All. Select
+# hides titles whose aspectRatio is outside 1.30–1.40 (4:3 and academy).
+# Select again shows the full grid. Missing aspect is hidden while the
+# filter is on. Default off: there is no chip and the grid is unchanged.
+# Unset is off. A stage card that must stay quiet sets this to 0.
+# Env MPX_FILTER_4_3 or FILTER_4_3 overrides this line.
+FILTER_4_3=1
+
+# IN_PLAY_OPTIONS=1 adds Options to the Program menu while a title is
+# playing. The page shows the open picture size and Play from start, which
+# seeks to the beginning. Default off: the menu matches a build without
+# this flag and nothing seeks to 0 from this path. Unset is off.
+# A stage card that must stay quiet sets this to 0.
+# Env MPX_IN_PLAY_OPTIONS or IN_PLAY_OPTIONS overrides this line.
+IN_PLAY_OPTIONS=1
+
+# WATCHED_BADGES=1 draws an orange check on the top-right of a poster whose
+# title is finished (viewCount > 0 and no in-progress viewOffset). Library
+# grids, home rows, seasons, episodes, and the detail poster use it. An
+# in-progress title keeps its progress bar and does not get the check.
+# Default off: posters match a build without this flag. Unset is off.
+# A stage card that must stay quiet sets this to 0.
+# Env MPX_WATCHED_BADGES or WATCHED_BADGES overrides this line.
+WATCHED_BADGES=1
+
+# CRT_LOOK=1 paints an HDMI CRT-look preset on the on-device UI canvas
+# (home, library, detail). The FPGA picture and the analog raster are
+# unchanged. CRT_LOOK_PRESET is scanlines (default), scanlines-soft,
+# aperture, or slot. See docs/crt-look-hdmi.md. Default off: the canvas
+# matches a build without this flag. Unset is off.
+# A stage card that must stay quiet sets this to 0.
+# Env MPX_CRT_LOOK or CRT_LOOK overrides this line.
+# Env MPX_CRT_LOOK_PRESET or CRT_LOOK_PRESET overrides the preset line.
+CRT_LOOK=1
+# CRT_LOOK_PRESET=scanlines
+
+# IDLE_MENU_KEY=1 maps USB keyboard P (PS/2 set-2 make code 0x4D) to the
+# Program menu on the Ready idle screen, the same panel as pad Y (Safe area
+# is on that panel). M, Tab, and F12 are unchanged: on Ready idle with a
+# library they still open Browse. In a play, P does nothing (pad Y still
+# skips back). In PlexUI, P does nothing (pad Y still toggles UI size).
+# Default off: P is not a key. Unset is off. A stage card that must stay quiet sets this to 0.
+# Env MPX_IDLE_MENU_KEY or IDLE_MENU_KEY overrides this line.
+IDLE_MENU_KEY=1
+
+# GRID_PAGE=1 lets a library grid load titles past the first 200. Moving down
+# past the last loaded row requests the next page (X-Plex-Container-Start).
+# The same applies to a genre filter. Default off: the grid is the first page
+# only, as before. Search and collections are unchanged.
+# Env MPX_GRID_PAGE or GRID_PAGE overrides this line.
+# GRID_PAGE=0
+
+# AZ_JUMP=1 lets a library grid jump to titles starting with a letter.
+# UP from the category chips opens an A–Z bar. Left and Right move the letter,
+# Select loads PMS firstCharacter, Down returns to the chips. * clears the
+# letter. # is titles that do not start with A–Z. With GRID_PAGE=1, moving
+# past the loaded rows fetches the next page of that letter. Default off: the
+# library grid matches a build without this flag.
+# Env MPX_AZ_JUMP or AZ_JUMP overrides this line.
+# AZ_JUMP=0
+
+# SETSTREAMS=1 lists Subtitles and Audio in the Program menu during a play.
+# Subtitles includes Off. Choosing a track reopens the picture at the current
+# offset. Image tracks (PGS, VobSub) are burned by PMS (subtitles=burn and
+# that subtitleStreamID). Audio sends audioStreamID the same way. Unset is off
+# and the Program menu has no Subtitles row. This template sets it on. Plex
+# Web setStreams is unchanged. Subtitle burn (BURN_SUBS_FIX / AUTO_BURN) stays off.
+# Env MPX_SETSTREAMS or SETSTREAMS overrides this line.
+SETSTREAMS=1
+
+# CHAPTERS=1 lists Previous chapter, Next chapter, and Chapters in the Program
+# menu during a play that has PMS chapter markers. A row seeks to that marker's
+# startTimeOffset. The metadata GET adds includeChapters=1 only when this is
+# on. Default off: that GET and the menu match a build without this flag.
+# Env MPX_CHAPTERS or CHAPTERS overrides this line. Unset is off.
+CHAPTERS=1
+
+# FORCED_SUBS=1 selects a PMS subtitle stream marked forced=1 on play and on
+# re-resolve when you did not pick a track. Soft text uses the overlay. Image
+# tracks (PGS, VobSub) are burned by PMS, the same path as an explicit image
+# pick. This is not SUBTITLE_FORCED (that one only keeps forced tracks when
+# SUBTITLE_LANG matches). Default off: the pick matches a build without this flag.
+# Env MPX_FORCED_SUBS or FORCED_SUBS overrides this line. Unset is off.
+FORCED_SUBS=1
+
+# REMEMBER_TRACKS=1 stores the subtitle and audio you pick in the Program menu
+# or via setStreams. The file is remember_tracks.txt next to this conf, keyed
+# by the show (episode grandparentRatingKey, otherwise ratingKey). The next
+# episode uses that subtitleStreamID and audioStreamID when the file still has
+# them, otherwise the stream with the same language, codec, and title. Image
+# tracks (PGS, VobSub) burn on the explicit-image path. Subtitles Off stays
+# off. Unset is off. Picture 14:9 stays the per-play PICTURE_14_9 toggle.
+# Env MPX_REMEMBER_TRACKS or REMEMBER_TRACKS overrides this line.
+REMEMBER_TRACKS=1
+
+# REMEMBER_PICTURE=1 stores the Program-menu picture mode for the show
+# (episode grandparentRatingKey, otherwise ratingKey) in remember_picture.txt
+# next to this conf. The row cycles Letterbox, 14:9, Zoom 4:3, Stretch, and
+# Fit-crop, the modes the PlexOB core already applies (Analog Aspect Fit /
+# Letterbox / Crop, Aspect Ratio 4:3 or 16:9, and the 14:9 side crop). The
+# next episode of that show starts in the saved mode. A show with no row is
+# unchanged. Unset is off: no row, no file write, and the picture matches a
+# build without this flag. The core's own menu is still restored at the end
+# of the play.
+# Env MPX_REMEMBER_PICTURE or REMEMBER_PICTURE overrides this line. Unset is off.
+REMEMBER_PICTURE=1
+
+# SCRUB_THUMBS=1 shows a Plex preview frame above the seek bar while a seek
+# settles. The frame comes from the part's sd BIF (hd if that is the only
+# index) at /library/parts/{id}/indexes/{sd|hd}. PMS returns 404 if that path
+# ends in .bif. A part with no indexes attribute seeks as usual and does not
+# fetch. Unset is off: no fetch, and the bar matches a build without this
+# flag. The preview stays up for about four seconds so it can be read on a
+# 480i tube.
+# Env MPX_SCRUB_THUMBS or SCRUB_THUMBS overrides this line. Unset is off.
+SCRUB_THUMBS=1
 
 # --- Legacy Plex.rbf only (not used by PlexOB) ---
-# PlexOB does not offer 240p and does not use an SDRAM board. The settings
+# PlexOB does not use an SDRAM board. The DECODE / TRANSCODE_PROFILE settings
 # below are for the fallback Plex.rbf core. Leave them unless you are on that core.
+# For 240p analog output on PlexOB, use ANALOG_RASTER=240p (see below).
 
 # --- Decode / present (Phase 2 transitional ARM path) ---
 # Optional external ffmpeg for legacy subprocess paths. Playback uses libav
@@ -47,8 +303,13 @@ TRANSCODE_PROFILE=720p
 # WEAK_BITRATE=20000
 # PRESENT=fb0|fpga|both — product glass uses fpga (DDR frame store).
 PRESENT=fpga
+# ANALOG_RASTER=480i|240p|auto — picks the PlexOB core's "Analog Raster" (saved status[24]).
+# Unset (default) and auto: no action. 480i/240p act only on the 240p core (build id 0B2403A7), by setting
+# that bit in the existing PlexOB_v1.CFG (save settings once in the OSD first) and reloading the core once.
+# The daemon writes the readback (word 87 bit 8 requested, bit 9 p240 active) to /tmp/mpx_analog_raster.
+# ANALOG_RASTER=
 # PRESENT_MEM is a fallback-core memory policy. PlexOB uses DDRAM only and
-# does not need an SDRAM board. 240p is not a PlexOB mode.
+# does not need an SDRAM board. On PlexOB, 240p analog output is ANALOG_RASTER=240p.
 # PRESENT_MEM=auto
 # STREAM=1  # annex-B → host I-recon F1 + F3 (Phase 3.3i product path)
 # Prefer direct H.264 Part when STREAM=1 (avoids High/CABAC universal for recon).
@@ -60,6 +321,38 @@ PRESENT=fpga
 # --- Phase 4 UX ---
 # AUTO_NEXT=1  # on media EOF, play next playQueue item when bound (default on)
 # AUTO_NEXT=0
+# Subtitles: off | burn (PMS universal) | ffmpeg (local files, STREAM=0 only)
+# See docs/subtitles-burnin.md
+SUBTITLES=off
+# SUBTITLE_STREAM=0
+# Per-show audio and subtitle choices are stored in show_tracks.txt next to this
+# file and applied on later episodes of that show. They stay on this daemon.
+# track_pref_server_sync=1 also PUTs /library/parts/{id} so PMS stores the part
+# default. That PUT is a persistent manual pick for the Plex user and turns off
+# their auto-select for that item in every Plex app, not only MiSTerPlex.
+# Default 0: local show prefs still apply, and no PUT is sent.
+track_pref_server_sync=0
+
+# --- CRT title-safe / UI size (GH#46) ---
+# Percent of each raster axis, clamped 0-15. Default 5 keeps the historic
+# PlexUI R1 insets (32/72) so existing goldens stay. Ready/status cards and
+# the daemon caption band use the same floor.
+# UI_SAFE_MARGIN=5
+# UI_SIZE=normal is the safe default (or large). Pad Y on the browse screen
+# toggles and persists. A card may set large; this template stays normal.
+UI_SAFE_MARGIN=5
+UI_SIZE=normal
+# Per-tube overscan (Program menu → Safe area). Unset keeps the fixed title-safe.
+# Percent of that axis, 0-25. A save writes all four.
+OVERSCAN_LEFT=11
+OVERSCAN_RIGHT=11
+OVERSCAN_TOP=12
+OVERSCAN_BOTTOM=12
+# 14:9 picture mode for a wide title on a 4:3 tube (Program menu → Picture).
+# Unset keeps Fit / Letterbox / Crop. On narrows the SPS window to 14:9 and
+# uses the core's existing Letterbox fit. MPX_PICTURE_14_9 wins when set.
+PICTURE_14_9=on
+
 # --- Match source Hz / Content FPS (Phase 4) ---
 # Plex.rbf does NOT yet implement Groovy-style CmdSwitchres modeline swaps.
 # On each play, misterplexd reads PMS videoFrameRate/frameRate and logs a Content
@@ -161,7 +454,132 @@ OSD_CONTROL=1
 #   off  log-only: the play still stops with the same error; nothing is painted
 # MPX_GATE_ERROR_SCREEN=on
 
-# Subtitles are not supported on PlexOB. SUBTITLES and SUBTITLE_STREAM apply
-# only if the fallback Plex.rbf core is the one that is playing.
+# --- Library browse (off unless you set both) ---------------------------------
+# The helper is a separate program. This package does not include it.
+# MPX_BROWSE_V2=1
+# Full URL. The path ends at /menu. 192.0.2.10 is a documentation example.
+# Point the helper at the same PMS as PLEX_BASE. The /menu list is the server list.
+# MPX_MENU_URL=http://192.0.2.10:18769/menu
+# Origin only. The daemon appends /menu. Ignored when MPX_MENU_URL is set.
+# MPX_MENU_BASE=http://192.0.2.10:18769
+# One host for the menu port 18769 when the URL above is unset.
+# MPX_LAB_HOST=192.0.2.10
+# PLXI nav and the full on-screen plex UI stay off. The Ready-line plex.tv code
+# uses PLEXTV_LINK and PLEXTV_TOKEN and does not read MPX_MENU_URL.
+# MPX_BROWSE_MVPB=1
+# MPX_PLEXUI=1
+
+# --- plex.tv link code --------------------------------------------------------
+# PLEXTV_LINK defaults on. An empty PLEXTV_TOKEN starts a PIN exchange and
+# appends the code to the idle Ready line. Leave the token empty until sign-in.
+# PLEXTV_LINK=1
+# PLEXTV_TOKEN=
+# Plex Home profile, written by the on-screen Switch user row. Leave these
+# unset for a single-user or no-Home account: PLEX_TOKEN and PLEXTV_TOKEN
+# stay the library and account tokens. A saved profile is never copied over
+# those two keys.
+# PLEX_HOME_ID=
+# PLEX_HOME_TITLE=
+# PLEX_HOME_TOKEN=
+
+# --- TLS (on by default) ------------------------------------------------------
+# Plex, PlexUI, YouTube, and the AirPlay helper verify the certificate chain and the hostname.
+# The CA bundle is /media/fat/linux/misterplex-cacert.pem (Mozilla roots shipped
+# in the release package). The daemon points MPX_CA_BUNDLE at that file when it
+# is present and you have not set one. A different bundle:
+#   MPX_CA_BUNDLE=/media/fat/linux/misterplex-cacert.pem
+#
+# Local Plex servers that use plex.direct already match. The certificate is a
+# wildcard for *.<id>.plex.direct, and the first label is the LAN address with
+# dashes (https://203-0-113-5.<id>.plex.direct:32400). The daemon connects to
+# 192.0.2.5 and checks that name. Do not rewrite those URLs to a raw IP before
+# TLS; a raw IP is not on the plex.direct certificate.
+#
+# A server that is genuinely self-signed (or signed by a CA that is not in the
+# Mozilla set) needs its PEM next to the bundle, not TLS_VERIFY=0. The file is
+# the server certificate or the CA that signed it:
+#   TLS_TRUST_FILE=/media/fat/misterplex/trust/pms.pem
+#
+# TLS_VERIFY=0 turns chain and hostname checks off and logs a warning. Leave it
+# unset (or 1) unless a broken server cannot be given a trust file.
+# TLS_VERIFY=1
+
+# Phase-1 text subtitles on PlexOB: sidecar SRT/ASS drawn on the overlay band.
+# SUBTITLE_LANG=off|en|…  (canon via language names or ISO tags). Empty/off = no auto-lang.
+# SUBTITLE_FORCED=1 means forced-only when the language matches.
+# FORCED_SUBS (above) is separate: it selects a forced=1 stream on a default play.
+# Leave SUBTITLE_FORCED unset unless you want that language filter.
+# SUBTITLES=burn is an explicit PMS burn fallback (drops Direct Play). Default off.
+# SUBTITLE_STREAM is the old STREAM=0 burn/ffmpeg stream id; leave unset on PlexOB.
 # SUBTITLES=off
+# SUBTITLE_LANG=off
+# SUBTITLE_FORCED=0
 # SUBTITLE_STREAM=0
+# SUBTITLE_POSITION=safe|picture
+# safe (default): when 16:9 or wider picture is letterboxed on a 4:3 raster,
+# white soft-sub lines sit in the bottom black bar, inside that bar's
+# title-safe area, not over the picture. picture keeps the lines over the
+# picture. No letterbox bar: both values use the over-picture placement.
+# This is the overlay only. It does not change PMS burn-in.
+# SUBTITLE_POSITION=safe
+
+# Soft text from the container (mov_text, WebVTT, embedded SRT/ASS) on the
+# overlay band, plus external WebVTT from /library/streams/N. Unset is off:
+# sidecar SRT/ASS still paint (fetched on-device from the play's PMS base),
+# and mov_text / PGS stay on today's burn path unless SOFT_SUBS=1.
+# This template sets SOFT_SUBS=1. MPX_SOFT_SUBS in the environment wins.
+SOFT_SUBS=1
+
+# OpenSubtitles.com on-device fallback when a title has no text subtitle stream.
+# OPENSUBTITLES_API_KEY (or env OPENSUBTITLES_API_KEY / MPX_OPENSUBTITLES_API_KEY)
+# is required. OPENSUBS_FALLBACK defaults on when a key is present; set 0 to skip.
+# Optional OPENSUBTITLES_USERNAME / OPENSUBTITLES_PASSWORD for a bearer login. Leave either unset to skip
+# /login and download anonymously on the Api-Key alone (5/day per IP; enable "allow anonymous downloads" on
+# the key). A 406 (daily limit) backs off for 1 h.
+# Cache: /media/fat/misterplex/subs/<ratingKey|imdb>-en.srt. Never log the key.
+# OPENSUBTITLES_API_KEY=
+# OPENSUBS_FALLBACK=1
+# OPENSUBTITLES_USERNAME=
+# OPENSUBTITLES_PASSWORD=
+
+# REMOTE_H264_TRANSCODE=1 (#207): every remote Plex play asks the server for an H.264
+# transcode that fits the decoder; never a direct source Part on a remote server.
+# Default on. Set 0 to keep the original file (HEVC on a friend server then fails).
+# Env MPX_REMOTE_H264_TRANSCODE or REMOTE_H264_TRANSCODE overrides this line.
+# REMOTE_H264_TRANSCODE=0
+
+# BURN_SUBS_FIX=1 with AUTO_BURN unset is a legacy opt-in: an upgraded box keeps
+# burning image subtitles. An explicit AUTO_BURN below wins, including
+# AUTO_BURN=0 (burn off even when this key is 1). Neither key set is off.
+# When burn is on, BURN_SUBS_FIX=1 forces a video transcode (directPlay=0 /
+# directStream=0, and the decision URL carries subtitles=burn) for an image
+# subtitle the overlay will not paint (PGS/VobSub). Soft overlay always paints
+# SRT/ASS/VTT and does not burn them. Do not set this in a new conf. The
+# shipped example leaves it commented. Env MPX_BURN_SUBS_FIX or BURN_SUBS_FIX
+# overrides this line.
+# BURN_SUBS_FIX=0
+
+# AUTO_BURN is the explicit burn switch. AUTO_BURN=1 burns a picked image
+# subtitle the overlay cannot paint (PMS video transcode). AUTO_BURN=0 is off
+# and wins over a legacy BURN_SUBS_FIX=1. Unset defers to that legacy key, and
+# with neither key set the burn stays off (Direct Play kept). Env
+# MPX_AUTO_BURN or AUTO_BURN overrides this line. Same precedence as conf.
+# AUTO_BURN=0
+
+# HTTP_RANGE_RESUME=1 (default): a short PMS Part close reopens with
+# Range: bytes=<offset>-. HTTP_RANGE_RESUME=0 falls back to libav HTTP.
+# Env MPX_HTTP_RANGE_RESUME or HTTP_RANGE_RESUME overrides this line.
+# HTTP_RANGE_RESUME=1
+
+# LAN_AUTH=1 requires a LAN shared secret (header X-MPX-Auth) on the
+# /misterplex/* control routes and on the transcode helper for non-loopback
+# peers. Plex companion routes stay open so the Plex app and Plex Web still
+# cast; AirPlay and YouTube go through the daemon, which sends the secret.
+# GET /misterplex/status stays open. Default off. Unset is off.
+# Secret: LAN_AUTH_SECRET= here, else LAN_AUTH_SECRET_FILE (default
+# /media/fat/misterplex/lan_auth.secret, generated on the card; mode 600 is enforced off-FAT,
+# relaxed on the FAT/exFAT card where modes are synthetic: ls shows 755 there by design,
+# but a mount that makes it group/world-writable is refused; owner must be root or the daemon user (#222)).
+# Sender-device test: python3 tools/airplay/lan_auth_sender.py --host <mister-ip>
+# Never put a real secret in a shared or STAGE conf. Env MPX_LAN_AUTH wins.
+# LAN_AUTH=0

@@ -120,7 +120,7 @@ inline PlayRequest queueStepRequest(const PlayRequest& cur, const PlayQueue& q, 
 }
 
 
-// BUG2-PREROLL (owner 10-17): a Plex Web play queue starts with the PMS's pre-roll (cinema trailer / THX
+// BUG2-PREROLL (Shawn 10-17): a Plex Web play queue starts with the PMS's pre-roll (cinema trailer / THX
 // clip, type="clip") before the title the user picked. AUTO_NEXT gates next-episode advance only: when a
 // pre-roll ends naturally, always step to the next queue item, else the cast stops before the movie starts.
 inline bool queueItemIsPreroll(const QueueItem& item) {

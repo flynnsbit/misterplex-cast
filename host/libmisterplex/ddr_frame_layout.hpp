@@ -505,6 +505,21 @@ inline DdrFrameGeometry ddrFrameGeometryForPresentedSize(int width, int height) 
     return makeDdrFrameGeometry(width, height);
 }
 
+// Builds a geometry from the decoder's actual coded/source size, not a presented
+// bank size. ddrFrameGeometryForPresentedSize()/makeDdrFrameGeometry() set
+// coded == display with no crop, which ddrFrameGeometryValid() rejects whenever
+// the source width isn't already a multiple of 16 (e.g. Spelunkr's 424x320 and
+// 426x240 sources). Round coded_width/coded_height up to the next multiple of
+// 16 and crop back down to the real source size so odd sizes stay valid and
+// land a real picture instead of snow.
+inline DdrFrameGeometry ddrFrameGeometryForCodedSource(int srcW, int srcH) {
+    if (srcW <= 0 || srcH <= 0)
+        return DdrFrameGeometry{};
+    const int codedW = (srcW + 15) & ~15;
+    const int codedH = (srcH + 15) & ~15;
+    return makeDdrFrameGeometry(codedW, codedH, srcW, srcH);
+}
+
 inline DdrFramePixelMapping mapDdrFramePresentedPixel(const DdrFrameGeometry& g, int x, int y) {
     DdrFramePixelMapping out{};
     if (!ddrFrameGeometryValid(g) || x < 0 || y < 0 || x >= g.presented_width ||

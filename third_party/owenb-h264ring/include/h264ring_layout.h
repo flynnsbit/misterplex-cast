@@ -356,7 +356,7 @@
 #define H264RING_OSD_DEINT_WIDTH 2 /* (0.4) Deinterlace -- 0 Weave, 1 Bob, 2 Blend */
 #define H264RING_OSD_VIDEO_OUT_W 27
 #define H264RING_OSD_VIDEO_OUT_LSB 36
-#define H264RING_OSD_VIDEO_OUT_WIDTH 2 /* (0.4) Video Output -- 0 Auto, 1 Interlaced, 2 Progressive, 3 Native (HDMI) (0.10) */
+#define H264RING_OSD_VIDEO_OUT_WIDTH 2 /* (0.4) Video Output -- 0 Auto, 1 15kHz CRT, 2 31kHz VGA, 3 HDMI Native (0.10) */
 #define H264RING_OSD_HDMI_DEINT_W 27
 #define H264RING_OSD_HDMI_DEINT_LSB 38
 #define H264RING_OSD_HDMI_DEINT_WIDTH 1 /* (0.4) HDMI Deinterlace -- 0 Weave, 1 Bob */
@@ -521,7 +521,7 @@
 #define H264RING_RASTER_LB_WIDTH 1 /* (0.10) the picture is letterboxed inside the raster so the raster is shown at the HDMI display's shape (A') */
 #define H264RING_VIDEO_OUT_W 80
 #define H264RING_VIDEO_OUT_LSB 27
-#define H264RING_VIDEO_OUT_WIDTH 2 /* (0.14) Video Output as the core resolved it: 1 Interlaced, 2 Progressive, 3 Native (HDMI) -- Auto is one of them (a 0.13 core reads 0) */
+#define H264RING_VIDEO_OUT_WIDTH 2 /* (0.14) Video Output as the core resolved it: 1 15kHz CRT, 2 31kHz VGA, 3 HDMI Native -- Auto is one of them (a 0.13 core reads 0) */
 #define H264RING_COLOUR_W 80
 #define H264RING_COLOUR_LSB 29
 #define H264RING_COLOUR_WIDTH 3 /* (0.16) the shown picture's colour code (COLOUR_*: 1-6; 1 before any picture; a 0.15 core reads 0) */

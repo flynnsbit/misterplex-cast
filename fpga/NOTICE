@@ -1,0 +1,16 @@
+PlexOB FPGA sources
+Copyright (C) 2026 Shawn Henderson and contributors.
+
+These trees are a modified fork of MiSTer_h264_decoder by owenb321
+(https://github.com/owenb321/MiSTer_h264_decoder), GPL-3.0-or-later.
+Upstream's h264/ RTL files have no per-file licence header; the grant is
+upstream's NOTICE. MiSTerPlex keeps that grant and adds its own modifications
+in 2026 (GPLv3 section 5a: this NOTICE is the prominent modification notice).
+
+`Plex_MiSTer/sys/` (and the copy under owenb-combo-s9) keeps the Template_MiSTer
+headers: GPL-2 or later, Alexey Melnikov / TEMLIB, and Altera/Intel notices
+unchanged. `Plex_MiSTer/LICENSE` is the GPL-2 text.
+
+Do not edit these RTL files while a Quartus fit of the same tree is running.
+
+Root grant: ../LICENSE and ../NOTICE.

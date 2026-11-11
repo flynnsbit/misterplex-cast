@@ -11,7 +11,8 @@ namespace plexui {
 class FontSet {
 public:
     bool load(const std::string& dir, std::string& err);
-    bool ready() const { return !regularData_.empty() && !boldData_.empty(); }
+    bool ready() const { return usingFallback_ || (!regularData_.empty() && !boldData_.empty()); }
+    bool usingFallback() const { return usingFallback_; }
 
     void drawText(std::uint8_t* rgba, int stride, int w, int h, float x, float y,
                   const std::string& text, float pixelHeight, bool bold, std::uint8_t r,
@@ -56,9 +57,11 @@ private:
 
     const std::vector<std::uint8_t>& ttfData(bool bold) const;
     GlyphBmp rasterGlyph(int cp, float size, bool bold) const;
+    GlyphBmp rasterFallbackGlyph(int cp, float size, bool bold) const;
 
     std::vector<std::uint8_t> regularData_;
     std::vector<std::uint8_t> boldData_;
+    bool usingFallback_ = false;
     mutable std::unordered_map<GlyphKey, GlyphBmp, GlyphKeyHash> cache_;
 };
 

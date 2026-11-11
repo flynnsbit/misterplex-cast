@@ -1,120 +1,133 @@
 # MiSTerPlex
 
-MiSTerPlex turns a MiSTer FPGA into a living-room media player. You can cast to it from Plex, YouTube and AirPlay, or browse your Plex library on the TV with a controller. The video is decoded in hardware by the MiSTer's FPGA and plays over HDMI, or on a CRT through the analog output.
+**Watch your Plex library, and cast YouTube and AirPlay video, on a MiSTer FPGA, on a CRT or an HDMI TV.**
 
-![How MiSTerPlex fits together](docs/architecture.png)
+MiSTerPlex turns a MiSTer (DE10-Nano) into a Plex player. A custom FPGA core, **MiSTerPlex** (`MiSTerPlex.rbf`, built from the PlexOB fork of MiSTer_h264_decoder), decodes the video in hardware. A small program on the MiSTer's Linux side, **misterplexd**, talks to Plex, YouTube and AirPlay.
 
-*Your phone, or the on-screen library, tells the MiSTer what to play. The MiSTer fetches the video from your Plex server, YouTube or your Apple device. The PlexOB core on the FPGA decodes it and sends it to your TV.*
+The core file used to be called `PlexOB.rbf`; from rc3 it is `MiSTerPlex.rbf`, loaded from `_Utility`. To install or update, follow the **[install guide](docs/INSTALL.md)**.
 
-> **Current version: rc5 (a release candidate).** It's for testing, and some things are still rough. Back up your SD card before you install it.
-
-- **Install:** [INSTALL.md](INSTALL.md)
-- **Known issues:** [KNOWN-ISSUES.md](KNOWN-ISSUES.md)
-- **Download:** the [Releases page](https://github.com/flynnsbit/misterplex-cast/releases) has the ready-to-install package and the source for the GPL helper programs.
-- **Full user guide:** [packaging/rc3/README.md](packaging/rc3/README.md). `scripts/package_release.sh` copies it into the package as `README.md`.
-- **How it is built:** [docs/architecture.md](docs/architecture.md)
-
----
+> This is pre-release software. Things may break. Keep backups of your SD card.
 
 ## What it does
 
-**Cast from Plex.** Open the Plex app on a phone or tablet, or Plex Web in a browser, and pick your MiSTer as the player. Play, pause, seek, skip and stop all work from the app. When you cast an episode, the next one in the queue plays on its own.
+- **Cast from the Plex app.** On your phone or computer, tap the cast button and pick **MiSTer**. Play, pause, seek and stop from your phone.
+- **Browse Plex on the TV.** Use a controller or keyboard with the on-screen Plex browser: home rows, Continue Watching, libraries, and a detail page for each title.
+- **Cast YouTube** from the YouTube app to the MiSTer.
+- **AirPlay** video from an iPhone, iPad or Mac.
+- **Made for CRTs.** 480i and 240p analog output, a CRT-safe menu area, per-TV overscan trim, 4:3 / 14:9 / letterbox picture modes, and a Large menu size. S-video/composite works when `vga_mode` in `MiSTer.ini` and the core's **Analog Output** menu agree (see [Troubleshooting](docs/INSTALL.md#troubleshooting)).
+- **Subtitles.** Text subtitles (SRT, ASS) drawn on screen, with an optional OpenSubtitles fallback.
+- **Phone status page** at `http://<mister-ip>:3005/misterplex/status`.
+- **Restarts itself** if the program crashes.
 
-**Cast from YouTube.** Tap the cast button in the YouTube app and pick your MiSTer. Videos play at up to 720p. Play, pause and seek work from your phone, and stop usually does (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md): the first stop after a cold boot can be lost). The MiSTer looks up YouTube videos by itself, so you don't need a computer running alongside it.
+### Limits
 
-**Cast with AirPlay.** The MiSTer shows up as an AirPlay receiver on iPhones, iPads and Macs. AirPlay works on the MiSTer by itself; a helper on a computer is optional. Video that is already H.264 at up to 720p and 30 frames per second plays at full speed, because the MiSTer passes it straight through without re-encoding it. When a web stream offers several qualities, the MiSTer picks the best one it can play directly. AirPlay music plays with a simple music screen. Screen mirroring and protected (DRM) video are not supported.
+- Video up to **720p at 30 fps, 8-bit H.264**. Anything else is converted by your Plex server, or refused for AirPlay.
+- Picture-based subtitles (PGS/VobSub) need the server to burn them in, which is off by default.
+- Home network only. **Never forward ports 3005, 8008 or 7000 to the internet.**
 
-**Browse Plex on the TV.** With a controller or keyboard you can open a simple library list on screen, pick a movie or show, and play it without your phone.
+## Screenshots
 
-**Watch at up to 720p.** The PlexOB core decodes H.264 video in hardware at up to 1280x720 and 30 frames per second. Over HDMI you get a sharp picture at the video's own size. On a CRT you can use 480i or 480p.
-
-**Let Plex do the converting.** If a video won't play directly on the MiSTer (HEVC/H.265, 1080p or 4K, 60 fps, 10-bit, or surround sound), MiSTerPlex asks your Plex server to convert it. It asks for a lower bitrate from servers outside your home, and steps down by itself if the server can't keep up. Nothing needs to be installed on your Plex server.
-
-**Plug in and go.** After a reboot, MiSTerPlex loads its core and starts by itself. You land on a ready screen that shows the MiSTer's name and which kinds of casting are on (Plex, AirPlay, YouTube).
-
-**Names itself.** If you don't give it a name, the MiSTer names itself after its network address and keeps that name across reboots. A name you set yourself is never changed.
-
-**Keeps the clock right.** YouTube and secure websites need the correct date. If the MiSTer boots with the wrong time, MiSTerPlex sets it from a real-time clock if you have one, or asks the internet.
-
-**Analog S-Video and composite (untested).** The core includes S-Video and composite output, but they haven't been tried on a real TV yet.
-
-**Not in this release:** 240p output, subtitles, picking audio and subtitle tracks from your phone, and a nicer library browser with artwork.
-
-## What's new in rc5
-
-- **AirPlay video plays at full speed.** Video that is already H.264 at up to 720p and 30 frames per second is passed straight through instead of being re-encoded on the card. It plays at about 30 frames per second, where rc4 managed 2 to 3, and the processor is no longer maxed out.
-- **AirPlay picks the right quality from a web stream,** and streams that redirect to another address still play.
-- **AirPlay audio no longer drops sound,** and the music screen uses less of the processor.
-- **The last video frame no longer stays up for the whole song** after an AirPlay video.
-- **Stopping YouTube from the phone should work more often.** The YouTube connection reconnects by itself when it goes quiet, so the phone's stop usually gets through. In testing the stop arrived 3 times out of 3, but the first stop after a cold boot can still be lost (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md)). If that happens, stop again or stop from Plex.
+The screenshot gallery is not included in this source export.
 
 ## What you need
 
-- A MiSTer (DE10-Nano) on your home network. No SDRAM board is needed.
-- SSH access to the MiSTer and a computer with `ssh` and `scp`.
-- About 200 MB free on the SD card.
-- For Plex: a Plex account and a Plex Media Server you can play from (your own, or one shared with you).
-- For YouTube: the YouTube app on a phone or tablet on the same network, and internet access for the MiSTer.
-- For AirPlay: an iPhone, iPad or Mac on the same network.
+- A MiSTer FPGA (DE10-Nano) with a current MiSTer menu, on your home network (wired is best).
+- SSH access to the MiSTer (user `root`).
+- A Plex Media Server and a Plex account.
+- A computer with `ssh` and `scp`.
+- A TV: an analog CRT (through a MiSTer analog board or adapter) or HDMI.
 
-The steps are in [INSTALL.md](INSTALL.md). The most important rule: **if you already have a settings file (`/media/fat/linux/misterplex.conf`), keep it.** Never copy the example settings file over it.
+## How the install works
 
-At boot, the MiSTer's `user-startup.sh` runs this one line, which the installer adds for you:
+A release has **one FPGA core**, `MiSTerPlex.rbf`, which the installer puts in `/media/fat/_Utility/` only (one copy; an older root copy `/media/fat/MiSTerPlex.rbf` is removed so the menu does not list the core twice). There is no separate `Plex.rbf` or `PlexOB.rbf` to install any more. It also has the **misterplexd** program, which starts by itself at boot: the installer adds one line to `/media/fat/linux/user-startup.sh` that runs `misterplexd-boot-rc3.sh`. That script starts misterplexd under a small supervisor (`misterplexd_supervise.sh`), which restarts it if it crashes. `BOOT_SUPERVISE=0` in the settings file turns the supervisor off. You never need to start the program yourself. Just load **MiSTerPlex** from `_Utility`.
 
-```
-/media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &
-```
+## Upgrading from rc5
 
-The file is still named `-rc3` so that cards that already boot with it keep working.
+rc5 installed the core in two places, `/media/fat/` and `/media/fat/_Utility/`. The new installer keeps a single copy in `/media/fat/_Utility/` and removes the old copy in `/media/fat/`.
 
-## Building from source
+## Quick start
 
-This repository holds the source for the MiSTerPlex program (`arm/`, `host/`), the PlexOB and Plex FPGA cores (`fpga/`), the boot scripts (`scripts/`), the cast helpers (`tools/gcast/`), the tests (`tests/`) and the packaging (`packaging/`, `scripts/package_release.sh`). Building the ARM program needs an ARM GNU toolchain; building the cores needs Intel Quartus. Most people should install the ready-made package from the Releases page instead.
+1. Download the release package from https://github.com/flynnsbit/misterplex-cast/releases and unpack it.
+2. From the unpacked folder, run the installer against your MiSTer (or copy the folder to the MiSTer and run `sh install-misterplex.sh` there). See the **[install guide](docs/INSTALL.md)**:
 
-The on-card AirPlay helper (`linux/gcast/ffmpeg` and `ffprobe` in the package) is built from FFmpeg, x264 and OpenSSL with `scripts/build_arm_airplay.sh` and `scripts/build_gcast_ffmpeg.sh`. The exact upstream source tarballs are attached to each release.
+   ```sh
+   sh install-misterplex.sh --remote <mister-ip>
+   ```
+
+   It copies the files, checks and installs the MiSTerPlex core, keeps your settings, and runs the boot script (`/media/fat/misterplex/bin/misterplexd-boot-rc3.sh install`). That adds this line to `/media/fat/linux/user-startup.sh`, so MiSTerPlex starts at boot:
+
+   ```sh
+   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &
+   ```
+
+3. Optional: change settings with `ssh -t root@<mister-ip> sh /media/fat/misterplex/bin/configure-misterplex.sh`.
+4. Reboot, load **MiSTerPlex** from `_Utility`, and sign in with the `plex.tv/link` code shown on the TV.
+
+The boot script also takes `uninstall`, `start` and `stop`. To remove MiSTerPlex, run `sh /media/fat/misterplex/bin/uninstall-misterplex.sh`: it keeps your settings and player identity (add `--purge` to remove them) and, in `/media/fat/linux/airplay` and `/media/fat/linux/gcast`, removes only the files it installed. To update YouTube support, run `/media/fat/misterplex/bin/update_ytdlp.sh`.
+
+`update_ytdlp.sh` checks a network download against upstream `SHA2-256SUMS` from the same GitHub origin (corruption only; no signature). A `YTDLP_LOCAL_ZIP` is checked only when `YTDLP_LOCAL_SUMS` or a pin is set. Optional pins: `YTDLP_PIN_VERSION` (release tag instead of latest) and `YTDLP_PIN_SHA256` (exact 64-hex of the zip; mismatch or a malformed value refuses the install). Set both: a SHA pin alone still follows latest, so it refuses every new upstream release until you bump it.
+
+## Settings
+
+All settings live in one file: **`/media/fat/linux/misterplex.conf`**. The install copies a default (`conf/misterplex.conf.example` in the package) only if you don't already have one. Each setting is explained inside the file. Reboot after a change.
+
+## Optional features
+
+These are **off by default**. Turn one on by adding a line such as `CHAPTERS=1` to the settings file.
+
+| Area | Setting | What it does |
+| --- | --- | --- |
+| Browsing | `GRID_PAGE` | Library grids load past 200 titles |
+| | `AZ_JUMP` | Jump to titles by first letter |
+| | `FILTER_4_3` | Hide widescreen titles on library grids |
+| | `WATCHED_BADGES` | Check mark on watched posters |
+| | `MARK_WATCHED` | Mark watched / unwatched, remove from Continue Watching |
+| | `AMBIENT` | Library art behind the idle screen |
+| Playback | `CHAPTERS` | Chapter list and skip in the program menu |
+| | `MARKERS` | Skip Intro, Skip Credits, Up Next |
+| | `SCRUB_THUMBS` | Preview picture while seeking |
+| | `IN_PLAY_OPTIONS` | Options page and Play from start during playback |
+| | `PAUSE_DIM` | Dim menus while paused or idle |
+| | `ALLOW_480P60` | Play 480p 60 fps video directly |
+| | `REMOTE_H264_TRANSCODE` | Ask remote servers for H.264 the MiSTer can play |
+| Subtitles and audio | `SETSTREAMS` | Pick subtitles and audio during playback |
+| | `SOFT_SUBS` | Subtitles built into the video file |
+| | `FORCED_SUBS` | Pick a forced subtitle track on its own |
+| | `REMEMBER_TRACKS` | Remember subtitle and audio picks per show |
+| | `track_pref_server_sync` | Also PUT the pick to `/library/parts/{id}` on the Plex server (off by default; writes to the server; use on your own server only) |
+| | `BURN_SUBS_FIX` | Ask **your own** server to burn in picture subtitles |
+| YouTube | `YT_CAPTIONS`, `YT_CAST_TITLE`, `YT_VOLUME`, `YT_NEXT_PREV`, `YT_LIVE` | Captions, title, volume, next/previous, livestreams |
+| Display | `CRT_LOOK` | Scanline looks for menus over HDMI |
+| | `REMEMBER_PICTURE` | Remember the picture mode per show |
+| Other | `ZAPAROO` | Play a Plex title from a Zaparoo card |
+| | `REPORT_CODE` | Save a log bundle (private details removed) for bug reports |
+| | `IDLE_MENU_KEY` | Keyboard P opens the program menu |
+| | `LAN_AUTH` | Require a shared secret for MiSTerPlex's own control commands |
+
+Settings that are on by default, which you can turn off, include `PLEXTV_LINK` (sign-in code) and `BOOT_SUPERVISE` (automatic restart).
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Source and license
 
-Copyright (C) 2026 FlynnsBit LLC and contributors.
-
-MiSTerPlex is free software under the GNU General Public License, version 3 or (at your option) any later version (SPDX: `GPL-3.0-or-later`). The full text is in [LICENSE](LICENSE). The PlexOB core is a GPL-3.0-or-later fork of owenb321's MiSTer_h264_decoder, and the Plex core is built on the GPL MiSTer framework. Code from the projects below keeps its own license; all are compatible with GPLv3. Full license texts, versions and source links are in [packaging/licenses/](packaging/licenses/) and in the `licenses/` folder of the release package.
-
-Questions and bug reports: please open an issue on this repository.
-
----
+This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored hps/ client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE) and [NOTICE](NOTICE). MiSTerPlex.rbf is built from the PlexOB core. The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast. Source revision: 6c3679ae9708210f46902a04305a9c956e2701b1. The casting helper's licence and checksums are in packaging/licenses/gcast-ffmpeg; its source is not in this repository. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
 
 ## Thanks
 
-MiSTerPlex is built on the work of these projects. Thank you to everyone who made them.
+MiSTerPlex is built on these projects:
 
-| Project | What it gives MiSTerPlex | License |
+| Project | Role | License |
 |---|---|---|
-| [MiSTer FPGA (MiSTer-devel)](https://github.com/MiSTer-devel): [Main_MiSTer](https://github.com/MiSTer-devel/Main_MiSTer) and the [core template](https://github.com/MiSTer-devel/Template_MiSTer) | The MiSTer platform, its menu and core loading, and the framework the PlexOB and Plex cores are built on | GPL-2.0-or-later (core framework), GPL-3.0 (Main_MiSTer) |
-| [MiSTer_h264_decoder by owenb321](https://github.com/owenb321/MiSTer_h264_decoder) | The hardware H.264 decoder that PlexOB is forked from, and the ring client the program uses to feed it | GPL-3.0-or-later, client MIT |
-| [UxPlay by FDH2](https://github.com/FDH2/UxPlay) | The AirPlay receiver library | LGPL-2.1-or-later, parts GPL-3.0 |
-| [RPiPlay](https://github.com/FD-/RPiPlay) | The AirPlay crypto code UxPlay inherits | GPL-3.0-or-later |
-| playfair (via UxPlay) | The AirPlay FairPlay handshake | GPL-3.0 |
-| [csrp by Tom Cocagne](https://github.com/cocagne/csrp) | SRP pairing for AirPlay (via UxPlay) | MIT |
-| [llhttp](https://github.com/nodejs/llhttp) | HTTP parsing for AirPlay (via UxPlay) | MIT |
-| mdnsd (via UxPlay) | Network discovery, so Apple devices can find the MiSTer | LGPL-2.1-or-later |
-| [libplist (libimobiledevice)](https://github.com/libimobiledevice/libplist) | Apple property-list support for AirPlay | LGPL-2.1-or-later |
-| [FFmpeg](https://ffmpeg.org/) | Opening streams in the program (LGPL libav), and the on-card helper: `linux/gcast/ffmpeg` (GPL-3.0-or-later, with libx264) and `linux/gcast/ffprobe` (LGPL-2.1-or-later with OpenSSL) | LGPL-2.1-or-later; helper ffmpeg GPL-3.0-or-later |
-| [x264](https://code.videolan.org/videolan/x264) | The video encoder in the on-card AirPlay helper ffmpeg | GPL-2.0-or-later |
-| [OpenSSL](https://github.com/openssl/openssl) | Secure (HTTPS and TLS) connections | Apache-2.0 |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Finding YouTube video streams | Unlicense |
-| [Python](https://www.python.org/) and [PyInstaller](https://pyinstaller.org/) | The Python runtime packed inside the yt-dlp release for the MiSTer, and the Python cast helpers | PSF License; GPL-2.0 with bootloader exception |
-| [stb by Sean Barrett](https://github.com/nothings/stb) | Image loading, resizing and font drawing for the Plex menus | Public domain |
-| [QOI by Dominic Szablewski](https://github.com/phoboslab/qoi) | A fast image format for cached menu artwork | MIT |
-| [Roboto by Google](https://github.com/googlefonts/roboto) | The font on the Plex menus (`host/libmisterplex/plexui/third_party/`) | Apache-2.0 |
-| [Spleen by Frederic Cambus](https://github.com/fcambus/spleen) | The 8×16 font on the library and error screens | BSD-2-Clause |
-| [Mozilla CA bundle, via curl](https://curl.se/docs/caextract.html) | The list of trusted certificates for secure connections | MPL-2.0 |
-| [curl](https://curl.se/) | Talking to Plex servers (the copy that comes with the MiSTer's Linux) | curl license (MIT-style) |
-| [GNU C Library](https://www.gnu.org/software/libc/) and [GCC](https://gcc.gnu.org/) runtime | The C and C++ runtime | LGPL-2.1-or-later; GPL-3.0 with the runtime exception |
+| [MiSTer FPGA (MiSTer-devel)](https://github.com/MiSTer-devel) | Platform, menu, core loading | GPL-2.0-or-later / GPL-3.0 |
+| [MiSTer_h264_decoder by owenb321](https://github.com/owenb321/MiSTer_h264_decoder) | PlexOB H.264 core and ring client | GPL-3.0 / client MIT |
+| [UxPlay](https://github.com/FDH2/UxPlay) / [RPiPlay](https://github.com/FD-/RPiPlay) | AirPlay receiver | LGPL-2.1-or-later / GPL-3.0 |
+| [FFmpeg](https://ffmpeg.org/) | libav in the daemon; on-card helper | LGPL-2.1-or-later; helper GPL-3.0-or-later |
+| [x264](https://code.videolan.org/videolan/x264) | Encoder in the on-card helper | GPL-2.0-or-later |
+| [OpenSSL](https://www.openssl.org/) | HTTPS / TLS | Apache-2.0 |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | YouTube streams | Unlicense |
+| [stb](https://github.com/nothings/stb) / [QOI](https://github.com/phoboslab/qoi) / [Spleen](https://github.com/fcambus/spleen) | Menu images and fonts | public domain / MIT / BSD-2-Clause |
+| [Mozilla CA bundle](https://curl.se/docs/caextract.html) | TLS trust store | MPL-2.0 |
 
-The test picture `tests/fixtures/glass_baseline/b6_play_sample_mjpeg720.jpg` is a frame from *Big Buck Bunny*, (c) copyright 2008, Blender Foundation, www.bigbuckbunny.org, used under the [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/) license.
+## Trademarks
 
-More third-party notices are in [THIRD_PARTY.md](THIRD_PARTY.md).
-
-### Trademarks
-
-Plex is a trademark of Plex, Inc. AirPlay, iPhone, iPad and Mac are trademarks of Apple Inc. YouTube is a trademark of Google LLC. MiSTer is the name of the MiSTer FPGA project. MiSTerPlex is an independent project and isn't affiliated with or endorsed by Plex, Apple, Google or the MiSTer FPGA project.
+Plex, YouTube, AirPlay and other names belong to their owners. MiSTerPlex is not affiliated with or endorsed by Plex, Google or Apple.

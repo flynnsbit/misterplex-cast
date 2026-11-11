@@ -46,7 +46,12 @@ inline const std::string& testLockDir() {
             return std::string();
         }
         struct stat st {};
-        if (d[0] != '/' || ::stat(d, &st) != 0 || !S_ISDIR(st.st_mode) || ::access(d, W_OK) != 0) {
+        // access(W_OK) is true for root even when the mode is 555. A directory
+        // with no write bit is not writable. The ship daemon does not compile
+        // this branch (MPX_TEST_BUILD only).
+        const bool modeWritable =
+            ::stat(d, &st) == 0 && (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0;
+        if (d[0] != '/' || !modeWritable || !S_ISDIR(st.st_mode) || ::access(d, W_OK) != 0) {
             std::fprintf(stderr, "mpx-lock-paths: %s lock dir '%s' is not an absolute writable directory\n",
                          src, d);
             std::exit(2);

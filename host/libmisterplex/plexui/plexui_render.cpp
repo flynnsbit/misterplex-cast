@@ -1,6 +1,12 @@
 #include "plexui_render.hpp"
 
+#include "libmisterplex/browse_nav.hpp"
+#include "libmisterplex/crt_look.hpp"
+
 #include "plexui_data.hpp"
+#include "plexui_link.hpp"
+#include "plexui_audio.hpp"
+#include "plexui_subtitles.hpp"
 
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "third_party/stb_image_resize2.h"
@@ -109,9 +115,9 @@ void posterDirtyRect(int x, int y, int w, int h, int& x0, int& y0, int& x1, int&
 bool roundedCornerSkip(int cx, int cy, int w, int h, int radius);
 
 void paintSidebarFocus(std::uint8_t* rgba, int sideW, int rowY, int rowH) {
-    const int x = P(8);
+    const int x = kSidebarFocusX();
     const int y = rowY + P(4);
-    const int w = sideW - P(16);
+    const int w = sideW - P(8) - x;
     const int h = rowH - P(8);
     if (w < 4 || h < 4)
         return;
@@ -223,6 +229,33 @@ void Renderer::ensureScratch() {
 void Renderer::markImageReady(const ImageCacheKey& key) {
     if (key.ratingKey.empty())
         return;
+#ifdef MUT_IMG_READY_UNLOCKED
+    applyImageReady(key);   // mutant: the pre-#219 direct write from the image worker thread
+#else
+    std::lock_guard<std::mutex> lk(readyMu_);
+    // #253: dedupe on push, and cap so an idle render() cannot grow without bound.
+    if (std::find(readyInbox_.begin(), readyInbox_.end(), key) != readyInbox_.end())
+        return;
+    constexpr std::size_t kReadyInboxCap = 256;
+    if (readyInbox_.size() >= kReadyInboxCap)
+        readyInbox_.erase(readyInbox_.begin());
+    readyInbox_.push_back(key);
+#endif
+}
+
+void Renderer::drainImageReady() {
+    std::vector<ImageCacheKey> in;
+    {
+        std::lock_guard<std::mutex> lk(readyMu_);
+        in.swap(readyInbox_);
+    }
+    for (const auto& k : in)
+        applyImageReady(k);
+}
+
+void Renderer::applyImageReady(const ImageCacheKey& key) {
+    if (key.ratingKey.empty())
+        return;
     for (const auto& k : dirtyImageKeys_) {
         if (k == key)
             return;
@@ -261,7 +294,8 @@ bool Renderer::layerSaveAndRestore(const std::string& key) {
         sn.stat = staticRgba_; sn.back = backdropRgba_;
         sn.gridScrollRow = lastGridScrollRow_; sn.hubScrollX = lastHubScrollX_;
         sn.fRow = lastFocusRow_; sn.fCol = lastFocusCol_; sn.fSide = lastFocusSidebar_;
-        sn.gChip = lastGridChip_; sn.gOnChips = lastGridOnChips_; sn.view = lastView_;
+        sn.gChip = lastGridChip_; sn.gOnChips = lastGridOnChips_;
+        sn.gOnLetters = lastGridOnLetters_; sn.gLetter = lastGridLetter_; sn.view = lastView_;
         sn.pending = dirtyImageKeys_;   // not yet patched into this layer
         snaps_.erase(std::remove_if(snaps_.begin(), snaps_.end(),
                                     [&](const LayerSnap& o) { return o.key == sn.key; }), snaps_.end());
@@ -280,9 +314,10 @@ bool Renderer::layerSaveAndRestore(const std::string& key) {
         staticKey_ = key; lastBackdropUrl_ = sn.backdropUrl;
         lastGridScrollRow_ = sn.gridScrollRow; lastHubScrollX_ = sn.hubScrollX;
         lastFocusRow_ = sn.fRow; lastFocusCol_ = sn.fCol; lastFocusSidebar_ = sn.fSide;
-        lastGridChip_ = sn.gChip; lastGridOnChips_ = sn.gOnChips; lastView_ = sn.view;
+        lastGridChip_ = sn.gChip; lastGridOnChips_ = sn.gOnChips;
+        lastGridOnLetters_ = sn.gOnLetters; lastGridLetter_ = sn.gLetter; lastView_ = sn.view;
         for (const auto& k : sn.pending)
-            markImageReady(k);
+            applyImageReady(k);
         prescaleKey_ = {};
         return true;
     }
@@ -321,6 +356,10 @@ void Renderer::copyRgbaRect(const std::uint8_t* src, std::uint8_t* dst, int x0, 
     y0 = std::max(0, y0);
     x1 = std::min(kScreenW(), x1);
     y1 = std::min(kScreenH(), y1);
+#ifndef MUT_COPYRECT_NO_EMPTY_GUARD
+    if (x1 <= x0 || y1 <= y0)
+        return; // #257: a rect past the screen edge gave memcpy a negative (huge) length
+#endif
     for (int y = y0; y < y1; ++y) {
         const std::size_t row = static_cast<std::size_t>(y) * kScreenW() * 4;
         std::memcpy(dst + row + static_cast<std::size_t>(x0) * 4,
@@ -360,7 +399,7 @@ void Renderer::ensurePosterPrescale(const ImageCacheKey& key, int w, int h) {
     if (!cache_ || key.ratingKey.empty())
         return;
     const auto src = cache_->get(key);
-    if (!src || src->w < 1 || src->h < 1)
+    if (!src || src->w < 1 || src->h < 1 || artLooksBlank(*src))
         return;
     if (src->focusW == sw && src->focusH == sh && !src->focusRgba.empty()) {
         prescaleImg_.w = sw;
@@ -555,14 +594,64 @@ void Renderer::drawPlayPill(int x, int y, int w, int h, const std::string& label
     }
 }
 
+void Renderer::drawHubItemDecor(int x, int y, int w, int h, const PlexItem& it, bool focused,
+                                int animFrame, std::uint8_t* target) {
+    const bool progress = continueWatchingEligible(it) && it.runtimeMs > 0;
+    const std::string code = episodeCode(it.parentIndex, it.index);
+    if (!progress && code.empty())
+        return;
+    const float scale =
+        focused ? (1.f + (kFocusScale - 1.f) * easeOut(std::min(animFrame, kFocusAnimSteps),
+                                                        kFocusAnimSteps))
+                : 1.f;
+    const int sw = static_cast<int>(w * scale);
+    const int sh = static_cast<int>(h * scale);
+    const int ox = x - (sw - w) / 2;
+    const int oy = y - (sh - h) / 2;
+    std::uint8_t* const pxBase = target ? target : rgba_.data();
+    const int barH = std::max(2, P(4));
+    if (progress) {
+        const int barY = oy + sh - barH;
+        const int filled =
+            static_cast<int>(sw * std::min<int64_t>(it.viewOffsetMs, it.runtimeMs) / it.runtimeMs);
+        for (int col = 0; col < sw; ++col) {
+            const int px = ox + col;
+            if (px < 0 || px >= kScreenW())
+                continue;
+            const bool on = col < filled;
+            for (int row = 0; row < barH; ++row) {
+                const int py = barY + row;
+                if (py < 0 || py >= kScreenH())
+                    continue;
+                blendPx(pxBase + (static_cast<std::size_t>(py) * kScreenW() + px) * 4,
+                        on ? kAccentR : 40, on ? kAccentG : 40, on ? kAccentB : 40, 230);
+            }
+        }
+    }
+    if (!code.empty()) {
+        const float ty = static_cast<float>(oy + sh - barH - P(14));
+        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(ox + P(4)),
+                        ty, code, PF(11.f), true, 255, 255, 255);
+    }
+}
+
+void Renderer::drawHubItemPoster(int x, int y, int w, int h, const ImageCacheKey& imgKey,
+                                 const std::string& url, const PlexItem& it, bool focused,
+                                 int animFrame, std::uint8_t* target) {
+    drawPoster(x, y, w, h, imgKey, url, hubItemLabel(it), focused, animFrame, target, it.viewCount,
+               it.viewOffsetMs);
+    drawHubItemDecor(x, y, w, h, it, focused, animFrame, target);
+}
+
 void Renderer::drawPoster(int x, int y, int w, int h, const ImageCacheKey& imgKey,
                           const std::string& url, const std::string& title, bool focused,
-                          int animFrame, std::uint8_t* target) {
+                          int animFrame, std::uint8_t* target, int viewCount, int64_t viewOffsetMs) {
     (void)url;
     if (focused && animFrame >= 0) {
         ensurePosterPrescale(imgKey, w, h);
-        if (!prescaleImg_.rgba.empty()) {
-            drawPosterScaled(x, y, w, h, prescaleImg_, title, true, animFrame, target);
+        if (!prescaleImg_.rgba.empty() && !artLooksBlank(prescaleImg_)) {
+            drawPosterScaled(x, y, w, h, prescaleImg_, title, true, animFrame, target, viewCount,
+                             viewOffsetMs);
             return;
         }
     }
@@ -595,7 +684,7 @@ void Renderer::drawPoster(int x, int y, int w, int h, const ImageCacheKey& imgKe
 
     const auto img = cache_ && !imgKey.ratingKey.empty() ? cache_->get(imgKey)
                                                          : std::shared_ptr<const DecodedImage>{};
-    const bool have = img && !img->rgba.empty();
+    const bool have = img && !img->rgba.empty() && !artLooksBlank(*img);
     bool paintedFast = false;
     if (have && !focused && scale == 1.f && img->w == w && img->h == h) {
         blitPosterRgba(ox, oy, w, h, img->rgba.data(), img->w, img->h, pxBase);
@@ -622,18 +711,19 @@ void Renderer::drawPoster(int x, int y, int w, int h, const ImageCacheKey& imgKe
                 b = s[2];
             } else {
                 const float t = sh > 1 ? static_cast<float>(row) / static_cast<float>(sh - 1) : 0.f;
-                r = static_cast<std::uint8_t>(0x2b + (0x1a - 0x2b) * t);
+                r = static_cast<std::uint8_t>(0x22 + (0x14 - 0x22) * t);
                 g = r;
-                b = r;
+                b = static_cast<std::uint8_t>(r + 4);
             }
             blendPx(pxBase + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b, 255);
         }
     }
     }
     if (!have && !title.empty()) {
-        std::string line = title;
+        const std::string line =
+            fonts_.ellipsize(title, PF(11.f), false, static_cast<float>(std::max(8, sw - P(8))));
         const float tw = fonts_.measureText(line, PF(11.), false);
-        const float tx = static_cast<float>(ox) + (sw - tw) / 2.f;
+        const float tx = static_cast<float>(ox) + (static_cast<float>(sw) - tw) / 2.f;
         const float ty = static_cast<float>(oy + sh) - PF(22.f);
         fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), tx, ty, line, PF(11.f), false, 150, 150,
                         155);
@@ -666,11 +756,12 @@ void Renderer::drawPoster(int x, int y, int w, int h, const ImageCacheKey& imgKe
             }
         }
     }
+    stampWatchedBadge(pxBase, kScreenW(), kScreenH(), viewCount, viewOffsetMs, ox, oy, sw, sh);
 }
 
 void Renderer::drawPosterScaled(int x, int y, int w, int h, const DecodedImage& prescaled,
                                 const std::string& title, bool haveImg, int animFrame,
-                                std::uint8_t* target) {
+                                std::uint8_t* target, int viewCount, int64_t viewOffsetMs) {
     const float scale =
         1.f + (kFocusScale - 1.f) * easeOut(std::min(animFrame, kFocusAnimSteps), kFocusAnimSteps);
     const int sw = static_cast<int>(w * scale);
@@ -721,9 +812,10 @@ void Renderer::drawPosterScaled(int x, int y, int w, int h, const DecodedImage& 
         }
     }
     if (!haveImg && !title.empty()) {
-        std::string line = title;
+        const std::string line =
+            fonts_.ellipsize(title, PF(11.f), false, static_cast<float>(std::max(8, sw - P(8))));
         const float tw = fonts_.measureText(line, PF(11.), false);
-        const float tx = static_cast<float>(ox) + (sw - tw) / 2.f;
+        const float tx = static_cast<float>(ox) + (static_cast<float>(sw) - tw) / 2.f;
         const float ty = static_cast<float>(oy + sh) - PF(22.f);
         fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), tx, ty, line, PF(11.f), false, 150, 150,
                         155);
@@ -754,6 +846,7 @@ void Renderer::drawPosterScaled(int x, int y, int w, int h, const DecodedImage& 
                     kAccentB, 35);
         }
     }
+    stampWatchedBadge(pxBase, kScreenW(), kScreenH(), viewCount, viewOffsetMs, ox, oy, sw, sh);
 }
 
 namespace {
@@ -810,6 +903,71 @@ void Renderer::drawSidebarIcon(int x, int y, const std::string& sectionType, boo
     const std::uint8_t g = focused ? kAccentG : 0x9a;
     const std::uint8_t b = focused ? kAccentB : 0x9a;
     const int sz = kSidebarIconSize();
+    if (sectionType == "server" || sectionType == "servers") {
+        strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                                 x + P(3), y + P(4), sz - P(6), sz - P(8), P(3), r, g, b, P(2));
+        const int cx = x + sz / 2;
+        const int py = y + sz / 2 - P(1);
+        for (int i = -P(2); i <= P(2); ++i) {
+            const int px = cx + i;
+            if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
+                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
+                        220);
+        }
+        return;
+    }
+    if (sectionType == "signin") {
+        const int cx = x + sz / 2;
+        const int cy = y + sz / 2 - P(2);
+        const int rad = P(4);
+        for (int row = -rad; row <= rad; ++row) {
+            for (int col = -rad; col <= rad; ++col) {
+                if (col * col + row * row > rad * rad || col * col + row * row < (rad - P(2)) * (rad - P(2)))
+                    continue;
+                const int px = cx + col;
+                const int py = cy + row;
+                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b, 220);
+            }
+        }
+        for (int i = 0; i < P(8); ++i) {
+            const int px = cx + rad + i;
+            const int py = cy;
+            if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
+                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b, 220);
+        }
+        return;
+    }
+    if (sectionType == "homeuser") {
+        const int cx = x + sz / 2;
+        const int cy = y + P(8);
+        const int rad = P(4);
+        for (int row = -rad; row <= rad; ++row) {
+            for (int col = -rad; col <= rad; ++col) {
+                if (col * col + row * row > rad * rad)
+                    continue;
+                const int px = cx + col;
+                const int py = cy + row;
+                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
+                            220);
+            }
+        }
+        const int bodyW = P(12);
+        const int bodyH = P(6);
+        const int bx = cx - bodyW / 2;
+        const int by = y + sz - bodyH - P(2);
+        for (int row = 0; row < bodyH; ++row) {
+            for (int col = 0; col < bodyW; ++col) {
+                const int px = bx + col;
+                const int py = by + row;
+                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
+                            200);
+            }
+        }
+        return;
+    }
     const bool movie = sectionType == "movie";
     strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), x, y, sz, sz, P(5), r, g,
                              b, P(2));
@@ -878,7 +1036,7 @@ void Renderer::drawServerList(const RenderState& st) {
         }
         const float nameX = static_cast<float>(std::min(cardX + P(16), kTextMaxX() - P(8)));
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), nameX,
-                        static_cast<float>(y + P(10)), st.servers[i].name, PF(18.f), true,
+                        static_cast<float>(y + P(10)), stripMisterPlexPrefix(st.servers[i].name), PF(18.f), true,
                         st.servers[i].offline ? 110 : 255, st.servers[i].offline ? 110 : 255,
                         st.servers[i].offline ? 115 : 255);   // 0011: greyed when offline
         std::string sub = st.servers[i].owned ? "You" : "Shared";
@@ -890,13 +1048,16 @@ void Renderer::drawServerList(const RenderState& st) {
                         down ? 150 : 140, down ? 90 : 145);
         y += cardH + P(12);
     }
-    if (!st.status.empty())
-        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), P(440),
+    // GH#14: "LOADING..." is the global catalog flag. On UI_SIZE=large it sits on
+    // kStatusLineY() over the last card (Native build-host). Per-row
+    // Connecting... / local / Offline already shows probe state.
+    if (!st.status.empty() && st.status != "LOADING...")
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kStatusLineY(),
                         st.status, PF(14.f), false, 180, 180, 180);
     else if (!st.servers.empty()) {
         const int idx = std::max(0, std::min(static_cast<int>(st.servers.size()) - 1, st.focus.row));
         if (st.servers[static_cast<std::size_t>(idx)].offline)
-            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), P(440),
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kStatusLineY(),
                             "This server is offline", PF(14.f), false, 210, 150, 90);
     }
 }
@@ -909,14 +1070,14 @@ void Renderer::drawSidebar(const RenderState& st) {
     }
     drawPlexLogo();
     const int listTop = P(64);
-    const int listBottom = kScreenH() - kSafeMargin();
-    const int iconX = P(12);
-    const int textX = P(40);
+    const int listBottom = kScreenH() - kSafeBottomInset();
+    const int iconX = P(12) + kSidebarShiftX();
+    const int textX = P(40) + kSidebarShiftX();
     const int rowH = kSidebarRowH();
     int rowIndex = 0;
     const int homeRowY = listTop - st.sidebarScrollY;
     if (homeRowY + rowH > listTop - P(8) && homeRowY < listBottom) {
-        const bool homeSel = st.focus.sidebar == 0;
+        const bool homeSel = st.focus.sidebar <= 0; // content focus or kSidebarHomeFocus
         if (homeSel)
             paintSidebarFocus(rgba_.data(), sideW, homeRowY, rowH);
         drawHouseIcon(iconX, homeRowY + P(10), homeSel);
@@ -933,17 +1094,33 @@ void Renderer::drawSidebar(const RenderState& st) {
             continue;
         const bool sel = static_cast<int>(i) + 1 == st.focus.sidebar;
         const auto& ent = st.sidebarEntries[i];
+        const bool serverRow = ent.kind == SidebarRowKind::Server || ent.type == "server";
+        bool grouped = serverRow;
+        if (!grouped) {
+            for (const auto& e : st.sidebarEntries) {
+                if (e.kind == SidebarRowKind::Server || e.type == "server") {
+                    grouped = true;
+                    break;
+                }
+            }
+        }
+        const int indent = (grouped && !serverRow) ? P(12) : 0;
         if (sel)
             paintSidebarFocus(rgba_.data(), sideW, rowY, rowH);
-        drawSidebarIcon(iconX, rowY + P(10), ent.type, sel);
-        const float maxW = static_cast<float>(sideW - textX - P(6));
-        const std::string line = fonts_.ellipsize(ent.title, PF(16.f), sel, maxW);
-        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(textX),
-                        static_cast<float>(rowY + P(6)), line, PF(16.f), sel, sel ? kAccentR : 220,
-                        sel ? kAccentG : 220, sel ? kAccentB : 220);
-        const std::string sub = fonts_.ellipsize(ent.subtitle, PF(12.f), false, maxW);
-        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(textX),
-                        static_cast<float>(rowY + P(24)), sub, PF(12.f), false, 0x9a, 0x9a, 0x9a);
+        drawSidebarIcon(iconX + indent, rowY + P(10), ent.type, sel);
+        const float maxW = static_cast<float>(sideW - textX - indent - P(6));
+        const std::string line =
+            fonts_.ellipsize(stripMisterPlexPrefix(ent.title), PF(16.f), sel || serverRow, maxW);
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                        static_cast<float>(textX + indent), static_cast<float>(rowY + P(6)), line,
+                        PF(16.f), sel || serverRow, sel ? kAccentR : 220, sel ? kAccentG : 220,
+                        sel ? kAccentB : 220);
+        if (!ent.subtitle.empty()) {
+            const std::string sub = fonts_.ellipsize(ent.subtitle, PF(12.f), false, maxW);
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                            static_cast<float>(textX + indent), static_cast<float>(rowY + P(24)), sub,
+                            PF(12.f), false, 0x9a, 0x9a, 0x9a);
+        }
     }
 }
 
@@ -977,7 +1154,9 @@ void Renderer::paintUnfocusedHubPoster(const RenderState& st, int row, int col) 
     const int step = posterW + gap;
     const int scrollX = hubRowScrollX(st, row, col);
     const int px = sideW + kSafeMargin() - scrollX + col * step;
-    const int py = kHubTop() + row * kHubRowAdvance() + kHubPosterOffY();
+    if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), row))
+        return; // scrolled above the hub band
+    const int py = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), row) + kHubPosterOffY();
     ImageCacheKey imgKey{};
     std::string url;
     const auto& it = hub.items[static_cast<std::size_t>(col)];
@@ -987,8 +1166,8 @@ void Renderer::paintUnfocusedHubPoster(const RenderState& st, int row, int col) 
                                itemThumbRevision(it));
         url = photoTranscodeUrl(thumbSrv.baseUrl, it.thumb, thumbSrv.accessToken, posterW, posterH);
     }
-    drawPoster(px, py, posterW, posterH, imgKey, url, it.title, false, kFocusAnimSteps,
-               staticRgba_.data());
+    drawHubItemPoster(px, py, posterW, posterH, imgKey, url, it, false, kFocusAnimSteps,
+                      staticRgba_.data());
 }
 
 void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
@@ -1000,12 +1179,16 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
     const int sideW = kSidebarW();
     const int step = posterW + gap;
 
-    int rowY = kHubTop();
+    int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
     for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
         const auto& hub = st.hubs[ri];
+        if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), static_cast<int>(ri))) {
+            rowY += kHubRowAdvance();
+            continue;
+        }
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(sideW + kSafeMargin()), static_cast<float>(rowY), hub.title,
-                        PF(18.f), true, 255, 255, 255);
+                        static_cast<float>(sideW + kSafeMargin()), static_cast<float>(rowY),
+                        stripMisterPlexPrefix(hub.title), PF(18.f), true, 255, 255, 255);
         const int py = rowY + kHubPosterOffY();
         const bool rowFocus = static_cast<int>(ri) == st.focus.row && st.focus.sidebar == 0;
         const int scrollX =
@@ -1029,14 +1212,14 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
                 url = photoTranscodeUrl(thumbSrv.baseUrl, hub.items[ci].thumb, thumbSrv.accessToken,
                                         posterW, posterH);
             }
-            drawPoster(px, py, posterW, posterH, imgKey, url, hub.items[ci].title, foc,
-                       st.focusAnim);
+            drawHubItemPoster(px, py, posterW, posterH, imgKey, url, hub.items[ci], foc,
+                              st.focusAnim);
             px += step;
         }
         if (!omitFocusedPoster && rowFocus && st.focus.col >= 0 &&
             st.focus.col < static_cast<int>(hub.items.size())) {
             const auto& it = hub.items[static_cast<std::size_t>(st.focus.col)];
-            std::string meta = it.title;
+            std::string meta = hubItemLabel(it);
             if (!it.year.empty())
                 meta += "  " + it.year;
             const float metaW = fonts_.measureText(meta, PF(14.), false);
@@ -1063,17 +1246,32 @@ void Renderer::drawGrid(const RenderState& st, bool omitFocusedPoster) {
     const int y0 = gl.y0;
     const int rowStep = gl.rowStep;
     const std::string sectionName =
-        st.gridSectionTitle.empty() ? "Library" : st.gridSectionTitle;
+        st.gridSectionTitle.empty() ? "Library" : stripMisterPlexPrefix(st.gridSectionTitle);
     const std::string chipLabel =
         st.gridFilterChipTitle.empty() ? "All" : st.gridFilterChipTitle;
-    const std::string title = sectionName + " \xC2\xB7 " + chipLabel;
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(), title,
+    std::string title = sectionName + " \xC2\xB7 " + chipLabel;
+    if (st.gridLetterFilter) {
+        title += " \xC2\xB7 ";
+        title.push_back(st.gridLetterFilter);
+    }
+    if (st.filter43On)
+        title += " \xC2\xB7 4:3";
+    const int titleX = kGridTitleX(st.focus.sidebar != 0);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX, kSafeMargin(), title,
                     PF(28.f), true, 255, 255, 255);
-    const std::string count =
-        std::to_string(st.gridItemCount > 0 ? st.gridItemCount : static_cast<int>(st.grid.size())) +
-        " items";
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin() + P(30),
-                    count, PF(14.f), false, 140, 140, 145);
+    if (st.focus.gridOnLetters) {
+        const std::string bar = azJumpBarText(st.focus.gridLetter);
+        const float maxW = static_cast<float>(kScreenW() - titleX - kSafeRight());
+        const std::string shown = fonts_.ellipsize(bar, PF(14.f), true, maxW);
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX,
+                        kSafeMargin() + P(30), shown, PF(14.f), true, kAccentR, kAccentG, kAccentB);
+    } else {
+        const std::string count =
+            std::to_string(st.gridItemCount > 0 ? st.gridItemCount : static_cast<int>(st.grid.size())) +
+            " items";
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX,
+                        kSafeMargin() + P(30), count, PF(14.f), false, 140, 140, 145);
+    }
     if (categoryRow) {
         const int chipY = kSafeMargin() + P(30) + P(14);
         float cx = static_cast<float>(kSafeMargin() - st.gridChipScrollX);
@@ -1083,14 +1281,14 @@ void Renderer::drawGrid(const RenderState& st, bool omitFocusedPoster) {
             const int right = static_cast<int>(cx + cw);
             if (right >= kSafeMargin() && static_cast<int>(cx) <= kScreenW() - kSafeRight()) {
                 const bool foc = st.focus.gridOnChips && static_cast<int>(i) == st.focus.gridChip;
-                const bool sel = static_cast<int>(i) == st.gridActiveChip;
+                const bool sel = chip.kind == GridCategoryChip::Kind::Aspect43
+                                     ? st.filter43On
+                                     : static_cast<int>(i) == st.gridActiveChip;
                 drawCategoryChip(cx, static_cast<float>(chipY), chip.title, foc, sel && !foc);
             }
             cx += cw + kGridChipGap();
         }
     }
-    const PlexItem* focused = nullptr;
-    int focPx = 0, focPy = 0;
     const int topRow = st.gridScrollRow;
     for (size_t i = 0; i < st.grid.size(); ++i) {
         const int c = static_cast<int>(i % cols);
@@ -1100,10 +1298,10 @@ void Renderer::drawGrid(const RenderState& st, bool omitFocusedPoster) {
         const int visRow = r - topRow;
         const int px = x0 + c * (posterW + gap);
         const int py = y0 + visRow * rowStep;
-        if (py + posterH > kScreenH() - kSafeMargin())
+        if (py + posterH > kScreenH() - kSafeBottomInset())
             break;
-        const bool foc = !omitFocusedPoster && !st.focus.gridOnChips && r == st.focus.row &&
-                         c == st.focus.col;
+        const bool foc = !omitFocusedPoster && !st.focus.gridOnChips && !st.focus.gridOnLetters &&
+                         st.focus.sidebar == 0 && r == st.focus.row && c == st.focus.col;
         ImageCacheKey imgKey{};
         std::string url;
         if (st.haveServer && !st.grid[i].thumb.empty()) {
@@ -1112,24 +1310,21 @@ void Renderer::drawGrid(const RenderState& st, bool omitFocusedPoster) {
             url = photoTranscodeUrl(st.server.baseUrl, st.grid[i].thumb, st.server.accessToken,
                                     posterW, posterH);
         }
-        drawPoster(px, py, posterW, posterH, imgKey, url, st.grid[i].title, foc, st.focusAnim);
-        if (foc) {
-            focused = &st.grid[i];
-            focPx = px;
-            focPy = py;
+        drawPoster(px, py, posterW, posterH, imgKey, url, st.grid[i].title, foc, st.focusAnim, nullptr,
+                   st.grid[i].viewCount, st.grid[i].viewOffsetMs);
+        const int capY = py + posterH + P(4);
+        if (capY + P(14) <= kScreenH() - kSafeBottomInset() + P(4)) {
+            const std::string cap =
+                fonts_.ellipsize(st.grid[i].title, PF(12.f), foc, static_cast<float>(posterW));
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                            static_cast<float>(px), static_cast<float>(capY), cap, PF(12.f), foc,
+                            foc ? 255 : 210, foc ? 255 : 210, foc ? 255 : 214);
         }
     }
-    // Focused title in the row gap directly under the focused poster (below its 1.08 scale
-    // growth); skipped when the gap would run past the safe area.
-    const int ty = focPy + posterH + P(10);
-    if (focused && ty + P(16) <= kScreenH() - kSafeMargin() + P(8)) {
-        const std::string t = fonts_.ellipsize(focused->title, PF(13.f), false, 2.f * posterW);
-        const float tw = fonts_.measureText(t, PF(13.), false);
-        float tx = static_cast<float>(focPx) + (posterW - tw) / 2.f;
-        tx = std::max(static_cast<float>(kSafeMargin()), std::min(tx, static_cast<float>(kTextMaxX()) - tw));
-        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                        static_cast<float>(ty), t, PF(13.f), false, 230, 230, 230);
-    }
+    // Home always paints the rail. The library grid is full-bleed; LEFT-at-col-0
+    // opens the drawer, which used to set focus and dim but skip this paint.
+    if (st.focus.sidebar != 0)
+        drawSidebar(st);
 }
 
 void Renderer::drawDetail(const RenderState& st) {
@@ -1148,16 +1343,17 @@ void Renderer::drawDetail(const RenderState& st) {
                                  posterW, posterH);
     const int detailTop = kSafeMargin() + P(24);
     const ImageCacheKey detailKey = cachedDetailThumb(cache_, st, posterW, posterH);
-    drawPoster(kSafeMargin(), detailTop, posterW, posterH, detailKey, purl, st.detail.title, false,
-               kFocusAnimSteps);
+    const std::string detailTitle = stripMisterPlexPrefix(st.detail.title);
+    drawPoster(kSafeMargin(), detailTop, posterW, posterH, detailKey, purl, detailTitle, false,
+               kFocusAnimSteps, nullptr, st.detail.viewCount, st.detail.viewOffsetMs);
 
     const float tx = static_cast<float>(kSafeMargin() + posterW + P(20));
     const float textMaxW = static_cast<float>(kTextMaxX()) - tx;
     fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                           static_cast<float>(detailTop), textMaxW, st.detail.title, PF(28.f), true, 255,
+                           static_cast<float>(detailTop), textMaxW, detailTitle, PF(28.f), true, 255,
                            255, 255, 2);
 
-    const float titleBlockH = fonts_.measureTextWrapped(st.detail.title, PF(28.), true, textMaxW, 2);
+    const float titleBlockH = fonts_.measureTextWrapped(detailTitle, PF(28.), true, textMaxW, 2);
     float chipX = tx;
     const float chipY = static_cast<float>(detailTop) + titleBlockH + PF(8.f);
     if (!st.detail.year.empty()) {
@@ -1199,16 +1395,430 @@ void Renderer::drawDetail(const RenderState& st) {
         textY += PF(18.f);
     }
     const int btnX = static_cast<int>(tx);
-    const int btnY = static_cast<int>(textY + PF(16.f));
+    int btnY = static_cast<int>(textY + PF(16.f));
     const bool playFoc = st.focus.detailButton == 0;
-    const std::string playLabel = st.detail.viewOffsetMs > 0 ? "Resume" : "Play";
-    drawPlayPill(btnX, btnY, P(120), P(36), playLabel, playFoc);
-    if (st.detail.viewOffsetMs > 0) {
-        const bool rf = st.focus.detailButton == 1;
-        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), btnX + P(140),
-                        static_cast<float>(btnY + P(10)), "Play from start", PF(14.f), rf, rf ? kAccentR : 200,
-                        rf ? kAccentG : 200, rf ? kAccentB : 200);
+    const bool isShow = st.detail.type == "show";
+    const std::string playLabel =
+        isShow ? "Seasons" : (st.detail.viewOffsetMs > 0 ? "Resume" : "Play");
+    drawPlayPill(btnX, btnY, isShow ? P(140) : P(120), P(36), playLabel, playFoc);
+    int nextX = btnX + (isShow ? P(150) : P(130));
+    const int textRight = kTextMaxX();
+    auto drawTextBtn = [&](int index, const char* label, int advance) {
+        if (index < 0)
+            return;
+        if (nextX + advance > textRight && nextX > btnX) {
+            nextX = btnX;
+            btnY += P(28);
+        }
+        const bool foc = st.focus.detailButton == index;
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), nextX,
+                        static_cast<float>(btnY + P(10)), label, PF(14.f), foc, foc ? kAccentR : 200,
+                        foc ? kAccentG : 200, foc ? kAccentB : 200);
+        nextX += advance;
+    };
+    if (!isShow && st.detail.viewOffsetMs > 0)
+        drawTextBtn(playFromStartButtonIndex(st.detail), "Play from start", P(150));
+    if (itemShowsSubtitleButton(st.detail))
+        drawTextBtn(subtitleButtonIndex(st.detail), "Subtitles", P(100));
+    if (itemShowsAudioButton(st.detail))
+        drawTextBtn(audioButtonIndex(st.detail), "Audio", P(80));
+    if (itemShowsQueueButtons(st.detail)) {
+        drawTextBtn(playNextButtonIndex(st.detail), "Play next", P(100));
+        drawTextBtn(addToQueueButtonIndex(st.detail), "Add to queue", P(130));
     }
+}
+
+void Renderer::drawAudioPicker(const RenderState& st) {
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
+                    "Audio", PF(28.f), true, 255, 255, 255);
+    const std::string sub = st.detail.title.empty() ? "Tracks" : stripMisterPlexPrefix(st.detail.title);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    kSafeMargin() + P(30), sub, PF(14.f), false, 140, 140, 145);
+    const auto rows = audioPickerRows(st.detail);
+    const int rowH = P(28);
+    const int y0 = kSafeMargin() + P(60);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const bool foc = st.focus.row == static_cast<int>(i);
+        const AudioPickerRow& row = rows[i];
+        const int y = y0 + static_cast<int>(i) * rowH;
+        const std::uint8_t r = !row.selectable ? 110 : (foc ? kAccentR : 220);
+        const std::uint8_t g = !row.selectable ? 110 : (foc ? kAccentG : 220);
+        const std::uint8_t b = !row.selectable ? 110 : (foc ? kAccentB : 220);
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                        static_cast<float>(y), row.label, PF(16.f), foc && row.selectable, r, g, b);
+    }
+}
+
+void Renderer::drawSubtitlePicker(const RenderState& st) {
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
+                    "Subtitles", PF(28.f), true, 255, 255, 255);
+    const std::string sub = st.detail.title.empty() ? "Tracks" : stripMisterPlexPrefix(st.detail.title);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    kSafeMargin() + P(30), sub, PF(14.f), false, 140, 140, 145);
+    const auto rows = subtitlePickerRows(st.detail);
+    const int rowH = P(28);
+    const int y0 = kSafeMargin() + P(60);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const bool foc = st.focus.row == static_cast<int>(i);
+        const SubtitlePickerRow& row = rows[i];
+        const int y = y0 + static_cast<int>(i) * rowH;
+        const std::uint8_t r = !row.selectable ? 110 : (foc ? kAccentR : 220);
+        const std::uint8_t g = !row.selectable ? 110 : (foc ? kAccentG : 220);
+        const std::uint8_t b = !row.selectable ? 110 : (foc ? kAccentB : 220);
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                        static_cast<float>(y), row.label, PF(16.f), foc && row.selectable, r, g, b);
+    }
+}
+
+void Renderer::drawSeasonList(const RenderState& st) {
+    const GridLayout gl = seasonGridLayout();
+    const std::string title = st.listTitle.empty() ? "Seasons" : stripMisterPlexPrefix(st.listTitle);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
+                    title, PF(28.f), true, 255, 255, 255);
+    const std::string count = std::to_string(static_cast<int>(st.seasons.size())) + " seasons";
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    kSafeMargin() + P(30), count, PF(14.f), false, 140, 140, 145);
+    for (size_t i = 0; i < st.seasons.size(); ++i) {
+        const int c = static_cast<int>(i % gl.cols);
+        const int r = static_cast<int>(i / gl.cols);
+        if (r < st.seasonScrollRow)
+            continue;
+        const int visRow = r - st.seasonScrollRow;
+        const int px = gl.x0 + c * (gl.posterW + gl.gap);
+        const int py = gl.y0 + visRow * gl.rowStep;
+        if (py + gl.posterH > kScreenH() - kSafeBottomInset())
+            break;
+        const auto& it = st.seasons[i];
+        const bool foc = r == st.focus.row && c == st.focus.col;
+        ImageCacheKey imgKey{};
+        std::string url;
+        if (st.haveServer && !it.thumb.empty()) {
+            imgKey = thumbCacheKey(st.server.machineIdentifier, it.ratingKey, gl.posterW, gl.posterH,
+                                   itemThumbRevision(it));
+            url = photoTranscodeUrl(st.server.baseUrl, it.thumb, st.server.accessToken, gl.posterW,
+                                    gl.posterH);
+        }
+        drawPoster(px, py, gl.posterW, gl.posterH, imgKey, url, "", foc, st.focusAnim, nullptr,
+                   it.viewCount, it.viewOffsetMs);
+        const std::string name = it.title.empty() ? ("Season " + std::to_string(it.index)) : it.title;
+        const std::string cap = fonts_.ellipsize(name, PF(13.f), false, static_cast<float>(gl.posterW));
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(px),
+                        static_cast<float>(py + gl.posterH + P(4)), cap, PF(13.f), foc, foc ? 255 : 230,
+                        foc ? 255 : 230, foc ? 255 : 230);
+        const std::string eps = std::to_string(std::max(0, it.leafCount)) +
+                                (it.leafCount == 1 ? " episode" : " episodes");
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(px),
+                        static_cast<float>(py + gl.posterH + P(20)), eps, PF(12.f), false, kAccentR,
+                        kAccentG, kAccentB);
+    }
+}
+
+void Renderer::drawEpisodeList(const RenderState& st) {
+    const std::string title = st.listTitle.empty() ? "Episodes" : stripMisterPlexPrefix(st.listTitle);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
+                    title, PF(22.f), true, 255, 255, 255);
+    const int rowH = episodeRowH();
+    const int top = episodeListTop();
+    const int thumbW = P(72);
+    const int thumbH = P(40);
+    const PlexItem* focused = nullptr;
+    for (size_t i = 0; i < st.episodes.size(); ++i) {
+        const int r = static_cast<int>(i);
+        if (r < st.episodeScrollRow)
+            continue;
+        const int vis = r - st.episodeScrollRow;
+        const int y = top + vis * rowH;
+        if (y + rowH > episodeListBottom())
+            break;
+        const auto& it = st.episodes[i];
+        const bool foc = r == st.focus.row;
+        if (foc) {
+            focused = &it;
+            for (int row = 0; row < rowH - P(4); ++row) {
+                for (int col = kSafeMargin(); col < kTextMaxX(); ++col) {
+                    if (row < 0 || y + row >= kScreenH())
+                        continue;
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(y + row) * kScreenW() + col) * 4,
+                            kAccentR, kAccentG, kAccentB, 36);
+                }
+            }
+        }
+        ImageCacheKey imgKey{};
+        std::string url;
+        if (st.haveServer && !it.thumb.empty()) {
+            imgKey = thumbCacheKey(st.server.machineIdentifier, it.ratingKey, thumbW, thumbH,
+                                   itemThumbRevision(it));
+            url = photoTranscodeUrl(st.server.baseUrl, it.thumb, st.server.accessToken, thumbW, thumbH);
+        }
+        drawPoster(kSafeMargin(), y + P(4), thumbW, thumbH, imgKey, url, "", false, kFocusAnimSteps,
+                   nullptr, it.viewCount, it.viewOffsetMs);
+        const std::string code = episodeCode(it.parentIndex, it.index);
+        float tx = static_cast<float>(kSafeMargin() + thumbW + P(12));
+        if (!code.empty()) {
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
+                            static_cast<float>(y + P(6)), code, PF(13.f), true, kAccentR, kAccentG,
+                            kAccentB);
+            tx += fonts_.measureText(code, PF(13.), true) + PF(8.f);
+        }
+        const std::string dur = formatRunTime(it.runtimeMs);
+        const float durW = dur.empty() ? 0.f : fonts_.measureText(dur, PF(12.), false);
+        const float titleMax =
+            static_cast<float>(kTextMaxX()) - tx - durW - PF(12.f);
+        const std::string name = fonts_.ellipsize(it.title, PF(15.f), false, std::max(PF(40.f), titleMax));
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
+                        static_cast<float>(y + P(5)), name, PF(15.f), foc, 255, 255, 255);
+        if (!dur.empty()) {
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                            static_cast<float>(kTextMaxX()) - durW, static_cast<float>(y + P(8)), dur,
+                            PF(12.f), false, 180, 180, 185);
+        }
+        const WatchMark mark = watchMark(it.viewCount, it.viewOffsetMs);
+        if (mark == WatchMark::Watched) {
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                            static_cast<float>(kSafeMargin() + thumbW + P(12)),
+                            static_cast<float>(y + P(26)), "Watched", PF(12.f), false, kAccentR, kAccentG,
+                            kAccentB);
+        } else if (mark == WatchMark::Progress && it.runtimeMs > 0) {
+            const int barX = kSafeMargin() + thumbW + P(12);
+            const int barW = P(120);
+            const int barY = y + P(30);
+            const int filled =
+                static_cast<int>(barW * std::min<int64_t>(it.viewOffsetMs, it.runtimeMs) / it.runtimeMs);
+            for (int col = 0; col < barW; ++col) {
+                const int px = barX + col;
+                if (px < 0 || px >= kScreenW() || barY < 0 || barY + P(3) > kScreenH())
+                    continue;
+                const bool on = col < filled;
+                for (int row = 0; row < P(3); ++row) {
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(barY + row) * kScreenW() + px) * 4,
+                            on ? kAccentR : 60, on ? kAccentG : 60, on ? kAccentB : 60, 255);
+                }
+            }
+        }
+    }
+    if (focused && !focused->summary.empty()) {
+        const int sy = episodeListBottom() + P(4);
+        const std::string sum =
+            fonts_.ellipsize(focused->summary, PF(13.f), false, static_cast<float>(kTextMaxX() - kSafeMargin()));
+        fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                               static_cast<float>(kSafeMargin()), static_cast<float>(sy),
+                               static_cast<float>(kTextMaxX() - kSafeMargin()), focused->summary, PF(13.f),
+                               false, 200, 200, 205, 2);
+        (void)sum;
+    }
+}
+
+void Renderer::drawUpNext(const RenderState& st) {
+    for (int y = 0; y < kScreenH(); ++y) {
+        for (int x = 0; x < kScreenW(); ++x) {
+            blendPx(rgba_.data() + (static_cast<std::size_t>(y) * kScreenW() + x) * 4, 0, 0, 0, 170);
+        }
+    }
+    const int w = P(420);
+    const int h = P(168);
+    const int x0 = (kScreenW() - w) / 2;
+    const int y0 = (kScreenH() - h) / 2;
+    for (int row = 0; row < h; ++row) {
+        for (int col = 0; col < w; ++col) {
+            const int px = x0 + col;
+            const int py = y0 + row;
+            if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
+                continue;
+            if (roundedCornerSkip(col, row, w, h, P(12)))
+                continue;
+            blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, 18, 18, 22, 240);
+            const bool edge = col < P(2) || row < P(2) || col >= w - P(2) || row >= h - P(2);
+            if (edge && !roundedCornerSkip(col, row, w, h, P(12)))
+                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, kAccentR,
+                        kAccentG, kAccentB, 180);
+        }
+    }
+    const float tx = static_cast<float>(x0 + P(20));
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
+                    static_cast<float>(y0 + P(16)), "UP NEXT", PF(13.f), true, kAccentR, kAccentG,
+                    kAccentB);
+    const std::string code = episodeCode(st.upNext.parentIndex, st.upNext.index);
+    std::string heading = st.upNext.title.empty() ? "Next episode" : st.upNext.title;
+    if (!code.empty())
+        heading = code + "  " + heading;
+    fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
+                           static_cast<float>(y0 + P(38)), static_cast<float>(w - P(40)), heading,
+                           PF(18.f), true, 255, 255, 255, 2);
+    const std::string count = "Playing in " + std::to_string(std::max(0, st.upNextSeconds)) + "s";
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
+                    static_cast<float>(y0 + P(88)), count, PF(14.f), false, 200, 200, 205);
+    const bool playFoc = st.focus.detailButton == 0;
+    drawPlayPill(x0 + P(20), y0 + P(114), P(130), P(36), "Play now", playFoc);
+    const bool cancelFoc = st.focus.detailButton == 1;
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                    static_cast<float>(x0 + P(170)), static_cast<float>(y0 + P(124)), "Back to cancel",
+                    PF(14.f), cancelFoc, cancelFoc ? kAccentR : 180, cancelFoc ? kAccentG : 180,
+                    cancelFoc ? kAccentB : 180);
+}
+
+void Renderer::drawLinkSignIn(const RenderState& st) {
+    for (int y = 0; y < kScreenH(); ++y) {
+        for (int x = 0; x < kScreenW(); ++x) {
+            const float v = static_cast<float>(y) / static_cast<float>(kScreenH());
+            const std::uint8_t r = static_cast<std::uint8_t>(12 + 10 * v);
+            blendPx(rgba_.data() + (static_cast<std::size_t>(y) * kScreenW() + x) * 4, r, r,
+                    static_cast<std::uint8_t>(r + 6), 255);
+        }
+    }
+    const int cardW = std::min(P(520), kScreenW() - kSafeMargin() * 2);
+    const int cardH = std::min(P(360), kScreenH() - kSafeBottomInset() * 2);
+    const int x0 = (kScreenW() - cardW) / 2;
+    const int y0 = (kScreenH() - cardH) / 2;
+    for (int row = 0; row < cardH; ++row) {
+        for (int col = 0; col < cardW; ++col) {
+            const int px = x0 + col;
+            const int py = y0 + row;
+            if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
+                continue;
+            if (roundedCornerSkip(col, row, cardW, cardH, P(16)))
+                continue;
+            blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, 22, 22, 26, 235);
+        }
+    }
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
+                    static_cast<float>(y0 + P(18)), "Sign in to Plex", PF(22.f), true, 255, 255, 255);
+    const std::string code = st.linkCode.empty() ? "----" : st.linkCode;
+    std::string spaced;
+    for (size_t i = 0; i < code.size(); ++i) {
+        if (i)
+            spaced += "  ";
+        spaced.push_back(code[i]);
+    }
+    const float cw = fonts_.measureText(spaced, PF(36.), true);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                    static_cast<float>(x0) + (cardW - cw) / 2.f - PF(80.f),
+                    static_cast<float>(y0 + P(70)), spaced, PF(36.f), true, kAccentR, kAccentG, kAccentB);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
+                    static_cast<float>(y0 + P(130)), "plex.tv/link", PF(18.f), false, 230, 230, 235);
+    const int sec = std::max(0, st.linkSeconds);
+    const std::string count =
+        "Code expires in " + std::to_string(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") +
+        std::to_string(sec % 60);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
+                    static_cast<float>(y0 + P(160)), count, PF(14.f), false, 180, 180, 185);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
+                    static_cast<float>(y0 + cardH - P(36)), "Back to cancel", PF(13.f), false, 150, 150, 155);
+    if (!st.status.empty())
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
+                        static_cast<float>(y0 + P(188)), st.status, PF(13.f), false, 210, 150, 90);
+    const int qrPx = std::max(P(3), (cardH - P(80)) / kLinkQrModules);
+    const int qrSize = qrPx * kLinkQrModules;
+    const int qx = x0 + cardW - qrSize - P(20);
+    const int qy = y0 + (cardH - qrSize) / 2;
+    for (int my = 0; my < kLinkQrModules; ++my) {
+        for (int mx = 0; mx < kLinkQrModules; ++mx) {
+            if (linkQrModule(mx, my) != '1')
+                continue;
+            for (int dy = 0; dy < qrPx; ++dy) {
+                for (int dx = 0; dx < qrPx; ++dx) {
+                    const int px = qx + mx * qrPx + dx;
+                    const int py = qy + my * qrPx + dy;
+                    if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
+                        continue;
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, 240, 240,
+                            240, 255);
+                }
+            }
+        }
+    }
+}
+
+void Renderer::drawHomeUsers(const RenderState& st) {
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
+                    "Who's watching?", PF(26.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    kSafeMargin() + P(28), "Plex Home", PF(14.f), false, 160, 160, 165);
+    const int rowH = P(36);
+    const int y0 = kSafeMargin() + P(64);
+    if (st.homeRows.empty()) {
+        const std::string msg = st.status.empty() ? "No Home users" : st.status;
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                        static_cast<float>(y0), msg, PF(18.f), false, 220, 200, 160);
+    }
+    for (size_t i = 0; i < st.homeRows.size(); ++i) {
+        const bool foc = st.focus.row == static_cast<int>(i);
+        const int y = y0 + static_cast<int>(i) * rowH;
+        if (foc) {
+            for (int row = 0; row < rowH - P(6); ++row) {
+                for (int col = kSafeMargin(); col < kScreenW() - kSafeMargin(); ++col) {
+                    const int py = y + row;
+                    if (py >= 0 && py < kScreenH())
+                        blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + col) * 4, 40, 32,
+                                16, 220);
+                }
+            }
+        }
+        const auto& row = st.homeRows[i];
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                        static_cast<float>(kSafeMargin() + P(8)), static_cast<float>(y + P(4)), row.title,
+                        PF(18.f), foc, foc ? kAccentR : 230, foc ? kAccentG : 230, foc ? kAccentB : 230);
+        if (!row.subtitle.empty()) {
+            const float tw = fonts_.measureText(row.title, PF(18.), foc);
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                            static_cast<float>(kSafeMargin() + P(16)) + tw, static_cast<float>(y + P(8)),
+                            row.subtitle, PF(13.f), false, 170, 170, 175);
+        }
+    }
+    if (!st.status.empty() && !st.homeRows.empty())
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                        static_cast<float>(kScreenH() - kSafeBottomInset() - P(36)), st.status, PF(14.f), false,
+                        210, 150, 90);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    static_cast<float>(kScreenH() - kSafeBottomInset() - P(16)), "Back", PF(13.f), false, 150, 150,
+                    155);
+}
+
+void Renderer::drawHomePin(const RenderState& st) {
+    const std::string who = st.homePinTitle.empty() ? "Enter PIN" : st.homePinTitle;
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(), who,
+                    PF(26.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    kSafeMargin() + P(28), "Up and Down change a digit", PF(14.f), false, 160, 160, 165);
+    const std::string pin = st.homePin.size() == 4 ? st.homePin : "0000";
+    const int box = P(56);
+    const int gap = P(12);
+    const int total = box * 4 + gap * 3;
+    int x = (kScreenW() - total) / 2;
+    const int y = kSafeMargin() + P(80);
+    for (int i = 0; i < 4; ++i) {
+        const bool foc = st.homePinSlot == i;
+        for (int row = 0; row < box; ++row) {
+            for (int col = 0; col < box; ++col) {
+                const int px = x + col;
+                const int py = y + row;
+                if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
+                    continue;
+                const bool edge = row < P(2) || col < P(2) || row >= box - P(2) || col >= box - P(2);
+                if (foc && edge)
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, kAccentR,
+                            kAccentG, kAccentB, 255);
+                else if (!edge)
+                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, 28, 28, 32,
+                            230);
+            }
+        }
+        const std::string digit(1, pin[static_cast<size_t>(i)]);
+        const float dw = fonts_.measureText(digit, PF(28.), true);
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                        static_cast<float>(x) + (box - dw) / 2.f, static_cast<float>(y + P(12)), digit,
+                        PF(28.f), true, 255, 255, 255);
+        x += box + gap;
+    }
+    const bool okFoc = st.homePinSlot >= 4;
+    const int okW = P(120);
+    const int okX = (kScreenW() - okW) / 2;
+    drawPlayPill(okX, y + box + P(24), okW, P(36), "OK", okFoc);
+    if (!st.status.empty())
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                        static_cast<float>(y + box + P(72)), st.status, PF(16.f), false, 210, 150, 90);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
+                    static_cast<float>(kScreenH() - kSafeBottomInset() - P(16)), "Back", PF(13.f), false, 150, 150,
+                    155);
 }
 
 std::string Renderer::staticLayerKey(const RenderState& st) const {
@@ -1216,8 +1826,14 @@ std::string Renderer::staticLayerKey(const RenderState& st) const {
     // Home/grid backdrops follow focus; those repaint via backdropUrl patch, not static key.
     if (st.backdropKeyValid && st.view != ViewId::Home && st.view != ViewId::LibraryGrid)
         bd = imageCacheKeyString(st.backdropKey);
-    return std::to_string(static_cast<int>(st.view)) + "|" + std::to_string(st.dataGeneration) +
-           "|" + bd;
+    std::string key = std::to_string(static_cast<int>(st.view)) + "|" +
+                      std::to_string(st.dataGeneration) + "|" + bd;
+    if (st.focus.gridOnLetters)
+        key += "|az" + std::to_string(st.focus.gridLetter);
+    // #206: a Home vertical scroll moves every row, so it rebuilds the static layer.
+    if (st.view == ViewId::Home)
+        key += "|hr" + std::to_string(homeFirstHubRow(st.focus.row, static_cast<int>(st.hubs.size())));
+    return key;
 }
 
 namespace {
@@ -1271,7 +1887,8 @@ void Renderer::patchStaticPoster(const RenderState& st, int row, int col, bool f
         }
         drawPoster(px, py, gl.posterW, gl.posterH, imgKey, url,
                    st.grid[static_cast<std::size_t>(idx)].title, focused, kFocusAnimSteps,
-                   staticRgba_.data());
+                   staticRgba_.data(), st.grid[static_cast<std::size_t>(idx)].viewCount,
+                   st.grid[static_cast<std::size_t>(idx)].viewOffsetMs);
         return;
     }
     if (st.view == ViewId::Home && st.focus.sidebar == 0 && row >= 0 &&
@@ -1284,7 +1901,9 @@ void Renderer::patchStaticPoster(const RenderState& st, int row, int col, bool f
             return;
         const int scrollX = hubRowScrollX(st, row, col);
         const int px = sideW + kSafeMargin() - scrollX + col * step;
-        const int py = kHubTop() + row * kHubRowAdvance() + kHubPosterOffY();
+        if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), row))
+            return; // scrolled above the hub band
+        const int py = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), row) + kHubPosterOffY();
         ImageCacheKey imgKey{};
         std::string url;
         if (st.haveServer && !hub.items[static_cast<std::size_t>(col)].thumb.empty()) {
@@ -1297,9 +1916,9 @@ void Renderer::patchStaticPoster(const RenderState& st, int row, int col, bool f
             url = photoTranscodeUrl(thumbSrv.baseUrl, hub.items[static_cast<std::size_t>(col)].thumb,
                                     thumbSrv.accessToken, posterW, posterH);
         }
-        drawPoster(px, py, posterW, posterH, imgKey, url,
-                   hub.items[static_cast<std::size_t>(col)].title, focused, kFocusAnimSteps,
-                   staticRgba_.data());
+        drawHubItemPoster(px, py, posterW, posterH, imgKey, url,
+                          hub.items[static_cast<std::size_t>(col)], focused, kFocusAnimSteps,
+                          staticRgba_.data());
     }
 }
 
@@ -1308,7 +1927,7 @@ void Renderer::shiftStaticGridRows(const RenderState& st, int deltaRows) {
         return;
     const GridLayout gl = computeGridLayout(!st.gridChips.empty());
     const int y0 = gl.y0;
-    const int y1 = kScreenH() - kSafeMargin();
+    const int y1 = kScreenH() - kSafeBottomInset();
     const int h = y1 - y0;
     const int dy = -deltaRows * gl.rowStep;
     if (h <= 0 || std::abs(dy) >= h)
@@ -1350,11 +1969,14 @@ void Renderer::shiftStaticHomeColumns(const RenderState& st, int hubRow, int del
     if (deltaPx == 0 || hubRow < 0 || hubRow >= static_cast<int>(st.hubs.size()))
         return;
     const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
-    int rowY = kHubTop();
-    for (int ri = 0; ri < hubRow; ++ri)
-        rowY += kHubRowAdvance();
-    const int y0 = rowY + kHubPosterOffY() - P(8);
-    const int y1 = rowY + kHubPosterOffY() + posterH + P(40);
+    if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), hubRow))
+        return; // scrolled above the hub band
+    const int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), hubRow);
+    int y0 = rowY + kHubPosterOffY() - P(8);
+    int y1 = rowY + kHubPosterOffY() + posterH + P(40);
+    clampRowSpanToScreen(y0, y1, kScreenH());
+    if (y1 <= y0)
+        return;
     const int x0 = kSidebarW() + kSafeMargin() - gap;
     const int x1 = kScreenW();
     const int w = x1 - x0;
@@ -1382,8 +2004,50 @@ void Renderer::shiftStaticHomeColumns(const RenderState& st, int hubRow, int del
     rgba_.assign(staticRgba_.begin(), staticRgba_.end());
 }
 
+void Renderer::patchChipRow(const RenderState& st) {
+    if (st.view != ViewId::LibraryGrid || st.gridChips.empty())
+        return;
+    if (staticRgba_.empty() ||
+        staticRgba_.size() != static_cast<std::size_t>(kScreenW()) * kScreenH() * 4u)
+        return;
+    rgba_.assign(staticRgba_.begin(), staticRgba_.end());
+    const int chipY = kSafeMargin() + P(30) + P(14);
+    const int y0 = std::max(0, chipY - P(2));
+    const int y1 = std::min(kScreenH(), chipY + kGridChipRowH() + P(4));
+    restoreBackdropRect(0, y0, kScreenW(), y1);
+    float cx = static_cast<float>(kSafeMargin() - st.gridChipScrollX);
+    for (size_t i = 0; i < st.gridChips.size(); ++i) {
+        const auto& chip = st.gridChips[i];
+        const float cw = measureCategoryChipWidth(fonts_, chip.title);
+        const int right = static_cast<int>(cx + cw);
+        if (right >= kSafeMargin() && static_cast<int>(cx) <= kScreenW() - kSafeRight()) {
+            const bool foc = st.focus.gridOnChips && static_cast<int>(i) == st.focus.gridChip;
+            const bool sel = chip.kind == GridCategoryChip::Kind::Aspect43
+                                 ? st.filter43On
+                                 : static_cast<int>(i) == st.gridActiveChip;
+            drawCategoryChip(cx, static_cast<float>(chipY), chip.title, foc, sel && !foc);
+        }
+        cx += cw + kGridChipGap();
+    }
+    const std::size_t rowBytes = static_cast<std::size_t>(kScreenW()) * 4u;
+    for (int y = y0; y < y1; ++y)
+        std::memcpy(staticRgba_.data() + static_cast<std::size_t>(y) * rowBytes,
+                    rgba_.data() + static_cast<std::size_t>(y) * rowBytes, rowBytes);
+}
+
 void Renderer::syncStaticAfterFocusMove(const RenderState& st, int prevRow, int prevCol,
                                         int prevGridScrollRow, int prevHubScrollX) {
+    if (st.view == ViewId::LibraryGrid && st.focus.gridOnLetters) {
+        // The letter bar is painted with the static layer. Its key includes the slot.
+        return;
+    }
+    if (st.view == ViewId::LibraryGrid && (st.focus.gridOnChips || lastGridOnChips_)) {
+        // Chips live in the static layer. Moving focus between them (or on/off the
+        // chip row) used to skip this path, so RIGHT/LEFT looked like no-ops (D9).
+        patchChipRow(st);
+        if (st.focus.gridOnChips)
+            return;
+    }
     if (st.view == ViewId::LibraryGrid && !st.focus.gridOnChips) {
         if (prevGridScrollRow != st.gridScrollRow) {
             shiftStaticGridRows(st, st.gridScrollRow - prevGridScrollRow);
@@ -1411,9 +2075,7 @@ void Renderer::syncStaticAfterFocusMove(const RenderState& st, int prevRow, int 
             const int step = kHubPosterW() + kHubGap();
             const int sideW = kSidebarW();
             const int px = sideW + kSafeMargin() - hubScrollX + st.focus.col * step;
-            int rowY = kHubTop();
-            for (int ri = 0; ri < st.focus.row; ++ri)
-                rowY += kHubRowAdvance();
+            const int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), st.focus.row);
             const int py = rowY + kHubPosterOffY();
             const int newCol = hubScrollX > prevHubScrollX ? st.focus.col + 1 : st.focus.col - 1;
             if (newCol >= 0)
@@ -1424,9 +2086,7 @@ void Renderer::syncStaticAfterFocusMove(const RenderState& st, int prevRow, int 
         }
         patchStaticPoster(st, prevRow, prevCol, false);
         const int posterW = kHubPosterW(), posterH = kHubPosterH();
-        int rowY = kHubTop();
-        for (int ri = 0; ri < st.focus.row; ++ri)
-            rowY += kHubRowAdvance();
+        const int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), st.focus.row);
         const int py = rowY + kHubPosterOffY();
         const int sideW = kSidebarW();
         const int gap = kHubGap();
@@ -1436,6 +2096,34 @@ void Renderer::syncStaticAfterFocusMove(const RenderState& st, int prevRow, int 
         restoreBackdropRect(px - P(4), py - P(4), px + posterW + P(4), py + posterH + P(4));
         rgba_.assign(staticRgba_.begin(), staticRgba_.end());
     }
+}
+
+void Renderer::drawBrowseHint(const std::string& queueLine) {
+    const char* hint = browseHintLine();
+    const bool hintOn = hint && *hint;
+    if (!hintOn && queueLine.empty())
+        return;
+    const int lineH = P(16);
+    const int lines = (hintOn ? 1 : 0) + (queueLine.empty() ? 0 : 1);
+    const int yBottom = kScreenH() - lineH;
+    const int yTop = yBottom - (lines - 1) * lineH;
+    const int barY = std::max(0, yTop - P(4));
+    for (int row = barY; row < kScreenH(); ++row) {
+        for (int col = 0; col < kScreenW(); ++col)
+            blendPx(rgba_.data() + (static_cast<std::size_t>(row) * kScreenW() + col) * 4, 12, 12, 16,
+                    255);
+    }
+    int y = yTop;
+    if (!queueLine.empty()) {
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                        static_cast<float>(kSafeMargin()), static_cast<float>(y), queueLine.c_str(),
+                        PF(13.f), false, 229, 160, 13);
+        y += lineH;
+    }
+    if (hintOn)
+        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                        static_cast<float>(kSafeMargin()), static_cast<float>(y), hint, PF(13.f), false,
+                        220, 224, 230);
 }
 
 void Renderer::buildStaticLayer(const RenderState& st) {
@@ -1457,6 +2145,30 @@ void Renderer::buildStaticLayer(const RenderState& st) {
     case ViewId::Detail:
         drawDetail(base);
         break;
+    case ViewId::SeasonList:
+        drawSeasonList(base);
+        break;
+    case ViewId::EpisodeList:
+        drawEpisodeList(base);
+        break;
+    case ViewId::UpNext:
+        drawUpNext(base);
+        break;
+    case ViewId::LinkSignIn:
+        drawLinkSignIn(base);
+        break;
+    case ViewId::HomeUsers:
+        drawHomeUsers(base);
+        break;
+    case ViewId::HomePin:
+        drawHomePin(base);
+        break;
+    case ViewId::SubtitlePicker:
+        drawSubtitlePicker(base);
+        break;
+    case ViewId::AudioPicker:
+        drawAudioPicker(base);
+        break;
     }
     staticRgba_.assign(rgba_.begin(), rgba_.end());
 }
@@ -1464,6 +2176,7 @@ void Renderer::buildStaticLayer(const RenderState& st) {
 void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, RenderPerf* perf,
                       PixelFormat fmt) {
     const auto tRender0 = std::chrono::steady_clock::now();
+    drainImageReady();   // #219: apply image arrivals here, not on the image worker thread
     ensureScratch();
     const std::string key = staticLayerKey(st);
     const bool useCache =
@@ -1482,7 +2195,9 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                               st.focus.col != lastFocusCol_ ||
                               st.focus.sidebar != lastFocusSidebar_ ||
                               st.focus.gridOnChips != lastGridOnChips_ ||
-                              st.focus.gridChip != lastGridChip_;
+                              st.focus.gridChip != lastGridChip_ ||
+                              st.focus.gridOnLetters != lastGridOnLetters_ ||
+                              st.focus.gridLetter != lastGridLetter_;
     const bool keyChanged = staticKey_ != key;
     if (keyChanged && !staticKey_.empty())
         logStaticKeyDiff(staticKey_, key);
@@ -1492,14 +2207,19 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
     const bool sidebarMoved = st.view == ViewId::Home &&
                               (st.focus.sidebar != lastFocusSidebar_ ||
                                st.sidebarScrollY != lastSidebarScrollY_);
+    // Library grid has no rail in the cached static layer. Open/close/move must
+    // rebuild so drawGrid can paint (or omit) the drawer.
+    const bool librarySidebarMoved = st.view == ViewId::LibraryGrid &&
+                                     (st.focus.sidebar != lastFocusSidebar_ ||
+                                      st.sidebarScrollY != lastSidebarScrollY_);
     // A Home/grid backdrop follows focus. Painting the new backdrop over the cached static layer
-    // erased the sidebar, titles and every card but the focused one (glass a lab MiSTer 11:42, R1 too), so
+    // erased the sidebar, titles and every card but the focused one (glass  lab 11:42, R1 too), so
     // a backdrop change rebuilds the static layer (backdrop + chrome + cached posters).
     const bool backdropChanged =
         useCache && staticValid_ && !keyChanged && st.backdropUrl != lastBackdropUrl_;
     const bool sidebarOnly =
         sidebarMoved && staticValid_ && !keyChanged && !backdropChanged && useCache;
-    if (!staticValid_ || keyChanged || backdropChanged) {
+    if (!staticValid_ || keyChanged || backdropChanged || librarySidebarMoved) {
         const auto t0 = std::chrono::steady_clock::now();
         buildStaticLayer(st);
         staticMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1516,6 +2236,8 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
             rebuildReason = "key";
         else if (backdropChanged)
             rebuildReason = "backdrop";
+        else if (librarySidebarMoved)
+            rebuildReason = "sidebar";
         else
             rebuildReason = "invalid";
     } else if (sidebarOnly) {
@@ -1555,7 +2277,8 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                         continue;
                     const int r = static_cast<int>(i / gl.cols);
                     const int c = static_cast<int>(i % gl.cols);
-                    if (r == st.focus.row && c == st.focus.col && !st.focus.gridOnChips)
+                    if (r == st.focus.row && c == st.focus.col && !st.focus.gridOnChips &&
+                        !st.focus.gridOnLetters && st.focus.sidebar == 0)
                         continue;
                     patchStaticPoster(st, r, c, false);
                 }
@@ -1600,7 +2323,7 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                 const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
                 const int sideW = kSidebarW();
                 const int step = posterW + gap;
-                int rowY = kHubTop();
+                int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
                 for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
                     if (static_cast<int>(ri) != st.focus.row || st.focus.sidebar != 0) {
                         rowY += kHubRowAdvance();
@@ -1636,7 +2359,7 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                     const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
                     const int sideW = kSidebarW();
                     const int step = posterW + gap;
-                    int rowY = kHubTop();
+                    int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
                     for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
                         if (static_cast<int>(ri) != prevRow) {
                             rowY += kHubRowAdvance();
@@ -1693,6 +2416,30 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
         case ViewId::Detail:
             drawDetail(st);
             break;
+        case ViewId::SeasonList:
+            drawSeasonList(st);
+            break;
+        case ViewId::EpisodeList:
+            drawEpisodeList(st);
+            break;
+        case ViewId::UpNext:
+            drawUpNext(st);
+            break;
+        case ViewId::LinkSignIn:
+            drawLinkSignIn(st);
+            break;
+        case ViewId::HomeUsers:
+            drawHomeUsers(st);
+            break;
+        case ViewId::HomePin:
+            drawHomePin(st);
+            break;
+        case ViewId::SubtitlePicker:
+            drawSubtitlePicker(st);
+            break;
+        case ViewId::AudioPicker:
+            drawAudioPicker(st);
+            break;
         }
     }
     blitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1704,7 +2451,7 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
         const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
         const int sideW = kSidebarW();
         const int step = posterW + gap;
-        int rowY = kHubTop();
+        int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
         for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
             const auto& hub = st.hubs[ri];
             if (static_cast<int>(ri) != st.focus.row) {
@@ -1731,14 +2478,15 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                         url = photoTranscodeUrl(thumbSrv.baseUrl, hub.items[ci].thumb,
                                                 thumbSrv.accessToken, posterW, posterH);
                     }
-                    drawPoster(px, py, posterW, posterH, imgKey, url, hub.items[ci].title, true,
-                               st.focusAnim);
+                    drawHubItemPoster(px, py, posterW, posterH, imgKey, url, hub.items[ci], true,
+                                      st.focusAnim);
                 }
                 px += step;
             }
             break;
         }
-    } else if (st.view == ViewId::LibraryGrid && !st.focus.gridOnChips) {
+    } else if (st.view == ViewId::LibraryGrid && !st.focus.gridOnChips && !st.focus.gridOnLetters &&
+               st.focus.sidebar == 0) {
         const GridLayout gl = computeGridLayout(!st.gridChips.empty());
         const int idx = st.focus.row * gl.cols + st.focus.col;
         if (idx >= 0 && idx < static_cast<int>(st.grid.size())) {
@@ -1759,9 +2507,13 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                                         st.server.accessToken, gl.posterW, gl.posterH);
             }
             drawPoster(px, py, gl.posterW, gl.posterH, imgKey, url,
-                       st.grid[static_cast<std::size_t>(idx)].title, true, st.focusAnim);
+                       st.grid[static_cast<std::size_t>(idx)].title, true, st.focusAnim, nullptr,
+                       st.grid[static_cast<std::size_t>(idx)].viewCount,
+                       st.grid[static_cast<std::size_t>(idx)].viewOffsetMs);
         }
     }
+
+    drawBrowseHint(st.queueLine);
 
     lastFocusAnim_ = st.focusAnim;
     lastView_ = st.view;
@@ -1771,6 +2523,8 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
     lastSidebarScrollY_ = st.sidebarScrollY;
     lastGridOnChips_ = st.focus.gridOnChips;
     lastGridChip_ = st.focus.gridChip;
+    lastGridOnLetters_ = st.focus.gridOnLetters;
+    lastGridLetter_ = st.focus.gridLetter;
 
     const long long focusMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::steady_clock::now() - tFocus0)
@@ -1805,6 +2559,8 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
             d[3] = 255;
         }
     }
+    // E28. Flag off returns before any pixel walk. The FPGA picture is not this buffer.
+    applyCrtLook(out.data(), kScreenW(), kScreenH(), bytesPerPixel(fmt), fmt != PixelFormat::RGB24);
 }
 
 } // namespace plexui

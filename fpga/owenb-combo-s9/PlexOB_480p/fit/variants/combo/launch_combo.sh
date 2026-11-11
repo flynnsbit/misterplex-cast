@@ -9,16 +9,16 @@
 # NOTIFY_SILENT=1. Never programs, loads or glasses anything. Usage: E1_COMBO_SHA=<sha> launch_combo.sh <seed>
 set -euo pipefail
 SEED="${1:?seed}"; CSHA="${E1_COMBO_SHA:?set E1_COMBO_SHA}"
-CWT="${COMBO_WT:?set COMBO_WT}"; P=fpga/PlexOB_480p
-SRC="${OWENB_QSFPERF_WT:?set OWENB_QSFPERF_WT}/fpga/PlexOB_480p"
-WT="${TPLFIT_WT:?set TPLFIT_WT}"; TSHA=66f0472752f66d543936842c889818dc2a9d5d7e
-EAC="$OWENB_VENDOR_ROOT"; EACSHA=eac10641c5af0b808d332bb61344ee2dfdba4271
-ROOT="${COMBO_FIT_ROOT:?}/combo-a-e11-e2-f1030-s${SEED}/PlexOB_480p"
+CWT="$HOME/wt/owenb-combo"; P=fpga/PlexOB_480p
+SRC="${OWENB_QSFPERF_WT:-/path/to/misterplex}/fpga/PlexOB_480p"
+WT="$HOME/wt/owenb-tplfit"; TSHA=66f0472752f66d543936842c889818dc2a9d5d7e
+EAC="$HOME/src/owenb-h264-decoder-eac1064"; EACSHA=eac10641c5af0b808d332bb61344ee2dfdba4271
+ROOT="$HOME/mplex-fits/owenb-1017-par/combo-a-e11-e2-f1030-s${SEED}/PlexOB_480p"
 IMAGE="${QUARTUS_DOCKER_IMAGE:-raetro/quartus:mister}"; NAME="quartus_par_combo_s${SEED}"
 docker ps -a --format '{{.Names}}' | grep -qx "$NAME" && { echo "EXISTS $NAME"; exit 5; }
 [ "$(git -C "$EAC" rev-parse HEAD)" = "$EACSHA" ] && [ -z "$(git -C "$EAC" status --porcelain sys)" ] || { echo "ABORT eac1064 pin moved/dirty"; exit 1; }
 [ "$(git -C "$SRC" rev-parse HEAD)" = d0a5a5d03cd6eb60ed76deffabf5298c52a6b21b ] || { echo "ABORT qsfperf src moved"; exit 1; }
-grep -q "^new pass=1000 fail=0 of 1000" "${E1_TB_SUMMARY:?set E1_TB_SUMMARY to the E1-1 TB summary.txt}" || { echo "ABORT E1-1 TB not 1000/1000"; exit 6; }
+grep -q "^new pass=1000 fail=0 of 1000" "$HOME/fleet/logs/e1-1-tb-1017/summary.txt" || { echo "ABORT E1-1 TB not 1000/1000"; exit 6; }
 mkdir -p "$(dirname "$ROOT")"
 rsync -a --delete --exclude 'vendor/db' --exclude 'vendor/output_files' --exclude 'vendor/incremental_db' \
   --exclude 'vendor/releases' --exclude 'fit.log' "$SRC/" "$ROOT/"

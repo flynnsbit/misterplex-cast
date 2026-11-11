@@ -312,7 +312,7 @@
 #     logic, unchanged here; seed-dependent placement). Validate on the rig (the reader's output bit-exact) or retime it.
 #   2026-10-06 (feature/arm-codecs 0078de6: the pre-filter's horizontal stage retimed): SEED 3 re-rolled, clk_dec
 #     100.69/101.96 MARGINAL, clk_vid 90.87/88.9 PASS, clk_mem 91.42/88.4 (-0.20: f2sdram -> p_stg, next),
-#     H264_arm-codecs_MARGINAL_20261006_0147.rbf (installed on .201 for the maintainer's composite test).
+#     H264_arm-codecs_MARGINAL_20261006_0147.rbf (installed on lab for the maintainer's composite test).
 #   2026-10-06 (feature/arm-codecs 63ca27d: the bridge's read data registered + Analog Dither, O[19]): SEED 3,
 #     clk_dec 98.15/97.2 MARGINAL, clk_vid 92.93/91.98 PASS, clk_mem -0.023 at -40 C (both retimes: was -1.08);
 #     H264_arm-codecs_MARGINAL_20261006_0245.rbf. A seed sweep follows.
@@ -321,7 +321,7 @@
 #     H264_arm-codecs_20261006_0327.rbf. SEED 5 pinned.
 #   2026-10-06 (fix/dither-latin a5cd75b: dac_dither's Latin-square matrix, CORE_VERSION dev-ditherlatin): SEED 5
 #     first roll, **clk_dec 103.61/102.79 PASS**, clk_vid 99.21/93.9 PASS, clk_mem 92.72/89.21 (-0.099 at -40 C,
-#     ungated: disp_reader pm_r[13..14] -> row_base[25], 3 paths -- not the bridge; on .201 the reader's output
+#     ungated: disp_reader pm_r[13..14] -> row_base[25], 3 paths -- not the bridge; on lab the reader's output
 #     pixel-exact against main's build, chart480 at 480i, 2 shots each); ALM 37,938 (91 %), RAM 412, DSP 102, H264_ditherlatin_20261006_2313.rbf.
 #   2026-10-07 (feature/colour-matrix d01997d: interface 0.16, the colour -- disp_reader's six coefficient sets, the
 #     decoder's VUI colour, recon_out's table 232 bits, ring_rd's header code; CORE_VERSION dev-colour): SEED 5 first
@@ -358,7 +358,7 @@
 #     working -- the "PASS" lines after a FAIL are that, not passes; H264.qsf restored from git.)
 #     --release --compile with SEED 12 pinned reproduced 103.15/102.38, clk_vid 93.62/94.43 PASS; ungated: clk_sys ->
 #     clk_vid analog_want_l / status[6] -> ary[7] -0.206 / -0.086 at 100 C (quasi-static settings flags; seed placement);
-#     H264_20261009.rbf, smoke-tested on .201 (docs/history.md S42).
+#     H264_20261009.rbf, smoke-tested on lab (docs/history.md S42).
 #   2026-10-10 (feature/chroma-interp 8be5f1e: chroma interpolated at the identity fit, docs/display.md "Chroma at
 #     the identity"; CORE_VERSION dev-chroma): SEED 12 first roll 94.17/95.05 MARGINAL, clk_vid 81.61/82.52 FAIL (gate 86)
 #     -- clk_vid's worst paths the new ahead index ((x_k0 + 1) >> 1 vs kmax >> 1) into the chroma RAMs' address;
@@ -391,7 +391,7 @@
 #     Sweep (detached): 2 100.67/101.55, **SEED 5 101.77/101.58 PASS**, clk_vid 91.65/87.57 PASS; hdmi_pll_check
 #     PASS (X0_Y5_N1); ALM 39,047 (93 %), RAM 421, DSP 109, H264_hdmi480sweep_20261011_1951.rbf (a02caba). SEED 5 pinned.
 #   2026-10-11 (the same pins on a83a388, the chroma build, SEED 2, BUILD_DATE pinned 261010 -- a test, not
-#     shipped): MARGINAL on clk_dec; output counter X0_Y5_N1; on .201 HDMI 27.000 / 74.250 / 148.500 MHz (was 135 /
+#     shipped): MARGINAL on clk_dec; output counter X0_Y5_N1; on lab HDMI 27.000 / 74.250 / 148.500 MHz (was 135 /
 #     148.5 / 148.5 without the pins). Kept in .sim/hdmi480/seed2fix.
 #   2026-10-11 fix/fit-anamorphic (issue #11, Fit the anamorphic 16:9 fit; f66d842 + roadmap): SEED 5 first roll
 #     MARGINAL, clk_dec 100.45 / 98.98 (gate 101.4), clk_vid 94.23 / 90.98 PASS, HDMI gate PASS (X0_Y5_N1);
@@ -423,6 +423,15 @@
 #   2026-10-14 Release 1.1.0 (30c5f44: CORE_VERSION v1.1.0): SEED 1 first roll PASS, clk_dec 102.84 / 104.12,
 #     clk_vid 91.69 / 91.99, HDMI gate PASS, lint / canary PASS; ALM 40,943 / 41,910, RAM 421, DSP 110,
 #     H264_20261014.rbf (--release).
+#   2026-10-23 (rtl/owenb-idle0-f12-1023, idle_vis=0 alone, no F12KEYMOD): BUILD_ID 0x0B59C11A -> 0x0BFCE8C5, emu.sv idle_vis
+#     tied 0 (idle_bars ~32 ALM, E). NOT fitted yet: SEED 10 is the starting point of the sweep, not a result. Pre-flight:
+#     map-only + tools/netlist_canary.sh (idle_bars_inst|mx row). Rollback c8b34604 (0x0B59C11A, seed 10).
+#   2026-10-23 (cbox/owenb-240p-1023, base 31bf0241): BUILD_ID 0x0BFCE8C5 -> 0x0B2403A7 (round 1 was 0x0B240F9E, commit 0b44a659; round 2 was 0x0B2402F3, commit 0bb1e472, FPGA Bug FIX-FIRST; neither fitted: do not use). Adds the 240p analog raster (O[24] Analog Raster,
+#     sync_gen std 3: 262 lines, 190 x 1719 + 72 x 1720 dots, 59.94006 Hz; forked vendor/h264/sync_gen.sv).
+#     Round 2 (review fixes): forked disp_reader/ovl_plane (p240 wrap, F2), vid_out (csync prog=1 under p240, F6), menumask bit0 il_pix_sys + bit1 p240_eff (F3).
+#     Round 3 (FPGA Bug R1): vid_out csync_smpte .mode(p240): 240p gets the 3-line serrated vsync (259 hs / 0 eq / 6 broad, 262 lines); 480i/480p keep mode 0.
+#     NOT fitted, no hardware: review first.
+#   2026-11-01 (fpga/port-240p-1101, forward-port of the 0x0B2403A7 240p tree onto main): BUILD_ID 0x0B2403A7 -> 0x0B1101C5. RTL identical to the shipped 0x0B2403A7 tree except the id. The qsf and recipe default stay SEED 10; the shipped ss1c core fcd20f46 was fitted at SEED 11 (RESULT-s11.env), so reproduce it with YC_SEED=11. Not fitted yet.
 
 set_global_assignment -name TOP_LEVEL_ENTITY sys_top
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0
@@ -531,7 +540,7 @@ set_global_assignment -name SEED 10
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_plexob_status.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_mister_caps_shim.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_plexob_core_hook.sv
-set_global_assignment -name VERILOG_MACRO "MPX_PLEXOB_BUILD_ID=32'h0B59C11A"
+set_global_assignment -name VERILOG_MACRO "MPX_PLEXOB_BUILD_ID=32'h0B1101C5"
 
 set_global_assignment -name SDC_FILE ../fit/variants/q1b/mpx_cdc_hold_targeted.sdc
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 4

@@ -9,6 +9,8 @@
 #define STBTT_STATIC
 #include "third_party/stb_truetype.h"
 
+#include "../../../arm/misterplexd/font_8x16.hpp"
+
 namespace misterplex {
 namespace plexui {
 
@@ -124,19 +126,67 @@ bool FontSet::load(const std::string& dir, std::string& err) {
     std::string base = dir;
     if (!base.empty() && base.back() != '/')
         base += '/';
-    if (!readFile(base + "Roboto-Regular.ttf", regularData_) ||
-        !readFile(base + "Roboto-Bold.ttf", boldData_)) {
-        if (!readFile(base + "../third_party/Roboto-Regular.ttf", regularData_) ||
-            !readFile(base + "../third_party/Roboto-Bold.ttf", boldData_)) {
-            err = "Roboto fonts missing in " + dir;
-            return false;
-        }
+    usingFallback_ = false;
+    cache_.clear();
+    regularData_.clear();
+    boldData_.clear();
+    if (readFile(base + "Roboto-Regular.ttf", regularData_) &&
+        readFile(base + "Roboto-Bold.ttf", boldData_)) {
+        err.clear();
+        return true;
     }
+    if (readFile(base + "../third_party/Roboto-Regular.ttf", regularData_) &&
+        readFile(base + "../third_party/Roboto-Bold.ttf", boldData_)) {
+        err.clear();
+        return true;
+    }
+    usingFallback_ = true;
+    err = "Roboto fonts missing in " + dir + "; using built-in bitmap";
     return true;
 }
 
 const std::vector<std::uint8_t>& FontSet::ttfData(bool bold) const {
     return bold ? boldData_ : regularData_;
+}
+
+FontSet::GlyphBmp FontSet::rasterFallbackGlyph(int cp, float size, bool bold) const {
+    GlyphBmp g;
+    int use = cp;
+    if (use == 0x2026)
+        use = '.';
+    else {
+        const int fb = asciiFallback(use);
+        if (fb > 0)
+            use = fb;
+    }
+    if (use < kFont8x16First || use > kFont8x16Last)
+        use = '?';
+    const auto& rows = kFont8x16[static_cast<std::size_t>(use - kFont8x16First)];
+    const int scale = std::max(1, static_cast<int>(std::lround(size / 16.f)));
+    const int gw = 8 * scale + (bold ? scale : 0);
+    const int gh = 16 * scale;
+    g.w = gw;
+    g.h = gh;
+    g.xoff = 0;
+    g.yoff = static_cast<int>(-size * 0.8f);
+    g.advance = static_cast<float>(8 * scale + (bold ? scale : 0));
+    g.gray.assign(static_cast<std::size_t>(gw * gh), 0);
+    for (int row = 0; row < 16; ++row) {
+        const std::uint8_t bits = rows[static_cast<std::size_t>(row)];
+        for (int col = 0; col < 8; ++col) {
+            if ((bits & (0x80u >> col)) == 0)
+                continue;
+            for (int dy = 0; dy < scale; ++dy) {
+                for (int dx = 0; dx < scale + (bold ? scale : 0); ++dx) {
+                    const int x = col * scale + dx;
+                    const int y = row * scale + dy;
+                    if (x >= 0 && y >= 0 && x < gw && y < gh)
+                        g.gray[static_cast<std::size_t>(y * gw + x)] = 255;
+                }
+            }
+        }
+    }
+    return g;
 }
 
 FontSet::GlyphBmp FontSet::rasterGlyph(int cp, float size, bool bold) const {
@@ -146,10 +196,13 @@ FontSet::GlyphBmp FontSet::rasterGlyph(int cp, float size, bool bold) const {
         return it->second;
 
     GlyphBmp g;
+    if (usingFallback_ || ttfData(bold).empty()) {
+        g = rasterFallbackGlyph(cp, size, bold);
+        cache_[key] = g;
+        return g;
+    }
     stbtt_fontinfo info{};
     const auto& data = ttfData(bold);
-    if (data.empty())  // fonts missing: draw nothing instead of crashing
-        return g;
     if (!stbtt_InitFont(&info, data.data(), stbtt_GetFontOffsetForIndex(data.data(), 0)))
         return g;
     const float scale = stbtt_ScaleForPixelHeight(&info, size);

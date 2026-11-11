@@ -4,7 +4,7 @@
 
 namespace misterplex {
 
-// Shared 240p/480p audio-lead helpers (review-366 + review-370). 480i 720x480
+// Shared 240p/480p audio-lead helpers (qrev-366 + qrev-370). 480i 720x480
 // must not take the 240p 30 ms DMA ceiling.
 constexpr int kAudioLeadClamp480pMs = 80;
 constexpr int64_t kMrAudioBytesPerSecLead = 48000 * 4;

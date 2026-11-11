@@ -193,7 +193,7 @@ inline bool decodeVideoPresentation(const std::array<uint64_t, 9>& words,
     return true;
 }
 
-// Core decode_error named for the AU push-reject session end (T-DAEMON-MVPS, review 18:34).
+// Core decode_error named for the AU push-reject session end (T-DAEMON-MVPS, FPGA Bug 18:34).
 // The MVPS error_code is the core's 8-bit decode_error (Plex.sv codec_error path). Empty unless the
 // presentation reports an error with a nonzero code, so a fault without a code keeps the old message.
 inline std::string decodeErrorNote(const VideoPresentation& presentation) {

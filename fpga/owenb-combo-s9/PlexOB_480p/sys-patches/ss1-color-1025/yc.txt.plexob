@@ -1,0 +1,11 @@
+; PlexOB entries for Main_MiSTer yc.txt (SD card /media/fat/yc.txt). NOT installed by this branch.
+; Key = <CONF_STR core name>_<fps %.1f><i if interlaced><s=PAL60 via ntsc_mode=1, m=PAL-M>, per Main video.cpp set_yc_mode().
+; Value = round(fsc / clk_vid * 2^40), clk_vid = 81 MHz. NTSC fsc=315/88 MHz, PAL fsc=4.43361875 MHz.
+; Optional: without these, Main uses the frame-locked vid_fclks path (words 19/20). The
+; "Calculated YC parameters for '<key>'" line in the Main log shows the exact key.
+PlexOB_59.9i=48589529005
+PlexOB_59.9=48589529005
+PlexOB_60.0i=48589529005
+PlexOB_50.0i=60182905787
+PlexOB_59.9is=60182905787
+PlexOB_59.9s=60182905787

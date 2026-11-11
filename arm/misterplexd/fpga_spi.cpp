@@ -503,7 +503,7 @@ namespace {
 // async-signal-safe enough: kill()/open()/read()/close() are all on the safe
 // list, and we re-raise with the default handler so the crash still surfaces.
 void crashGuardHandler(int sig) {
-    // FIELD-1018 F2b: a lab MiSTer 10:44 death left nothing in the log (no dmesg line on MiSTer either). Say which
+    // FIELD-1018 F2b: the  lab 10:44 death left nothing in the log (no dmesg line on MiSTer either). Say which
     // signal killed us and where, with async-signal-safe write() + backtrace_symbols_fd(), before re-raising.
     {
         char msg[64] = "misterplexd: FATAL signal ";
@@ -1079,7 +1079,7 @@ bool FpgaSpi::ensureDdrMap() {
         return true;
     releaseDdrMap();
     // Map both frame banks. The doorbell/mailbox page after them stays out of this window: its
-    // one mapper is ensureDdrMailboxMap (review 08:17 (a)), so 320×240 maps 0x7F000 and larger
+    // one mapper is ensureDdrMailboxMap (FPGA Bug 08:17 (a)), so 320×240 maps 0x7F000 and larger
     // cores grow this at runtime.
 #ifdef MUT_DDR_WINDOW_COVERS_PAGE   // test-only mutant: the window maps the doorbell page too
     const size_t kLen = ddrLayout_.map_bytes;
@@ -1247,7 +1247,7 @@ void FpgaSpi::releaseDdrMap() {
     releaseDdrPagesLocked();
 }
 
-// review 07:30 C2, 08:17 (a), 08:18: one lock for every doorbell-page map, access and unmap.
+// FPGA Bug 07:30 C2, 08:17 (a), 08:18: one lock for every doorbell-page map, access and unmap.
 // Lock order: ddrPageMu_ before spiMutex (setErr) and the core gate's mutex; nothing that holds
 // either of those takes ddrPageMu_.
 std::unique_lock<std::mutex> FpgaSpi::lockDdrPage() {
@@ -1386,9 +1386,9 @@ bool FpgaSpi::plxPageRead32(uint32_t page, uint32_t off, uint32_t& out, bool* ot
     return true;
 }
 
-// R1 (review 06:57 D1): the PLX slots' own page, independent of the frame layout. The start-up
+// R1 (FPGA Bug 06:57 D1): the PLX slots' own page, independent of the frame layout. The start-up
 // 320x240 layout's doorbell page is 0x3007F000, so PLXH at 0x300FF138 was unreachable until the
-// first 480p present. The page goes through the one doorbell-page mapper (review 08:17 (a)): its
+// first 480p present. The page goes through the one doorbell-page mapper (FPGA Bug 08:17 (a)): its
 // own slot at start-up, the same mapping as the layout's doorbell page on 480p.
 namespace {
 constexpr uint32_t kPlxPagePhys = r1::kPlxhPhys & ~0xFFFu;
@@ -1640,7 +1640,7 @@ bool FpgaSpi::coreGateAllowsQuiet() {
     return true;
 }
 
-// MPX_BROWSE_V2 direct readers: the doorbell page through the one mapper (review 08:17 (a));
+// MPX_BROWSE_V2 direct readers: the doorbell page through the one mapper (FPGA Bug 08:17 (a));
 // caller holds lockDdrPage() for as long as it uses the word.
 volatile uint32_t* FpgaSpi::mailboxWordDirect(uint32_t phys) {
     const uint32_t pagePhys = phys & ~0xFFFu;
@@ -2397,7 +2397,7 @@ bool FpgaSpi::writeStatusHeartbeat(uint8_t h) {
     if (((h & hb::kServerMask) >> hb::kServerShift) == static_cast<uint8_t>(hb::Server::Pairing)) {
         const CoreGate& g = CoreGate::process();
         const uint32_t caps = g.lastCapsId();
-        // Allowlisted CAPS is the live core. Do not publish the previous open id.
+        // Allowlisted CAPS is the live core. Do not report the previous open id.
         daemon_id = recognisedFpgaBuild(caps)
                         ? caps
                         : (g.lastOpenId() ? g.lastOpenId()
@@ -3171,7 +3171,7 @@ bool FpgaSpi::plxStore32(uint32_t phys, uint32_t value) {
 }
 
 bool FpgaSpi::plxStore64(uint32_t phys, uint64_t value) {
-    // K2 PLXO zero only (review 20:00 N2): an STRD may split its beats magic-first, so a
+    // K2 PLXO zero only (FPGA Bug 20:00 N2): an STRD may split its beats magic-first, so a
     // PLXH request never goes through a 64-bit store.
     if (phys != r1::kPlxoPhys) {
         setErr("plxStore64: only the K2 PLXO zero may use a 64-bit store");
@@ -3217,7 +3217,7 @@ bool FpgaSpi::plxLoad64(uint32_t phys, uint64_t* value) {
 std::atomic<int64_t> mpxTestF1BeatPageHoldMaxUs{0};   // test seam: the beat's longest ddrPageMu_ hold
 #endif
 
-// F1 PLXL beat (fpga_spi.hpp; f1_beat.hpp). The only lock is the try_lock below (review 01:39 k1).
+// F1 PLXL beat (fpga_spi.hpp; f1_beat.hpp). The only lock is the try_lock below (FPGA Bug 01:39 k1).
 f1::BeatStore FpgaSpi::plxlBeatStore(uint64_t gateSnap, uint32_t plxlPhys, uint32_t* hb, bool* seeded) {
 #ifdef MUT_F1_BEAT_CHOKEPOINT   // test-only mutant: the beat through R1's choke point (blocking lock,
                                 // the mapper, coreGateAllows -> setErr on a closed gate)

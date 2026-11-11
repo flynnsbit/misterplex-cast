@@ -1,5 +1,5 @@
 #pragma once
-// Seek on a live remote universal transcode: reuse the session and its decision (lead a lab MiSTer A3 1011:
+// Seek on a live remote universal transcode: reuse the session and its decision (reviewer  lab A3 1011:
 // a 4-seek burst recovered in ~55 s, two back-to-back ~24 s WAN resolves; one superseded). A seek on
 // the SAME item, SAME server, SAME token, SAME clamped ladder and SAME core replays the committed
 // start.mp4 with only &offset= changed: same session id, same transcode params, same FFmpeg headers,
@@ -7,6 +7,7 @@
 // changed AU-safe clamp, another key/server/core) takes the full resolve as before.
 #include "companion.hpp"
 #include "plex_resolve.hpp"
+#include "log_redact.hpp"
 
 #include <cstdint>
 #include <string>
@@ -55,9 +56,9 @@ inline std::string universalStartWithOffset(const std::string& url, int64_t offs
     if (sec <= 0)
         return u;
     const std::string ins = kOff + std::to_string(sec);
-    const size_t tok = u.find("&X-Plex-Token=");
-    if (tok != std::string::npos)
-        u.insert(tok, ins);
+    const size_t key = misterplex::findPlexTokenKey(u);
+    if (key != std::string::npos && key > 0 && u[key - 1] == '&')
+        u.insert(key - 1, ins);
     else
         u += ins;
     return u;

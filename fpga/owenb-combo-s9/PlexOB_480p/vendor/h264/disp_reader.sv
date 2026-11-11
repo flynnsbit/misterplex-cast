@@ -108,6 +108,7 @@ module disp_reader #(
     // P6: the 480i raster -- a pixel is two dots (h_pos counts dots), v_pos the frame line of
     // the field being scanned
     input  wire         il,
+    input  wire         p240,               // MPX-FORK 240p: v_pos={line,1} every frame, so the frame wrap returns to {0,v_pos[0]}
     input  wire         pal,               // P6 step 6: the 625-line raster (576 active; fields of 312 / 313)
     input  wire  [11:0] lines,             // (hdmi_raster stage 2) progressive: the current frame's active lines
     input  wire  [11:0] last_line,         // ... and its last line's index (sync_gen: 480 / 524, 576 / 624, native)
@@ -241,7 +242,7 @@ module disp_reader #(
     // 262; 313 / 312 at 576i) the other field's first
     wire  [10:0] fl = v_pos[11:1];
     wire         il_last = v_pos[0] ? (fl == (pal ? 11'd311 : 11'd261)) : (fl == (pal ? 11'd312 : 11'd262));
-    wire  [11:0] nxt_line = il ? (il_last ? {11'd0, ~v_pos[0]} : v_pos + 12'd2)
+    wire  [11:0] nxt_line = il ? (il_last ? {11'd0, p240 ? v_pos[0] : ~v_pos[0]} : v_pos + 12'd2)
                                : ((v_pos == last_line) ? 12'd0 : v_pos + 12'd1);
     // the tag table: the decimated row each slot holds
     logic [11:0] tag  [0:3];

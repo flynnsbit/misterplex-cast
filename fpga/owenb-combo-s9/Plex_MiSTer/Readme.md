@@ -20,7 +20,7 @@ From monorepo root:
 Or:
 
 ```bash
-mister-dev build $HOME/misterplex-cast/fpga/Plex_MiSTer --qpf Plex
+mister-dev build ~/Projects/misterplex/fpga/Plex_MiSTer --qpf Plex
 ```
 
 ## Deploy

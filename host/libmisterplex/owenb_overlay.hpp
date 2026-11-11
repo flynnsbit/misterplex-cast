@@ -6,7 +6,7 @@
 // all drawn by owenb_osd into one 8888 canvas the size of the core's raster (centred, ovl_plane.sv:250-251).
 // That canvas is double-buffered inside fb0 exactly as h264ring_fb_map gave it ([phys, phys + smem_len)
 // within [0x22000000, +8 MiB), ring_iface.svh:51-52, h264ring_linux.c:193), or single-buffered with a blank
-// frame when only one fits (spec Decision 3; 1920x1080 native always, review 10:08). Every page passes
+// frame when only one fits (spec Decision 3; 1920x1080 native always, reviewer 10:08). Every page passes
 // h264ring_overlay_check. 0x31600000 (the idle framebuffer) is outside the region, so it is never used.
 // This header plans; it maps nothing.
 
@@ -26,7 +26,7 @@ struct OwenbIdleOverlay {
 inline OwenbIdleOverlay owenbIdleOverlay(const struct ::h264ring_raster& raster, unsigned videoOut, uint32_t fbPhys,
                                          uint32_t fbLen, bool allowDouble = true) {
     OwenbIdleOverlay o;
-    o.layout = owenb_osd::layoutFor(owenb_osd::fromCore(raster, videoOut));
+    o.layout = owenb_osd::layoutForFb(owenb_osd::fromCore(raster, videoOut), fbLen);
     o.plan = owenb_osd::planPages(fbPhys, fbLen, o.layout.W, o.layout.H, 0, o.layout.H - 1, allowDouble);
     return o;
 }

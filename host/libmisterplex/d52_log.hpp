@@ -1,12 +1,12 @@
 #pragma once
-// D52-LOG: a lab-only event log for the D52 raster-shift soak. Requirements: review 17:15 (a)-(d) and 17:22,
-// release 17:16-17:24. Basis: the d52 fbpar CRC writers review (1004) (990eb0df) and
+// D52-LOG: a lab-only event log for the D52 raster-shift soak. Requirements: FPGA Bug 17:15 (a)-(d) and 17:22,
+// reviewer 17:16-17:24. Basis: ~/review/d52/fbpar-crc-writers-1004.md (990eb0df) and
 // d52-h5b-aspect-tuples-1004.md (26afc216).
 //
 // It is off unless MPX_D52_LOG=1, and it only logs. It never writes the FPGA, the ring or DDR, and it adds no
 // SPI or UIO traffic:
 //   - Poller (its own thread; no map or fd of its own: it reads the PLX page through the daemon's one mapper,
-//     FpgaSpi::plxPageRead32, under that mapper's lock, review 08:17 (b)): runs only while a ring
+//     FpgaSpi::plxPageRead32, under that mapper's lock, FPGA Bug 08:17 (b)): runs only while a ring
 //     session is armed (BEGIN acknowledged, until END ok, ring reset or epoch reset). The page is taken at each
 //     arm: the daemon's own resolved DDR doorbell page, for a D52-LOG build only (sessionPlxPage: 0x48005D45,
 //     0x48005D52 and 0x48009E36, all 0x300FF000). Any other build, or no page: no arm, and one loud line.
@@ -56,7 +56,7 @@ namespace d52 {
 constexpr const char* kEnv = "MPX_D52_LOG";
 constexpr const char* kPollEnv = "MPX_D52_LOG_POLL_MS";
 constexpr const char* kGapEnv = "MPX_D52_LOG_GAP_MS";
-// Retired (review 00:14 F2): the page is per session (sessionPlxPage). If set, it is not read; the start line
+// Retired (FPGA Bug 00:14 F2): the page is per session (sessionPlxPage). If set, it is not read; the start line
 // says so.
 constexpr const char* kRetiredPageEnv = "MPX_D52_LOG_PLX_PAGE";
 constexpr uint32_t kPlxfOff = 0x118u;          // PLXF frame-store status
@@ -76,16 +76,16 @@ struct Config {
     const char* note = "";    // why an env value was not used
 };
 
-// The D52-LOG builds (review 00:52 S1, 00:55; soak-scoped, not the general per-build page table): the three 480p
+// The D52-LOG builds (FPGA Bug 00:52 S1, 00:55; soak-scoped, not the general per-build page table): the three 480p
 // soak builds whose PLX page is verified in their own trees. 4c210d99 (Plex_480p.qsf:178, 0x48005D45) and
 // 9c86d9b2 (Plex_480p.qsf:184, 0x48005D52) both set PLEX_PRESENT_480P (:162), and so does the
-// shipping 9E36 refit (ea4ca1e0 Plex_480p_r1.qsf :199 ID, :162 PLEX_PRESENT_480P; review 14:13 item 6, review 14:13). That present_core branch
+// shipping 9E36 refit (ea4ca1e0 Plex_480p_r1.qsf :199 ID, :162 PLEX_PRESENT_480P; FPGA Bug 14:13 item 6, reviewer 14:13). That present_core branch
 // (present_core.sv:905-926 in both trees) publishes PLXF/PLXD/PLXJ at DDR_FRAME_480P_FPGA_* =
 // 0x300FF000 + 0x118/0x128/0x130 (ddr_frame_layout_params.svh:30-41). Every other build, in the FPGA build table or
 // not, is not armed.
 inline bool d52Build(uint32_t build_id) { return build_id == 0x48005D45u || build_id == 0x48005D52u || build_id == 0x48009E36u; }
 
-// The PLX page a session's arm reads (review 00:14 F1, approved 00:20): for a D52-LOG build, the daemon's own
+// The PLX page a session's arm reads (FPGA Bug 00:14 F1, approved 00:20): for a D52-LOG build, the daemon's own
 // resolved DDR doorbell page, FpgaSpi's ddrLayout_.doorbell_phys. That is the base of the daemon's own PLXF, PLXD
 // and PLXJ reads (+0x118/+0x128/+0x130; readFrameStoreStatus, readSourceAspectAck), and it is 0x300FF000 at the
 // 480p DECODE=640x480. 0 = no page (*why says which): no arm.
@@ -438,7 +438,7 @@ private:
         }
         if (!w.j_ok || w.j == j_)
             return;
-        // review 17:22: token = the daemon's logged send -> daemon; = last+1 with no logged send -> an unlogged
+        // Bug 17:22: token = the daemon's logged send -> daemon; = last+1 with no logged send -> an unlogged
         // daemon send; any other token -> a stray index-4 download or corruption.
         const char* src;
         if (have_send_ && jt(w.j) == send_token_ && jx(w.j) == send_x_ && jy(w.j) == send_y_)
@@ -555,7 +555,7 @@ private:
 // How one PLX word load went (PlxPage::Reader).
 enum class PlxRead { Ok, OtherPage, Unavailable };
 
-// The PLX page reads (review 08:17 (b), 08:18): D52-LOG has no map and no fd of its own. Every load goes
+// The PLX page reads (FPGA Bug 08:17 (b), 08:18): D52-LOG has no map and no fd of its own. Every load goes
 // through the reader the daemon attaches at each arm: FpgaSpi::plxPageRead32 on the daemon's one mapper of
 // the page, under that mapper's lock. Both reads of a word must agree and carry the word's magic; nothing is
 // ever written. detach() waits for a read in flight, so the reader's owner may go once it returns.
@@ -606,7 +606,7 @@ public:
 private:
     // Caller holds mu_.
     PlxRead load(uint32_t page, uint32_t off, uint32_t& v) {
-#ifdef MUT_D52_OWN_MMAP   // test-only mutant (review 08:17 (b)): the pre-08:17 own read-only map of the page
+#ifdef MUT_D52_OWN_MMAP   // test-only mutant (FPGA Bug 08:17 (b)): the pre-08:17 own read-only map of the page
         if (!mut_map_) {
             mut_fd_ = ::open(MPX_D52_DEVMEM_PATH, O_RDONLY | O_SYNC | O_CLOEXEC);
             void* p = mut_fd_ < 0 ? MAP_FAILED

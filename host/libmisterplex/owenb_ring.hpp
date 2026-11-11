@@ -45,11 +45,15 @@ struct CoreStatus {
     bool sessionOk = false;    // the core still runs this handle's session (no OSD Reset)
     uint32_t ringLevel = 0;    // bytes written and not yet released by the core
     unsigned refusedCode = 0;  // FE_REFUSED_CODE: the last stream refusal (h264ring_refusal_name)
+    uint32_t picsReconstructed = 0;  // RC_PIC: pictures reconstructed (#207 first-picture truth)
 };
 
 // Converts a timestamp in time base num/den seconds to 90 kHz, wrapped to 33 bits like the
 // header's PTS field. Negative input, or a zero num or den, gives kNoPts90k.
 int64_t toPts90k(int64_t ts, uint32_t num, uint32_t den);
+// A container start_time as a 33-bit 90 kHz origin. A negative ts (B-frame delay)
+// is real: it wraps into the field. toPts90k still treats a negative packet PTS as none.
+int64_t originPts90k(int64_t ts, uint32_t num, uint32_t den);
 
 // OWENB-P1B T6 (ARM overlay, interface 0.9): what the overlay renderer reads each tick. One
 // h264ring_status copy: words 46 (ovl_*), 47 (aspect), 30/80 (raster, picture), 27 (the OSD mirror).
@@ -63,6 +67,7 @@ struct OverlayCoreStatus {
     unsigned videoOut = 0;         // h264ring_video_out(): 1 Interlaced, 2 Progressive, 3 Native
     unsigned osdAnalogAspect = 0;  // the menu's Analog Aspect: 0 Auto, 1 Fit, 2 Letterbox, 3 Crop
     unsigned osdAspect = 0;        // 0008: the menu's Aspect Ratio: 0 Auto, 1 4:3, 2 16:9
+    unsigned osdVideoOut = 0;      // OSD Video Output: 0 Auto, 1 Interlaced, 2 Progressive, 3 Native
     unsigned setSeq = 0;           // 0006: SET_SEQ, the last settings request the core consumed
     unsigned setErr = 0;           // 0006: SET_ERR, its result (0 applied)
     bool session = false;          // the core runs this handle's session (the overlay is shown only then)
@@ -113,6 +118,7 @@ public:
     // T6: the core's OSD settings (interface 0.4). request: the sequence (1..255) or -errno.
     int requestSettings(unsigned mask, const unsigned values[H264RING_OPT_COUNT]);
     int clearSettings();
+    int syncService(bool spelunkr);
     // 0010: the input region (h264ring_input: a seqlocked copy of words 48-71, no session needed,
     // h264ring.h:382-401). 0, -ENODEV with no handle, or the library's -EAGAIN.
     int input(struct ::h264ring_input& in) const;

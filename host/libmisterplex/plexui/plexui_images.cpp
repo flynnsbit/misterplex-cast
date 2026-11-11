@@ -244,7 +244,7 @@ std::size_t computeRamCacheBudgetBytes(int hubItemCount, int gridPosterW, int gr
     budget += budget / 5u;
 
     constexpr std::size_t kMinBytes = 32u * 1024u * 1024u;
-    constexpr std::size_t kMaxBytes = 96u * 1024u * 1024u;
+    constexpr std::size_t kMaxBytes = kPlexUiRamCacheMaxBytes;
     budget = std::max(kMinBytes, budget);
 
     std::size_t memCap = kMaxBytes;

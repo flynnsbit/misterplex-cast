@@ -15,6 +15,8 @@
 // framebuffer at 0x31600000 is outside the overlay's region and is never touched here.
 
 #include "h264ring.h"
+#include "libmisterplex/overscan_safe.hpp"
+#include "libmisterplex/ui_safe_layout.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -100,13 +102,14 @@ inline OutMode modeOf(const Raster& r) {
 struct Layout {
     OutMode mode = OutMode::Progressive;
     unsigned W = 720, H = 480;
-    Rect canvas, safe, pic, bar;
+    Rect canvas, safe, pic, bar, caption;
     unsigned bandH = 80;
     double par = 1.0;          // the pixel aspect (ui.c:464): glyph columns are sy / par wide
     bool evenLines = false;    // 480i / 576i: even y, strokes >= 2 lines (the fabric's (1,2,1) stays on)
+    bool letterbox = false;   // h264ring_raster.lb: bars belong to the raster; soft subs may use them
     bool operator==(const Layout& o) const {
         return mode == o.mode && W == o.W && H == o.H && safe == o.safe && pic == o.pic && bar == o.bar &&
-               par == o.par && evenLines == o.evenLines;
+               caption == o.caption && par == o.par && evenLines == o.evenLines && letterbox == o.letterbox;
     }
     bool operator!=(const Layout& o) const { return !(*this == o); }
 };
@@ -123,10 +126,44 @@ inline Layout layoutFor(const Raster& r) {
     case OutMode::NativeSd: mx = static_cast<int>(L.W / 10); my = static_cast<int>(L.H / 10); L.bandH = 80; break;
     default: mx = 72; my = L.H >= 576 ? 57 : 48; L.bandH = 80; break;   // 480p / 480i / 576
     }
+#ifdef MUT_CAPTION_ODD_LINES
+    L.evenLines = false;
+#else
     L.evenLines = L.mode == OutMode::Interlaced;
+#endif
+    L.letterbox = r.lb;
     if (L.evenLines)
         my += my & 1;
-    L.safe = {mx, my, static_cast<int>(L.W) - 2 * mx, static_cast<int>(L.H) - 2 * my};
+    // GH#46: UI_SAFE_MARGIN is a floor. Default 5% is a no-op on 480p/480i
+    // (spec 72x48 already ~10%). HDMI NativeHd 1280x720 at 5% is 64 px, which
+    // is larger than the historic 40x28; apply it so playbar/captions sit in
+    // title-safe on HDMI (F2118 plexui already does). Analog 720x480 at 15%
+    // grows past 72.
+    {
+        const UiSafePrefs pref = uiSafePrefs();
+        const int px = uiSafeMarginPx(static_cast<int>(L.W), pref.marginPct);
+        const int py = uiSafeMarginPx(static_cast<int>(L.H), pref.marginPct);
+#ifdef MUT_GH46_HD_SKIP_PCT
+        const bool growHd = pref.marginPct > kUiSafeMarginDefaultPct || L.mode != OutMode::NativeHd;
+        if (growHd)
+#endif
+        {
+            mx = std::max(mx, px);
+            my = std::max(my, py);
+            if (L.evenLines)
+                my += my & 1;
+        }
+    }
+    // E9: a saved per-edge percent replaces that side. Unset keeps mx/my.
+    {
+        const OverscanPx op = overscanPxFor(static_cast<int>(L.W), static_cast<int>(L.H), overscanEdges(),
+                                            L.evenLines, mx, mx, my, my);
+        mx = op.left;
+        const int right = op.right;
+        my = op.top;
+        const int bottom = op.bottom;
+        L.safe = {mx, my, static_cast<int>(L.W) - mx - right, static_cast<int>(L.H) - my - bottom};
+    }
     const double aspect = (!r.interlaced && r.arX && r.arY) ? double(r.arX) / double(r.arY) : 4.0 / 3.0;
     L.par = aspect * double(L.H) / double(L.W);
     // The picture (clamped to the raster: a Crop rect has x0 / y0 < 0); no picture yet = the raster.
@@ -150,6 +187,30 @@ inline Layout layoutFor(const Raster& r) {
         }
     }
     L.bar = {area.x, y, area.w, h};
+    // Daemon-drawn caption band: bottom of the applied title-safe, above the bar.
+    {
+        int capH = L.evenLines ? 32 : 24;
+        if (capH > L.safe.h)
+            capH = L.safe.h;
+        if (L.evenLines)
+            capH &= ~1;
+        int cy = L.safe.bottom() - capH;
+        if (L.evenLines)
+            cy &= ~1;
+        if (cy < L.safe.y)
+            cy = L.safe.y;
+        if (!L.bar.empty() && cy + capH > L.bar.y) {
+            cy = L.bar.y - capH;
+            if (L.evenLines)
+                cy &= ~1;
+            if (cy < L.safe.y)
+                cy = L.safe.y;
+            capH = std::max(0, std::min(capH, L.bar.y - cy));
+            if (L.evenLines)
+                capH &= ~1;
+        }
+        L.caption = {L.safe.x, cy, L.safe.w, capH};
+    }
     return L;
 }
 
@@ -190,6 +251,34 @@ inline struct ::h264ring_overlay descriptorFor(const PagePlan& p, int page) {
 }
 
 inline uint32_t align8(uint32_t v) { return (v + 7u) & ~7u; }
+
+// GH#13: Fifth Element native-hd 1280x960 needs 4.9 MiB; fb0 is 3686400 (1280x720x4).
+// Clamp canvas H so one 8888 page fits smem_len. Bar geometry is then computed on
+// the clamped raster (a 960-tall bar sits past fb0 even as a band-only overlay).
+inline unsigned canvasHThatFitsFb(unsigned W, uint32_t smemLen) {
+    const uint32_t stride = align8(std::max(1u, W) * 4u);
+    if (stride == 0)
+        return 0;
+    return static_cast<unsigned>(smemLen / stride);
+}
+
+inline Raster rasterClampedToFb(Raster r, uint32_t smemLen) {
+#ifdef MUT_GH13_NO_FB_CLAMP
+    (void)smemLen;
+    return r;
+#else
+    const unsigned maxH = canvasHThatFitsFb(r.w, smemLen);
+    if (maxH > 0 && r.h > maxH)
+        r.h = maxH;
+    if (r.picH > r.h)
+        r.picH = r.h;
+    return r;
+#endif
+}
+
+inline Layout layoutForFb(const Raster& r, uint32_t smemLen) {
+    return layoutFor(rasterClampedToFb(r, smemLen));
+}
 
 // One page at `base` is usable when the core would take it (h264ring_overlay_check == 0: the
 // whole CANVAS inside the 8 MiB region) and every byte we write -- the band's lines -- lies in

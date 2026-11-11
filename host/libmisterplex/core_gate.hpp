@@ -1,7 +1,7 @@
 #pragma once
 // Loaded-core gate for misterplexd's FPGA traffic, v2.
 //
-// review, review-hdmi-fixes-review-1004 Y1: v1 opened and closed on the core name
+// FPGA Bug, fpga-bug-hdmi-fixes-review-1004 Y1: v1 opened and closed on the core name
 // alone. It failed open, and it never saw a Plex->Plex reload or the reprogram window.
 // v2 rules:
 //
@@ -97,7 +97,7 @@ inline bool coreNameIsPlex(const std::string& name) {
     return name == "Plex" || name == "PLEX";
 }
 
-// /tmp/RBFNAME names the RBF's core: Main writes its CONF_STR name there ("Plex" on a lab MiSTer
+// /tmp/RBFNAME names the RBF's core: Main writes its CONF_STR name there ("Plex" on  lab
 // for every Plex RBF; CORENAME differs only under an MRA name override). Accept that, or
 // an RBF file name: the basename, less any ".rbf", must start with Plex.
 inline bool rbfNameIsPlex(const std::string& rbf) {
@@ -113,6 +113,13 @@ inline bool rbfNameIsPlex(const std::string& rbf) {
     }
     if (base.size() < 4)
         return false;
+    {
+        std::string low = base;
+        for (char& c : low)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (low == "misterplex" || (low.size() >= 10 && low.compare(0, 10, "misterplex") == 0))
+            return true;
+    }
     std::string head = base.substr(0, 4);
     for (char& c : head)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -342,7 +349,7 @@ public:
     void dropFabricRegs(const volatile uint32_t* regs) {
         regs_.compare_exchange_strong(regs, nullptr, std::memory_order_acq_rel);
     }
-    // For a thread that may take no lock (the F1 PLXL beat, review 01:39 k1): the gate's
+    // For a thread that may take no lock (the F1 PLXL beat, FPGA Bug 01:39 k1): the gate's
     // {open generation, build id} as of its last Open transition. A core change always closes the
     // gate and reopens it through probeResult, which publishes a new generation before open_.
     // Read open() first; equal snapshots read on both sides of an access mean the same opening.
@@ -693,7 +700,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         return state_;
     }
-    // review 01:10 R5a: true while the gate's own CAPS probe sequence still runs (a probe in
+    // FPGA Bug 01:10 R5a: true while the gate's own CAPS probe sequence still runs (a probe in
     // flight, or a retry scheduled after a failed one), so a failed-cure verdict waits for the
     // 5-probe give-up.
     bool probeSequenceActive() const {

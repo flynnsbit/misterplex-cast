@@ -1,5 +1,5 @@
 #pragma once
-// Slow SPI windows and the hot-path error text (rel-480i-costall-1004, GLASS-A6).
+// Slow SPI windows and the hot-path error text (reviewer-480i-costall-1004, GLASS-A6).
 //
 // Every misterplexd SPI transaction runs inside fpga_spi.cpp SpiExclusive: spiMutex,
 // the /tmp/misterplex_spi.lock flock, then MainSafeWindow. That window SIGSTOPs
@@ -33,7 +33,7 @@ namespace misterplex {
 
 constexpr int64_t kSpiWindowSlowUs = 20000;
 
-// Lab diagnostics (review's review of 323780bb): the SPI-window phase stamps, the
+// Lab diagnostics (FPGA Bug's review of 323780bb): the SPI-window phase stamps, the
 // park-timeout /proc capture and the window ring/counters run while Main is stopped, and
 // the extra log fields (present_lock tid/blocker, io_levels suffix, spi_window lines,
 // thread roles) change the daemon's log. All of it is on only while a lab overlay flag

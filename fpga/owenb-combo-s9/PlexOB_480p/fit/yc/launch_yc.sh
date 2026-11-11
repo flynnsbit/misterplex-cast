@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Y/C fit recipe for rel/yc-plexob-1019. Quartus is not invoked by `check`.
+# Y/C fit recipe for reviewer/yc-plexob-1019. Quartus is not invoked by `check`.
 # Inputs are the d17b8df2 set (E1-1 emu, A_E2 qsf settings, stock ascal, SEED 10
 # after the re-fit in fit/yc/TIMING-CLOSURE.md) plus the Y/C delta: MISTER_DISABLE_YC unset, BUILD_ID
-# 0x0B59C11A (not the dead 0x0B59C119 stamp), word 87 [3:0], ring_in, and the ring_stat 88-95 walk.
+# 0x0B1101C5 (rollback c8b34604 = 0x0B59C11A; not the dead 0x0B59C119 stamp), word 87 [3:0], ring_in, and the ring_stat 88-95 walk.
 # sys/ stays the eac1064 pin. This script does not patch the scaler.
 #
 #   launch_yc.sh check     # md5 and source guards, no Quartus
@@ -13,10 +13,14 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$ROOT"
 EACSHA=eac10641c5af0b808d332bb61344ee2dfdba4271
-FIT_NAME=plexob-yc-0b59c11a
-QSF8=55648a13
-SEED_PIN=10
-EMU8=f6019d72
+FIT_NAME=plexob-yc-0b1101c5
+# F2: the qsf is pinned by a NORMALIZED md5 (no '#' comment lines, SEED line replaced by a constant),
+# so the seed sweep and the per-fit ledger lines do not trip the pin. Everything else in the qsf is
+# still pinned. SEED comes from YC_SEED (default 10, integer only); seed 10 is the starting point.
+QSF_NORM=007cc9a1dc3f0a561d8b8c58ce8d0347
+SEED_PIN="${YC_SEED:-10}"
+case "$SEED_PIN" in ''|*[!0-9]*) echo "ABORT YC_SEED must be an integer, got '$SEED_PIN'" >&2; exit 1;; esac
+EMU8=e5ad3a52
 RING_IN8=e7a9e890
 RING8=1a2d93aa
 
@@ -27,6 +31,16 @@ pin8() {
 }
 
 md5full() { md5sum "$1" | cut -c1-32; }
+
+qsf_norm() {
+  grep -v '^[[:space:]]*#' "$1" | sed 's/^set_global_assignment -name SEED .*/SEED_NORM/' | md5sum | cut -c1-32
+}
+
+pin_qsf_norm() {
+  local got
+  got=$(qsf_norm "$1")
+  [ "$got" = "$QSF_NORM" ] || { echo "ABORT normalized qsf md5 $1 got $got want $QSF_NORM" >&2; exit 1; }
+}
 
 # Copy the staged bitstream into releases/ only when rc is 0 and the gate
 # printed an exact GATE_PASS=1 line. The rc test is before the copy. On any
@@ -65,13 +79,18 @@ if [ "$MODE" = "publish" ]; then
 fi
 
 # Pins and source guards for one tree (the git checkout, or the isolated copy).
+# $2 = the SEED the qsf in this tree must carry; "any" (the git checkout) only requires an integer.
 yc_guard() {
   local B="$1"
-  pin8 "$B/vendor/H264.qsf" "$QSF8"
+  local WANT_SEED="${2:-$SEED_PIN}"
+  pin_qsf_norm "$B/vendor/H264.qsf"
   pin8 "$B/vendor/h264/emu.sv" "$EMU8"
   pin8 "$B/vendor/h264/cdc.sv" 6587ec58
   pin8 "$B/vendor/h264/dec_stub.sv" 5538da65
-  pin8 "$B/vendor/h264/disp_reader.sv" 570492fe
+  pin8 "$B/vendor/h264/disp_reader.sv" cca57e96
+  pin8 "$B/vendor/h264/ovl_plane.sv" 424069d3
+  pin8 "$B/vendor/h264/vid_out.sv" f69e303a
+  pin8 "$B/vendor/h264/sync_gen.sv" bf56e7ec
   pin8 "$B/vendor/h264/h264.sdc" f7df5d82
   pin8 "$B/vendor/h264/ring_in.sv" "$RING_IN8"
   pin8 "$B/vendor/h264/ring_stat.sv" "$RING8"
@@ -90,7 +109,7 @@ yc_guard() {
   grep -q "st_sys_ix == 7'd88) ? {32'h4D505842" "$E" || { echo "ABORT word 88 MPXB splice missing" >&2; exit 1; }
   grep -q '40..47 -> 88..95' "$R" && grep -q "st_free >= 7'd56" "$R" || {
     echo "ABORT ring_stat 88-95 walk missing" >&2; exit 1; }
-  grep -q "MPX_PLEXOB_BUILD_ID=32'h0B59C11A" "$Q" || { echo "ABORT BUILD_ID" >&2; exit 1; }
+  grep -q "MPX_PLEXOB_BUILD_ID=32'h0B1101C5" "$Q" || { echo "ABORT BUILD_ID" >&2; exit 1; }
   grep -q 'VERILOG_MACRO "MISTER_DISABLE_YC' "$Q" && { echo "ABORT MISTER_DISABLE_YC is set" >&2; exit 1; }
   grep -q 'MISTER_DISABLE_ADAPTIVE=1' "$Q" || { echo "ABORT adaptive macro missing" >&2; exit 1; }
   grep -q 'FITTER_AGGRESSIVE_ROUTABILITY' "$Q" && { echo "ABORT aggressive routability" >&2; exit 1; }
@@ -99,7 +118,8 @@ yc_guard() {
     echo "ABORT E2 lines" >&2; exit 1; }
   local q
   q=$(grep -E '^set_global_assignment -name SEED ' "$Q" | awk '{print $4}')
-  [ "$q" = "$SEED_PIN" ] || { echo "ABORT SEED $q" >&2; exit 1; }
+  case "$q" in ''|*[!0-9]*) echo "ABORT SEED '$q' is not an integer" >&2; exit 1;; esac
+  [ "$WANT_SEED" = any ] || [ "$q" = "$WANT_SEED" ] || { echo "ABORT SEED $q want $WANT_SEED" >&2; exit 1; }
   grep -q 'LL_ENABLED' "$Q" && { echo "ABORT LogicLock" >&2; exit 1; }
   if grep -q '0B593F92' "$Q"; then echo "ABORT historical BUILD_ID in the fit qsf" >&2; exit 1; fi
   if grep -q '0B59C119' "$Q"; then echo "ABORT dead BUILD_ID 0x0B59C119 in the fit qsf" >&2; exit 1; fi
@@ -108,7 +128,7 @@ yc_guard() {
   [ "${b:-0}" = 0 ] || { echo "ABORT Block B pins" >&2; exit 1; }
 }
 
-yc_guard "$ROOT"
+yc_guard "$ROOT" any
 if [ -d vendor/sys ] && [ -n "${OWENB_VENDOR_ROOT:-}" ]; then
   diff -rq vendor/sys "$OWENB_VENDOR_ROOT/sys" >/dev/null || {
     echo "ABORT vendor/sys differs from the eac1064 pin" >&2
@@ -159,7 +179,7 @@ grep -F -q 'yc_publish_rbf "$staged" "$rel" "$gate_out" "$gate_rc"' "$SCRIPT" ||
   echo "ABORT publish does not receive the gate rc" >&2; exit 1; }
 grep -q 'h264/ring_in.sv' "$SCRIPT" || { echo "ABORT ring_in.sv pin missing" >&2; exit 1; }
 
-echo "YC recipe check OK sha=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo uncommitted) qsf=$QSF8 emu=$EMU8 ring_in=$RING_IN8 ring=$RING8 seed=$SEED_PIN"
+echo "YC recipe check OK sha=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo uncommitted) qsf_norm=${QSF_NORM:0:8} emu=$EMU8 ring_in=$RING_IN8 ring=$RING8 seed=$SEED_PIN"
 
 if [ "$MODE" = "check" ]; then
   exit 0
@@ -173,7 +193,7 @@ if [ "${YC_FIT_CONFIRM:-}" != 1 ]; then
   exit 2
 fi
 
-EAC="${OWENB_VENDOR_ROOT:?set OWENB_VENDOR_ROOT to an owenb321 MiSTer_h264_decoder checkout at eac1064}"
+EAC="${OWENB_VENDOR_ROOT:-$HOME/src/owenb-h264-decoder-eac1064}"
 # F1: unpinned inputs (mpx_*.sv) are part of the compile. Refuse a dirty checkout.
 if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
   echo "ABORT owenb tree has uncommitted changes" >&2
@@ -190,12 +210,23 @@ for d in db incremental_db output_files; do
     exit 1
   fi
 done
-grep -q "^new pass=1000 fail=0 of 1000" "${E1_TB_SUMMARY:?set E1_TB_SUMMARY to the E1-1 TB summary.txt}" || {
+grep -q "^new pass=1000 fail=0 of 1000" "$HOME/fleet/logs/e1-1-tb-1017/summary.txt" || {
   echo "ABORT E1-1 TB not 1000/1000" >&2
   exit 1
 }
 
-FIT="${YC_FIT_ROOT:?set YC_FIT_ROOT to the fit copy}"
+# One fit root PER SEED. The rsync below uses --delete and the compile wipes db/output_files, so two seeds
+# sharing a root would destroy each other. The default root and the compile --name carry the seed; an
+# explicit YC_FIT_ROOT that already holds a RESULT.env for ANOTHER seed is refused (use a new root).
+RUN_NAME="${FIT_NAME}-s${SEED_PIN}"
+FIT="${YC_FIT_ROOT:-$HOME/mplex-fits/owenb-yc-0b1101c5-s${SEED_PIN}/PlexOB_480p}"
+if [ -f "$FIT/RESULT.env" ]; then
+  prev_seed=$(sed -n 's/^SEED=//p' "$FIT/RESULT.env" | tail -1)
+  if [ -n "$prev_seed" ] && [ "$prev_seed" != "$SEED_PIN" ]; then
+    echo "ABORT $FIT already holds a fit of SEED $prev_seed; one YC_FIT_ROOT per seed (this is SEED $SEED_PIN)" >&2
+    exit 1
+  fi
+fi
 mkdir -p "$(dirname "$FIT")"
 rsync -a --delete \
   --exclude 'vendor/db' --exclude 'vendor/output_files' --exclude 'vendor/incremental_db' \
@@ -205,11 +236,22 @@ rsync -a --delete \
 OWENB_VENDOR_ROOT="$EAC" "$FIT/sync_vendor.sh"
 rm -f "$FIT/vendor/tools/.notify_url"
 diff -rq "$FIT/vendor/sys" "$EAC/sys" >/dev/null || {
-  echo "ABORT vendor/sys differs from eac1064 sys/" >&2
+  echo "ABORT vendor/sys differs from eac1064 sys/ before the SS1 patches" >&2
   exit 1
 }
+# SS1-COLOR-1025 (live lab core fcd20f46): apply the two sys/ patches, then require exactly these two files differ.
+SSP="$FIT/sys-patches/ss1-color-1025"
+patch -p1 -N -d "$FIT/vendor" < "$SSP/0001-sys-yc_out-template-5dda3736.patch"
+patch -p1 -N -d "$FIT/vendor" < "$SSP/0002-sys-hps_io-vid_fclks-words-19-20.patch"
+pin8 "$FIT/vendor/sys/yc_out.sv" ed47551a
+pin8 "$FIT/vendor/sys/hps_io.sv" e1184d9c
+dsys=$( { diff -rq "$FIT/vendor/sys" "$EAC/sys" || true; } | sed 's/ differ$//' | awk '{print $2}' | xargs -n1 basename | sort | tr '\n' ' ')
+[ "$dsys" = "hps_io.sv yc_out.sv " ] || { echo "ABORT sys diff set is '$dsys'" >&2; exit 1; }
+echo "SS1 sys patches applied: $dsys"
 [ -f "$FIT/vendor/sys/ascal.vhd" ] || { echo "ABORT stock ascal missing after sync" >&2; exit 1; }
-yc_guard "$FIT"
+# Seed sweep: only the SEED line of the isolated copy changes; the git checkout stays at seed 10.
+sed -i "s/^set_global_assignment -name SEED .*/set_global_assignment -name SEED $SEED_PIN/" "$FIT/vendor/H264.qsf"
+yc_guard "$FIT" "$SEED_PIN"
 grep -q '^derive_clock_uncertainty' "$FIT/vendor/sys/sys_top.sdc" || {
   echo "ABORT derive_clock_uncertainty" >&2
   exit 1
@@ -229,16 +271,17 @@ while :; do
 done
 
 {
-  echo "VARIANT=YC_0B59C11A"
+  echo "VARIANT=YC_0B1101C5"
   echo "COMMIT=$(git -C "$REPO" rev-parse HEAD)"
   echo "EAC_SHA=$EACSHA"
   echo "SYS_CLEAN=1"
-  echo "SYS_EQ_EAC1064=1"
+  echo "SYS_EQ_EAC1064=0"; echo "SYS_PATCH=ss1-color-1025 0001+0002"
   echo "OWENB_CLEAN=1"
   echo "EAC_CLEAN=1"
   echo "SEED=$SEED_PIN"
   echo "NOTIFY_SILENT=1"
   echo "MD5_QSF=$(md5full "$FIT/vendor/H264.qsf")"
+  echo "MD5_QSF_NORM=$(qsf_norm "$FIT/vendor/H264.qsf")"
   echo "MD5_EMU=$(md5full "$FIT/vendor/h264/emu.sv")"
   echo "MD5_RING_IN=$(md5full "$FIT/vendor/h264/ring_in.sv")"
   echo "MD5_RING_STAT=$(md5full "$FIT/vendor/h264/ring_stat.sv")"
@@ -247,9 +290,9 @@ done
 } > "$FIT/RESULT.env"
 
 export NOTIFY_SILENT=1
-echo "FIT compile $FIT_NAME via run_quartus_docker.sh --compile (one fit at a time)"
+echo "FIT compile $RUN_NAME via run_quartus_docker.sh --compile (one fit at a time)"
 set +o pipefail
-bash "$FIT/run_quartus_docker.sh" --compile --name "$FIT_NAME" | tee "$FIT/fit.log"
+bash "$FIT/run_quartus_docker.sh" --compile --name "$RUN_NAME" | tee "$FIT/fit.log"
 compile_rc=${PIPESTATUS[0]}
 set -o pipefail
 if [ "$compile_rc" != 0 ]; then
@@ -258,14 +301,14 @@ if [ "$compile_rc" != 0 ]; then
 fi
 
 echo "QSF_MD5_AFTER=$(md5full "$FIT/vendor/H264.qsf")" >> "$FIT/RESULT.env"
-pin8 "$FIT/vendor/H264.qsf" "$QSF8"
+pin_qsf_norm "$FIT/vendor/H264.qsf"
 sof="$FIT/vendor/output_files/H264.sof"
 [ -f "$sof" ] || { echo "ABORT H264.sof missing after compile" >&2; exit 1; }
 rel="$FIT/vendor/releases"
 # build_release drops the rbf in releases/ before this gate. Park it in
 # output_files and copy it back only when the gate rc is 0 and GATE_PASS=1.
 set +o pipefail
-produced=$(ls -1t "$rel"/*"${FIT_NAME}"*.rbf 2>/dev/null | head -1 || true)
+produced=$(ls -1t "$rel"/*"${RUN_NAME}"*.rbf 2>/dev/null | head -1 || true)
 set -o pipefail
 [ -n "$produced" ] && [ -f "$produced" ] || { echo "ABORT rbf missing after compile" >&2; exit 1; }
 staged="$FIT/vendor/output_files/$(basename "$produced")"
@@ -274,13 +317,14 @@ mv -f "$produced" "$staged"
   echo "MD5_SOF=$(md5full "$sof")"
   echo "MD5_RBF=$(md5full "$staged")"
 } >> "$FIT/RESULT.env"
-# F3: pll_hdmi setup >= -0.3 ns, every other clock >= 0, and the entity table
+# F3: pll_hdmi setup >= $YC_PLL_BAR (default -3.0 ns, Shawn's 2026-10-17 sign-off for the stock ascal;
+# timing_gate.py's own default stays -0.3 and only an explicit --pll-bar loosens it), every other clock >= 0, and the entity table
 # has ring_in:ring_in_inst with non-zero ALMs. Slacks land in RESULT.env either
 # way. GATE_PASS=1 only when timing and the map both pass. A miss does not
 # print FIT done and does not leave the rbf or its rbf.json manifest in releases/.
 map="$FIT/vendor/output_files/H264.map.rpt"
 set +e
-gate_out=$(python3 "$(dirname "$SCRIPT")/timing_gate.py" --sta "$FIT/vendor/output_files/H264.sta.rpt" --log "$FIT/fit.log" --rbf "$staged" --map "$map")
+gate_out=$(python3 "$(dirname "$SCRIPT")/timing_gate.py" --sta "$FIT/vendor/output_files/H264.sta.rpt" --log "$FIT/fit.log" --rbf "$staged" --map "$map" --pll-bar "${YC_PLL_BAR:--3.0}")
 gate_rc=$?
 set -e
 if printf '%s\n' "$gate_out" | grep -qx 'MAP_RING_IN=0' && printf '%s\n' "$gate_out" | grep -qx 'TIMING_PASS=1'; then
@@ -295,7 +339,7 @@ if [ "$gate_rc" = 0 ] && printf '%s\n' "$gate_out" | grep -qx 'GATE_PASS=1'; the
   if rbf_line=$(yc_publish_rbf "$staged" "$rel" "$gate_out" "$gate_rc"); then
     printf '%s\n' "$rbf_line" >> "$FIT/RESULT.env"
     rbf="${rbf_line#RBF_PATH=}"
-    echo "FIT done qsf=$QSF8 sof=$(md5full "$sof") rbf=$(md5full "$rbf")"
+    echo "FIT done qsf_norm=${QSF_NORM:0:8} sof=$(md5full "$sof") rbf=$(md5full "$rbf")"
     exit 0
   fi
 else
@@ -308,7 +352,7 @@ fi
 if printf '%s\n' "$gate_out" | grep -qx 'MAP_RING_IN=0'; then
   echo "ABORT map entity table missing ring_in:ring_in_inst with non-zero ALMs" >&2
 else
-  echo "FIT MARGINAL rc=$gate_rc qsf=$QSF8" >&2
+  echo "FIT MARGINAL rc=$gate_rc qsf_norm=${QSF_NORM:0:8}" >&2
 fi
 [ "$gate_rc" != 0 ] || gate_rc=1
 exit "$gate_rc"

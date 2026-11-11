@@ -31,7 +31,7 @@ struct TransportGenerations {
     }
 };
 
-// R1 C1 (review 08:17 (1)): a STOP ends the PLAY requests before its OWN generation, never
+// R1 C1 (FPGA Bug 08:17 (1)): a STOP ends the PLAY requests before its OWN generation, never
 // before the live one: a PLAY and a seek after the STOP keep their PLXH en=1 hold.
 inline uint64_t stopClearGeneration(const TransportRequest& request, const TransportGenerations& g) {
 #ifdef MUT_R1_STOP_LIVE_GEN   // test-only mutant: the live playGen

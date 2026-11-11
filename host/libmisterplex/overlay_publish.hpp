@@ -1,5 +1,5 @@
 #pragma once
-// Native-overlay publication and presentMu_ (rel-480i-costall-1004, GLASS-A6).
+// Native-overlay publication and presentMu_ (reviewer-480i-costall-1004, GLASS-A6).
 //
 // The overlay publisher (media_player.cpp startOverlay, the third "mpx-play" thread)
 // sends a 576-byte packet every 200 ms through FpgaSpi::sendFileTx. Like every SPI
@@ -20,7 +20,7 @@
 //     while holding presentMu_ (video-ack, video-push) and stall audio anyway.
 // Unset or 0: unchanged.
 //
-// MPX_OVERLAY_ONCHANGE=1 (rel overlay-onchange 1004): every send still parks Main
+// MPX_OVERLAY_ONCHANGE=1 (reviewer overlay-onchange 1004): every send still parks Main
 // (SIGSTOP), 5 times a second, though the plane is usually hidden and unchanged. The
 // publisher keeps its 200 ms tick but sends only when the drawn content changes
 // (overlayContentKey), plus:
@@ -38,7 +38,7 @@
 //   - a retry on the next tick after any failed (SPI) send.
 // It composes with MPX_OVERLAY_DECOUPLE. Unset or 0: a send every tick, unchanged.
 //
-// MPX_OVERLAY_SKIP_NO_PLANE=1 (rel 10:22, review-d52-shift-rca2-1004 suspect 3):
+// MPX_OVERLAY_SKIP_NO_PLANE=1 (reviewer 10:22, fpga-bug-d52-shift-rca2-1004 suspect 3):
 // on a core built without the playback overlay plane (overlayPlaneAbsent: the 480p
 // PLEX_480P_LEAN builds) the session starts no publisher and release sends no hide, so
 // a play makes no index-6 download and no overlay Main SIGSTOP at all. Cores with the
@@ -515,7 +515,7 @@ inline bool overlayPlaneAbsent(uint32_t buildId) {
     case 0x48C5385Cu: // 487A1BD1 + sps_parser NVENC relax (analog v10)
     case 0x48C51FF1u: // 48C5385C + pairing overlay both BUILD_IDs (analog v11)
     case 0x48CFEE31u: // 48C51FF1 + HDMI FB_FORCE_BLANK gate (analog v12)
-    case 0x48110015u: // 487A1BD1 + sps_parser NVENC relax (same LEAN qsf)
+    case 0x48110015u: // 487A1BD1 + sps_parser NVENC relax; same r1 qsf, PLEX_480P_LEAN=1
     case 0x4800F40Au:
     case 0x48006A7Eu:
         return true;

@@ -190,7 +190,7 @@ static int new_session(h264ring *r, unsigned timeout_ms)
     /* (fixed 2026-10-06 on the rig) a misaligned stale write index rounded down to 16 -- where the core
      * starts reading -- before the nonce: the core checks the write index's alignment at every poll of
      * the session, and this program stores its own only with its first record, so a cold boot's random
-     * DDR3 (the first power-up after .201 was moved) put every session in WIDX_ALIGN at once and nothing
+     * DDR3 (the first power-up after the board was moved) put every session in WIDX_ALIGN at once and nothing
      * ever played. An aligned index (any earlier program's) is left as it is: no race with a core still
      * reading behind it */
     {

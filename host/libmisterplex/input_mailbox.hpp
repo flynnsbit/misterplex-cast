@@ -45,7 +45,21 @@ enum class PlaybackCommand : uint8_t {
     PageUp = 8,     // browse: previous page
     PageDown = 9,   // browse: next page
     Back = 10,      // browse: back (pop a level, or hide at the root)
-    Info = 11,      // browse: details of the current row in the status line
+    Info = 11,      // browse: details, or Plex TV Add to queue (pad X)
+    // Daemon-only. kBrowseMaxInputCommand stays at Info, so a PLXI word cannot send these.
+    QueuePlayNext = 12,
+    MarkerActivate = 13,   // Select while Skip Intro / Skip Credits / Up Next is up
+    MarkerDismiss = 14,    // Back while that overlay is up (does not stop)
+    // Daemon-only, like QueuePlayNext. kBrowseMaxInputCommand stays at Info, so a
+    // PLXI word cannot send these. MARK_WATCHED off: the menu never posts them.
+    MarkWatched = 15,
+    MarkUnwatched = 16,
+    MarkDropContinue = 17,
+    // Daemon-only Spelunkr TV on the owenb core. PLXI cannot send these.
+    ChannelUp = 18,
+    ChannelDown = 19,
+    GuideToggle = 20,
+    GuideTune = 21,
 };
 
 constexpr uint8_t kLegacyMaxInputCommand = static_cast<uint8_t>(PlaybackCommand::Browse);
@@ -354,6 +368,16 @@ inline PlaybackAction mapPlaybackCommand(PlaybackCommand command, bool playing, 
     case PlaybackCommand::PageDown:
     case PlaybackCommand::Back:
     case PlaybackCommand::Info:
+    case PlaybackCommand::QueuePlayNext:
+    case PlaybackCommand::MarkerActivate:
+    case PlaybackCommand::MarkerDismiss:
+    case PlaybackCommand::MarkWatched:
+    case PlaybackCommand::MarkUnwatched:
+    case PlaybackCommand::MarkDropContinue:
+    case PlaybackCommand::ChannelUp:
+    case PlaybackCommand::ChannelDown:
+    case PlaybackCommand::GuideToggle:
+    case PlaybackCommand::GuideTune:
     case PlaybackCommand::None:
         return action;
     }

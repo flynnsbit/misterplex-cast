@@ -1,7 +1,7 @@
 #pragma once
 // R1 (hostIdleFb) adapter: the P1 browse controller's current level (BrowseR1View, browse_v2.hpp) ->
 // browse::RenderModel (browse_render.hpp, render spec 2d57d01b/a910c475, look LOCKED to the rg1 mockups).
-// Product defaults until lead/owner rule (release 19:08):
+// Product defaults until reviewer/Shawn rule (reviewer 19:08):
 //   Q1  rows are drawn as the helper sends them (no rating/transcode attributes);
 //   Q2  the helper's exact action labels map to the mockup casing: "RESUME FROM hh:mm" -> "Resume from hh:mm",
 //       "PLAY FROM START" -> "Play from start", "PLAY" -> "Play"; PREV/NEXT rows -> "Prev"/"Next" (the renderer
@@ -9,6 +9,7 @@
 //   Q5  watched: the /a1 helper appends "  W" (two spaces, then W) to the label (mpx_menu.py progress()); fold_a1
 //       collapses whitespace inside titles, so a trailing double-space W can only be that mark. Drawn dim.
 // The renderer still sanitises and clips every string (F3); this only shapes the model.
+#include "browse_nav.hpp"
 #include "browse_render.hpp"
 #include "browse_v2.hpp"
 
@@ -74,7 +75,7 @@ inline Row r1Row(const LibraryRow& r) {
     out.label = r.title;
     // Inert rows first, by the cursor's rule (LibraryBrowser::selectable, the same set browseRowActivatable
     // refuses first): a page row that also carries mpxKind info/offline/header is Info, never a Prev/Next
-    // button the cursor cannot take (review 09:48).
+    // button the cursor cannot take (Bug 09:48).
     const bool inert = !LibraryBrowser::selectable(r);
     if (!inert && browseRowIsPage(r)) {
         const bool next = browsePageRowIsNext(r);
@@ -124,7 +125,7 @@ inline RenderModel r1RenderModel(const BrowseR1View& v, int prevViewportTop) {
         m.rows.push_back(r1Row(r));
     m.cursorIndex = std::max(0, std::min(v.cursor, static_cast<int>(m.rows.size()) - 1));
     m.viewportTop = r1ViewportTop(m.cursorIndex, static_cast<int>(m.rows.size()), prevViewportTop);
-    m.footerText = v.status;
+    m.footerText = v.status.empty() ? browseHintLine() : v.status;
     const bool quietStatus = v.status.empty() || v.status == "LOADING..." || v.status == "EMPTY";
     if (m.rows.empty() && !quietStatus) {
         m.state = BrowseState::S8Error; // nothing to show but the reason

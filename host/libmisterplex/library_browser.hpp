@@ -1,6 +1,8 @@
 #pragma once
 // On-glass PMS library overlay. No FPGA exec — daemon paints + playMedia.
 
+#include "plex_text.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -115,7 +117,8 @@ inline std::string xmlDecode(const std::string& s) {
             }
             ok = ok && cp != 0 && !(cp >= 0xD800 && cp <= 0xDFFF);
         } else {
-            ok = false;
+            cp = xmlNamedEntityCp(ent);
+            ok = cp != 0;
         }
         if (!ok) {
             out += s[i];
@@ -221,7 +224,7 @@ struct LibraryBrowser {
     // A row the cursor may rest on: every row but the helper's info/offline/header rows, the rows
     // the R1 renderer draws as RowKind::Info and never highlights (browse_r1_adapter.hpp r1Row,
     // browse_render.hpp selectable). The cursor stays on these rows only, so the highlighted row
-    // is the row Select acts on (review 09:38). Legacy PMS rows carry no mpxKind: all selectable.
+    // is the row Select acts on (reviewer 09:38). Legacy PMS rows carry no mpxKind: all selectable.
     static bool selectable(const LibraryRow& r) {
         return r.mpxKind != "info" && r.mpxKind != "offline" && r.mpxKind != "header";
     }

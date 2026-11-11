@@ -5,15 +5,13 @@ ffmpeg links libx264. ffprobe is the same FFmpeg 8.1.2 and OpenSSL 3.0.15,
 with the same decoders, demuxers, and protocols, and without libx264:
 probe does not encode.
 
-The complete corresponding source for this helper is attached as assets to
-the MisterPlex rc5 release:
-https://github.com/flynnsbit/misterplex-cast/releases/tag/rc5
-It is available on request from the distributor. On request we will provide
+The complete corresponding source for this helper is shipped inside this
+release package, in source/gcast-ffmpeg/. On request we will also provide
 the same source on a physical medium for three years from this release, for
 no more than the cost of distribution.
 GPL-2.0 text: licenses/rbf/GPL-2.
 
-The rc5 release assets are these files:
+The files in source/gcast-ffmpeg/ are:
 
 - ffmpeg-8.1.2.tar.xz
 - ffmpeg-8.1.2.tar.xz.asc
@@ -21,8 +19,8 @@ The rc5 release assets are these files:
 - openssl-3.0.15.tar.gz
 - build_gcast_ffmpeg.sh (the repository file scripts/build_gcast_ffmpeg.sh)
 - build_arm_airplay.sh (the repository file scripts/build_arm_airplay.sh; it builds the static OpenSSL)
-- SHA256SUMS
-- MD5SUMS
+- SHA256SUMS and MD5SUMS (every file in the directory)
+- PINS.SHA256SUMS (the pinned sha256 of the four upstream files; the package build refuses to run if one differs)
 
 openssl-3.0.15.tar.gz is statically linked into both ffmpeg and ffprobe.
 
@@ -36,8 +34,7 @@ Upstream, with the sha256 of the source tarball named above:
 - OpenSSL 3.0.15: https://github.com/openssl/openssl/releases/download/openssl-3.0.15/openssl-3.0.15.tar.gz
   also https://www.openssl.org/source/openssl-3.0.15.tar.gz
   sha256 23c666d0edf20f14249b3d8f0368acaee9ab585b09e1de82107c66e1f3ec9533
-- scripts/build_gcast_ffmpeg.sh: https://github.com/flynnsbit/misterplex-cast/releases/tag/rc5 (asset build_gcast_ffmpeg.sh)
-- scripts/build_arm_airplay.sh: https://github.com/flynnsbit/misterplex-cast/releases/tag/rc5 (asset build_arm_airplay.sh)
+- scripts/build_gcast_ffmpeg.sh and scripts/build_arm_airplay.sh: shipped in source/gcast-ffmpeg/ (the repository files)
 
 x264 is GPL-2.0-or-later, not GPL-2.0 alone. OpenSSL 3.0.15 is under the
 Apache License 2.0. The license text is licenses/gcast-ffmpeg/Apache-2.0.txt.

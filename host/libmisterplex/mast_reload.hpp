@@ -1,6 +1,6 @@
 #pragma once
 
-// MAST-WEDGE (review 21:14 read-only RCA, release 21:16/21:17, review 21:15 GO).
+// MAST-WEDGE (FPGA Bug 21:14 read-only RCA, reviewer 21:16/21:17, reviewer 21:15 GO).
 // After a fresh core load, the MrAudio session lane's publisher (audio_session_mailbox.sv) can
 // stop: every wait in its FSM lacks a timeout, and reset_dec does not reset its state. Only an
 // FPGA reconfiguration restarts it, so no begin retry helps. The daemon therefore:
@@ -21,8 +21,8 @@
 // state=refused why=<why>; the daemon treats that as terminal ('no reload ran (<why>)').
 // A load that fails past the guard (loader rc other than the guard's 97/98) writes
 // state=load-failed why=load-failed-rc<rc>, also terminal ('reload attempted, loader rc=<rc>';
-// review 22:00 N1).
-// Glass G1 23:49 / review 23:53: a hand-off made inside the start launcher's verify window
+// FPGA Bug 22:00 N1).
+// Glass G1 23:49 / FPGA Bug 23:53: a hand-off made inside the start launcher's verify window
 // was dropped on the launcher lock, and the next daemon called the lane recovered. Now the start
 // launcher yields to a pending hand-off and the mast-reload instance waits for the lock (R1);
 // 'recovered' is written only from 'attempted', and a 'requested' the launcher never took is
@@ -112,7 +112,7 @@ struct Marker {
     int64_t timeS = 0;
     std::string reason;
     std::string why;
-    // R6 (review 02:08): the guarded loader's quiesce outcome before its load_core
+    // R6 (FPGA Bug 02:08): the guarded loader's quiesce outcome before its load_core
     // (quiesced (...) | not-quiesced (...) | no-feed (...)), kept on every rewrite after it.
     std::string r6;
 };
@@ -196,7 +196,7 @@ enum class Action {
     NoReloadRan,    // no reload ran: state=refused (why=...) or a requested hand-off not taken
     LoadFailed,     // the load failed past the guard (state=load-failed)
     // Both are terminal: no auto reload until the MiSTer reboots (tmpfs marker). A reload by hand
-    // cures the lane but not the marker (review 00:18 P3: only state=attempted becomes recovered).
+    // cures the lane but not the marker (FPGA Bug 00:18 P3: only state=attempted becomes recovered).
 };
 
 inline Action decide(bool haveHelper, const Marker& m, int64_t nowS) {
@@ -204,7 +204,7 @@ inline Action decide(bool haveHelper, const Marker& m, int64_t nowS) {
         return Action::NoHelper;
 #ifndef MUT_MAST_RELOAD_LOOP   // test-only mutant: ignore the marker (reload on every wedge)
     if (m.present) {
-        // review 23:53 R2: 'requested' means the launcher never took the hand-off (glass G1
+        // FPGA Bug 23:53 R2: 'requested' means the launcher never took the hand-off (glass G1
         // 23:49). No reload ran, so this is neither a failed cure nor a reason to ask again.
         if (m.state == "refused" || m.state == "requested")
             return Action::NoReloadRan;
@@ -222,11 +222,11 @@ inline Action decide(bool haveHelper, const Marker& m, int64_t nowS) {
     return Action::RequestReload;
 }
 
-// A wedge while the marker says attempted: the one reload ran and did not cure it (review 21:39:
+// A wedge while the marker says attempted: the one reload ran and did not cure it (FPGA Bug 21:39:
 // not yet proven that one reload cures a (B) wedge). The daemon then writes the terminal state
 // cure-failed, logs cureFailedLine once and stays up; plays fail clean. Only a reboot (tmpfs)
 // clears it, and nothing loops on it. A later escalation policy can key on cure-failed.
-// 'requested' is not a failed cure: the launcher never took the hand-off (review 23:53 R2).
+// 'requested' is not a failed cure: the launcher never took the hand-off (FPGA Bug 23:53 R2).
 inline bool cureFailed(const Marker& m) {
     return m.present && m.state == "attempted";
 }
@@ -239,11 +239,11 @@ inline std::string cureFailedLine(const Marker& m, int64_t nowS, const std::stri
            "the MiSTer reboots (marker now cure-failed)";
 }
 
-// A live gate-open probe while a marker exists (review 23:53 R2). Only a reload that ran
+// A live gate-open probe while a marker exists (FPGA Bug 23:53 R2). Only a reload that ran
 // (state=attempted) becomes recovered. 'requested' means the launcher never took the hand-off,
 // so no reload ran: say so, and leave the marker for the launcher (R1). Glass G1 23:49 logged
 // 'live after the auto core reload' here with no reload. Terminal states stay until a reboot.
-// review 01:10 R5c: a gate that opens on a cure-failed marker is a manual recovery (a reload by
+// FPGA Bug 01:10 R5c: a gate that opens on a cure-failed marker is a manual recovery (a reload by
 // hand), never 'recovered'; the marker stays cure-failed.
 enum class LiveAction { MarkRecovered, HandoffNotTaken, ManualRecovery, KeepTerminal };
 
@@ -281,7 +281,7 @@ inline std::string liveLine(LiveAction a, const Marker& m, int64_t nowS) {
     return "MAST lane live";
 }
 
-// R5a (review 01:09, review 01:10/01:28; glass G2 01:03: after the auto reload the core never
+// R5a (reviewer 01:09, FPGA Bug 01:10/01:28; glass G2 01:03: after the auto reload the core never
 // answered CAPS, the gate stayed closed, the marker stayed 'attempted' and nothing was loud). A
 // daemon that starts on an 'attempted' marker and whose core gate does not open is a failed cure:
 // the marker goes to cure-failed (why=gate-silent:<the gate's reason>), loud, and no reload ever

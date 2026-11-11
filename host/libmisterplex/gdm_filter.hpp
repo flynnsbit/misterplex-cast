@@ -21,7 +21,11 @@
 
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace misterplex {
 
@@ -68,6 +72,40 @@ inline bool gdmMayReply(bool httpReady, const char* buf, size_t len) {
     return httpReady && gdmShouldReply(buf, len);
 }
 
+// F2190: GDM is L2-only (UDP 32412 broadcast). WAN PMS /clients stays size=0
+// because we do not PUT /clients on a remote PLEX_BASE and we do not GDM-reply
+// to a unicast WAN peer (203.0.113.47). Native LAN M-SEARCH still gets a reply.
+inline bool gdmPeerIsL2Lan(const char* dotted) {
+#ifdef MUT_GDM_WAN_REPLY
+    (void)dotted;
+    return true;
+#else
+    if (!dotted || !dotted[0])
+        return false;
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    char extra = 0;
+    if (std::sscanf(dotted, "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4)
+        return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255)
+        return false;
+    if (a == 10)
+        return true;
+    if (a == 192 && b == 168)
+        return true;
+    if (a == 172 && b >= 16 && b <= 31)
+        return true;
+    if (a == 127)
+        return true;
+    if (a == 169 && b == 254)
+        return true;
+    return false;
+#endif
+}
+
+inline bool gdmMayReplyToPeer(bool httpReady, const char* buf, size_t len, const char* peerDotted) {
+    return gdmMayReply(httpReady, buf, len) && gdmPeerIsL2Lan(peerDotted);
+}
+
 // Exact pre-fix advertise policy (HTTP readiness ignored). Tests pin that
 // the new gate disagrees with this when httpReady is false.
 inline bool legacyGdmAdvertiseRegardlessOfHttp(bool /*httpReady*/) { return true; }
@@ -87,5 +125,55 @@ inline constexpr const char* kGdmAdvertiseShape =
     "Device-Class: stb\r\n"
     "Resource-Identifier: test-id\r\n"
     "\r\n";
+
+// Dual-home GDM advertise (GH#23). PMS /clients records the UDP source IP.
+// A box with two RFC1918 ifaces on different L2 networks must announce from
+// each iface, or Plex Web on one subnet lists the other and the picker is
+// one hop off.
+inline constexpr uint16_t kGdmListenPort = 32412;
+inline constexpr uint16_t kGdmClientRegisterPort = 32413;
+inline constexpr const char* kGdmClientMulticast = "239.0.0.250";
+
+struct GdmIface {
+    std::string ip;
+    std::string broadcast;
+    bool up = false;
+    bool loopback = false;
+};
+
+struct GdmDest {
+    std::string src;
+    std::string dst;
+    uint16_t port = kGdmListenPort;
+    bool hello = false;  // 32413 register uses HELLO; 32412 uses 200 OK
+};
+
+inline bool gdmIpLinkLocal(const std::string& ip) {
+    return ip.size() >= 8 && ip.compare(0, 8, "169.254.") == 0;
+}
+
+inline bool gdmIpRfc1918(const std::string& ip) {
+    if (ip.compare(0, 3, "10.") == 0)
+        return true;
+    if (ip.compare(0, 8, "192.168.") == 0)
+        return true;
+    if (ip.compare(0, 4, "172.") == 0)
+        return true;
+    return false;
+}
+
+inline std::vector<GdmDest> gdmAdvertiseDests(const std::vector<GdmIface>& ifs) {
+    std::vector<GdmDest> out;
+    for (const auto& i : ifs) {
+        if (!i.up || i.loopback || i.ip.empty())
+            continue;
+        if (gdmIpLinkLocal(i.ip) || !gdmIpRfc1918(i.ip))
+            continue;
+        if (!i.broadcast.empty())
+            out.push_back({i.ip, i.broadcast, kGdmListenPort, false});
+        out.push_back({i.ip, kGdmClientMulticast, kGdmClientRegisterPort, true});
+    }
+    return out;
+}
 
 } // namespace misterplex

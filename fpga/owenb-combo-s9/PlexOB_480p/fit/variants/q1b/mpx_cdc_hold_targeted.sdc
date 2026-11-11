@@ -1,4 +1,4 @@
-# MPX-FORK owenb fit Q1b (review fit plan 2026-10-16 23:50, hold fix 2): hold-only exception on exactly the h264.sdc-bounded
+# MPX-FORK owenb fit Q1b (FPGA Bug fit plan 2026-10-16 23:50, hold fix 2): hold-only exception on exactly the h264.sdc-bounded
 # cross-PLL handshake captures (clk_vid <-> clk_mem/clk_sys). Each set_max_delay 12.000 in h264.sdc stays; this adds the matching
 # set_min_delay -12.000 so hold is not timed against two-PLL skew. These are quasi-static captures taken >= 2 destination cycles
 # after the qualifier crossed (h264.sdc:27-28).

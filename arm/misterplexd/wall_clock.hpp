@@ -151,6 +151,19 @@ inline std::optional<std::time_t> acceptHttpsDatePair(const std::optional<std::t
     return std::nullopt;
 }
 
+// One network-down poll. The live rescue never sleeps longer than this until
+// the link is up. MUT_WALL_RESCUE_LONG_NETDOWN_SLEEP restores the old
+// 2/4/8/16/30 s sleep on that down path.
+inline constexpr int kWallClockNetDownPollMs = 1000;
+// Budgets for one network-ready attempt. Poll + SNTP + HTTPS Date fits in the
+// 5 s network-up goal. A miss after that uses wallClockRescueBackoffMs.
+inline constexpr int kWallClockSntpTimeoutMs = 1500;
+inline constexpr int kWallClockHttpsTimeoutMs = 2000;
+inline constexpr int kWallClockNetworkUpBudgetMs =
+    kWallClockNetDownPollMs + kWallClockSntpTimeoutMs + kWallClockHttpsTimeoutMs;
+static_assert(kWallClockNetDownPollMs <= 1000, "network-down poll is at most 1s");
+static_assert(kWallClockNetworkUpBudgetMs <= 5000, "one ready attempt fits in 5s of network up");
+
 inline WallClockStatus ensurePlausibleWallClock(const WallClockOps& ops, std::string* err,
                                                 WallClockSource* source = nullptr) {
     // The Date fetch and any TLS client it uses must not re-enter this function.
@@ -201,13 +214,13 @@ inline WallClockStatus ensurePlausibleWallClock(const WallClockOps& ops, std::st
             return stepTo(WallClockSource::Rtc, *rtc.time, false);
     }
     if (ops.queryNtp) {
-        if (const auto got = ops.queryNtp(1500)) {
+        if (const auto got = ops.queryNtp(kWallClockSntpTimeoutMs)) {
             if (wallTimePlausible(*got))
                 return stepTo(WallClockSource::Sntp, *got, rtcPresent);
         }
     }
     if (ops.queryHttps) {
-        if (const auto got = ops.queryHttps(2000)) {
+        if (const auto got = ops.queryHttps(kWallClockHttpsTimeoutMs)) {
             if (wallTimePlausible(*got))
                 return stepTo(WallClockSource::HttpsDate, *got, rtcPresent);
         }
@@ -267,7 +280,9 @@ WallClockStatus ensurePlausibleWallClockDefault(std::string* err, bool force = f
 // Background rescue. Each attempt: if the clock is already plausible, stop
 // (an external ntpd/time source fixed it). Otherwise read rtc0 immediately,
 // and only if the network is ready (default route or a resolvable host) try
-// SNTP then HTTPS Date. Sleep 2s, 4s, 8s, … capped at 30s, and repeat.
+// SNTP then HTTPS Date. While the network is down, poll again in at most 1s
+// so a cold boot is corrected within 5s of network up. Sleep 2s, 4s, 8s, …
+// capped at 30s only after a network-ready SNTP and HTTPS Date miss.
 // `monoMs` is optional; tests advance it from sleepMs. `stop` ends the loop.
 struct WallClockRescueOps {
     std::function<std::time_t()> now;
@@ -289,6 +304,7 @@ struct WallClockRescueResult {
 };
 
 // failedAttempts is 1-based: 1 -> 2000, 2 -> 4000, 3 -> 8000, then cap 30000.
+// Counts network-ready SNTP+HTTPS misses only, not network-down polls.
 inline int wallClockRescueBackoffMs(int failedAttempts) {
     int ms = 2000;
     for (int i = 1; i < failedAttempts; ++i) {
@@ -302,6 +318,7 @@ inline int wallClockRescueBackoffMs(int failedAttempts) {
 inline WallClockRescueResult runWallClockRescue(const WallClockRescueOps& ops) {
     WallClockRescueResult out;
     int attempt = 0;
+    int netReadyMisses = 0;
     while (!ops.stop || !ops.stop()) {
         ++attempt;
         if (attempt > 10000) {
@@ -350,6 +367,8 @@ inline WallClockRescueResult runWallClockRescue(const WallClockRescueOps& ops) {
             }
         }
         const bool net = ops.networkReady && ops.networkReady();
+        bool sntpMiss = false;
+        bool httpsMiss = false;
         if (!net) {
             if (ops.log)
                 ops.log("wall clock rescue: network not ready; skipping SNTP and HTTPS Date");
@@ -357,7 +376,7 @@ inline WallClockRescueResult runWallClockRescue(const WallClockRescueOps& ops) {
             if (ops.queryNtp) {
                 if (ops.log)
                     ops.log("wall clock rescue: SNTP");
-                if (const auto got = ops.queryNtp(1500)) {
+                if (const auto got = ops.queryNtp(kWallClockSntpTimeoutMs)) {
                     if (wallTimePlausible(*got) && ops.step && ops.step(*got) &&
                         (!ops.now || wallTimePlausible(ops.now()))) {
                         if (rtcPresent && ops.writeRtc)
@@ -371,11 +390,12 @@ inline WallClockRescueResult runWallClockRescue(const WallClockRescueOps& ops) {
                 }
                 if (ops.log)
                     ops.log("wall clock rescue: SNTP did not answer");
+                sntpMiss = true;
             }
             if (ops.queryHttps) {
                 if (ops.log)
                     ops.log("wall clock rescue: HTTPS Date");
-                if (const auto got = ops.queryHttps(2000)) {
+                if (const auto got = ops.queryHttps(kWallClockHttpsTimeoutMs)) {
                     if (wallTimePlausible(*got) && ops.step && ops.step(*got) &&
                         (!ops.now || wallTimePlausible(ops.now()))) {
                         if (rtcPresent && ops.writeRtc)
@@ -389,9 +409,24 @@ inline WallClockRescueResult runWallClockRescue(const WallClockRescueOps& ops) {
                 }
                 if (ops.log)
                     ops.log("wall clock rescue: HTTPS Date did not answer");
+                httpsMiss = true;
             }
         }
-        const int wait = wallClockRescueBackoffMs(attempt);
+        // Long backoff only when this attempt was network-ready and both
+        // SNTP and HTTPS Date missed. Down polls stay at 1s, and they do not
+        // advance the 2/4/8/16/30 index.
+        const bool bothMiss = net && sntpMiss && httpsMiss;
+        if (bothMiss)
+            ++netReadyMisses;
+        int wait = kWallClockNetDownPollMs;
+        if (bothMiss)
+            wait = wallClockRescueBackoffMs(netReadyMisses);
+#if defined(MUT_WALL_RESCUE_LONG_NETDOWN_SLEEP)
+        // Restores the pre-fix sleep while the network is down, indexed by
+        // every attempt (2s, 4s, 8s, 16s, then 30s).
+        if (!net)
+            wait = wallClockRescueBackoffMs(attempt);
+#endif
         if (ops.log) {
             char line[96];
             std::snprintf(line, sizeof line, "wall clock rescue: retry in %d ms", wait);

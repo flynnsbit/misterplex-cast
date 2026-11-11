@@ -1,12 +1,12 @@
 #pragma once
 // ARM Plex browse P1 (backlog item 6), MPX_BROWSE_V2=1. Pure helpers: the env flag, the
-// helper's MediaContainer XML (mpx-menu contract, rel-mpxmenu-contract-1004.md), helper
+// helper's MediaContainer XML (mpx-menu contract, reviewer-mpxmenu-contract-1004.md), helper
 // URLs, play tickets and the paint snapshot. The worker is browse_controller.hpp.
 //
 // MPX_BROWSE_V2 unset, "" or "0": off, and nothing here runs (misterplexd behaves as
 // 2ffd5c14, i.e. 2164c4ad + the w9 appendTags fix). "1": on. Anything else: off, plus one notice line.
 //
-// The helper (mpx-menu, lab-pc LAN-only port 18769) answers Plex-shaped XML: Directory rows
+// The helper (mpx-menu, buildhost LAN-only port 18769) answers Plex-shaped XML: Directory rows
 // (key = an absolute, path-only "/menu..." path on the helper; only the root fetch adds
 // ?cols=), Video/Track play rows with
 //   mpxServer   server slug ("local", "s<7 hex>"),
@@ -21,6 +21,8 @@
 
 #include "browse_library_list.hpp"
 #include "library_browser.hpp"
+#include "plex_text.hpp"
+#include "../../arm/misterplexd/log_redact.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -92,79 +94,7 @@ inline std::string menuUrlFromEnvironment(const char* url, const char* base) {
 }
 
 // ---- XML ----
-
-inline std::string xmlUnescape(const std::string& s) {
-    if (s.find('&') == std::string::npos)
-        return s;
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] != '&') {
-            out += s[i];
-            continue;
-        }
-        const size_t semi = s.find(';', i + 1);
-        if (semi == std::string::npos || semi - i > 10) {
-            out += s[i];
-            continue;
-        }
-        const std::string ent = s.substr(i + 1, semi - i - 1);
-        unsigned long cp = 0;
-        bool ok = true;
-        if (ent == "amp")
-            cp = '&';
-        else if (ent == "lt")
-            cp = '<';
-        else if (ent == "gt")
-            cp = '>';
-        else if (ent == "quot")
-            cp = '"';
-        else if (ent == "apos")
-            cp = '\'';
-        else if (ent.size() > 1 && ent[0] == '#') {
-            char* end = nullptr;
-            cp = (ent[1] == 'x' || ent[1] == 'X') ? std::strtoul(ent.c_str() + 2, &end, 16)
-                                                  : std::strtoul(ent.c_str() + 1, &end, 10);
-            ok = end && *end == '\0';
-        } else {
-            ok = false;
-        }
-        if (!ok) {
-            out += s[i];
-            continue;
-        }
-        // Plex titles use typographic punctuation as numeric entities (&#8217; for ’).
-        // Keep them as UTF-8; the UI font draws the glyph or an ASCII stand-in.
-        auto appendCp = [&](unsigned long u) {
-            if (u < 0x20 || u > 0x10FFFF) {
-                out += '?';
-                return;
-            }
-            if (u < 0x80) {
-                out += static_cast<char>(u);
-                return;
-            }
-            if (u < 0x800) {
-                out += static_cast<char>(0xC0 | (u >> 6));
-                out += static_cast<char>(0x80 | (u & 0x3F));
-                return;
-            }
-            if (u < 0x10000) {
-                out += static_cast<char>(0xE0 | (u >> 12));
-                out += static_cast<char>(0x80 | ((u >> 6) & 0x3F));
-                out += static_cast<char>(0x80 | (u & 0x3F));
-                return;
-            }
-            out += static_cast<char>(0xF0 | (u >> 18));
-            out += static_cast<char>(0x80 | ((u >> 12) & 0x3F));
-            out += static_cast<char>(0x80 | ((u >> 6) & 0x3F));
-            out += static_cast<char>(0x80 | (u & 0x3F));
-        };
-        appendCp(cp);
-        i = semi;
-    }
-    return out;
-}
+// xmlUnescape lives in plex_text.hpp (named + numeric entities).
 
 struct XmlElement {
     std::string name;
@@ -419,13 +349,24 @@ struct BrowsePlayTicket {
     int64_t offsetMs = 0;
     std::string address, port, protocol, token, machineIdentifier;
     // The helper's ladder input (mpxLadderSrc, percent-decoded once): the original Part or,
-    // above ~8 Mbps (lead Q4), the owning server's own transcode. Empty: doPlay uses the Part.
+    // above ~8 Mbps (reviewer Q4), the owning server's own transcode. Empty: doPlay uses the Part.
     std::string ladderSrc;
-    // The ticket's mpxLadderInput (lead Q4): "part" or "server-transcode" (doPlay then asks
+    // The ticket's mpxLadderInput (reviewer Q4): "part" or "server-transcode" (doPlay then asks
     // the owning server for its own transcode as the ladder input).
     std::string ladderInput;
     std::string ticketUrl;    // the helper URL this ticket came from ("" for local/PMS rows)
     std::string error;        // non-empty: not playable (shown in the status line)
+    // PlexUI TV: a PMS play queue so timeline, skipNext, and auto-next share one item id.
+    std::string playQueueId;
+    std::string playQueueItemId;
+    std::string playQueueVersion;
+    std::string containerKey;
+    // Browse picker / playMedia subtitleStreamID. Absent = unset.
+    bool hasSubtitleStreamId = false;
+    int subtitleStreamId = 0;
+    // Browse picker audioStreamID. Absent = daemon default (language pref / PMS selected).
+    bool hasAudioStreamId = false;
+    int audioStreamId = 0;
 };
 
 // The server of a Part URL ("http://h:32400/library/parts/1/2/f.mkv?X-Plex-Token=T"): what a
@@ -469,8 +410,9 @@ inline bool serverFromPartUrl(const std::string& partUrl, BrowsePlayTicket& t) {
             const size_t amp = partUrl.find('&', i);
             const std::string kv =
                 partUrl.substr(i, amp == std::string::npos ? std::string::npos : amp - i);
-            if (kv.rfind("X-Plex-Token=", 0) == 0)
-                t.token = percentDecode(kv.substr(13));
+            size_t klen = 0;
+            if (misterplex::findPlexTokenKey(kv, 0, &klen) == 0 && kv.size() > klen && kv[klen] == '=')
+                t.token = percentDecode(kv.substr(klen + 1));
             if (amp == std::string::npos)
                 break;
             i = amp + 1;
@@ -551,7 +493,7 @@ inline BrowsePlayTicket parseBrowseTicket(const std::string& xml, const LibraryR
     const std::string src = el->get("mpxLadderSrc");
     if (!src.empty())
         t.ladderSrc = percentDecode(src);
-    // The helper's own server ("local", the conf PMS): its ticket address is how lab-pc reaches
+    // The helper's own server ("local", the conf PMS): its ticket address is how buildhost reaches
     // that PMS (127.0.0.1 there), not how this MiSTer does. Play it on the conf PMS and token,
     // from the original Part as today (contract §9.3: a local server always takes the Part).
     if (row.mpxServer == "local") {

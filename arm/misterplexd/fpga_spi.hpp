@@ -193,10 +193,10 @@ public:
     bool readSourceAspectAck(SourceAspectAck& status);
     // Read-only: one 32-bit word at `off` (4-aligned, < 4096) of the current layout's doorbell
     // (PLX) page, e.g. the D52 logger's PLXF/PLXD/PLXJ halves. Locked like every access to that
-    // page (one mapper, review 08:17/08:18); false if the core gate is closed, the page cannot be
+    // page (one mapper, FPGA Bug 08:17/08:18); false if the core gate is closed, the page cannot be
     // mapped or `off` is out of range. No store path is reachable from here.
     bool plxPageRead32(uint32_t off, uint32_t& out);
-    // D52-LOG's reader (review 08:17 (b)): plxPageRead32, only while `page` is still the layout's
+    // D52-LOG's reader (FPGA Bug 08:17 (b)): plxPageRead32, only while `page` is still the layout's
     // doorbell page (checked under the same lock); *otherPage says that was the refusal.
     bool plxPageRead32(uint32_t page, uint32_t off, uint32_t& out, bool* otherPage);
     // Physical base used by core ddram_frame_rd (must match RTL PHYS_BASE).
@@ -230,7 +230,7 @@ public:
     // MPX_BROWSE_V2 (browse_v2.hpp): the same reads without presentMu_, so a paint, the overlay
     // or an SPI window holding presentMu_ never delays a remote press. They never touch the frame
     // window (ddrMap_), which the present path unmaps and remaps under presentMu_: they read the
-    // doorbell page through the one mapper (review 08:17 (a)), its lock held only for the read.
+    // doorbell page through the one mapper (FPGA Bug 08:17 (a)), its lock held only for the read.
     // The mailbox address and a reset epoch (frame-map release, core return) are atomics, so the
     // reader restarts its edge/heartbeat state exactly where readInputMailbox / readOsdMailbox
     // would. A closed gate reads nothing (coreGateAllowsQuiet: no setErr).
@@ -292,7 +292,7 @@ public:
     // Hard-kill restart: when beginFpgaVideoSession reclaimed a MrAudio consumer left
     // active by a previous owner (a killed daemon), the one-line note to log; else "".
     std::string takeAudioRecoveryNote();
-    // MAST-WEDGE (review 21:14): one liveness probe of the MrAudio lane's publisher, as at
+    // MAST-WEDGE (FPGA Bug 21:14): one liveness probe of the MrAudio lane's publisher, as at
     // core-gate open. MAST must decode (magic, ABI, commit) and its publication counter must
     // advance by the begin check's count within the begin check's window. A core whose gate
     // CAPS lacks the lane gives out.lane = false. Returns out.live (true when there is no lane).
@@ -301,7 +301,7 @@ public:
     // (recoverOrphanedAudioConsumer's fresh check). No begin retry can move that FSM; only a
     // core reload can.
     bool lastBeginWedged() const;
-    // R5f (review 01:19/01:25): withdraw any outstanding audio command, i.e. the control
+    // R5f (FPGA Bug 01:19/01:25): withdraw any outstanding audio command, i.e. the control
     // commit word at +0x128 := 0 (classifyAudioLane's withdraw), so the DDR control page never
     // carries a valid command into a reload. Gated like every DDR write: with another core loaded
     // (closed gate) it writes nothing and returns false with the reason in why.
@@ -449,20 +449,20 @@ public:
     void setNegotiatedBuild(const FpgaBuildInfo* build);
     const FpgaBuildInfo* negotiatedBuild() const { return negotiatedBuild_.load(); }
     // R1 PLX slots (PLXH 0x300FF138 host -> FPGA, PLXO 0x300FF140 FPGA -> host) behind the same
-    // core gate as every DDR mailbox access (r1_plxh.hpp PlxPort). review 06:57 D1: they use
+    // core gate as every DDR mailbox access (r1_plxh.hpp PlxPort). FPGA Bug 06:57 D1: they use
     // their own uncached /dev/mem page (0x300FF000, proven to hold both slots), never the frame
     // layout's mailbox page: the start-up 320x240 layout maps only up to 0x3007FFFF.
     bool plxStore32(uint32_t phys, uint32_t value);
     bool plxStore64(uint32_t phys, uint64_t value);   // one 64-bit store (K2 PLXO zero)
     bool plxLoad64(uint32_t phys, uint64_t* value);   // a stable 64-bit read (two equal reads)
-    // F1 PLXL beat (f1_beat.hpp BeatPort; F1-PREREG v2.2 ba1ae917, review 01:39 k1, H264 x1/x2): the
+    // F1 PLXL beat (f1_beat.hpp BeatPort; F1-PREREG v2.2 ba1ae917, FPGA Bug 01:39 k1, H264 x1/x2): the
     // beat thread's only call into FpgaSpi. Its only lock is a try_lock of ddrPageMu_ (held:
     // Contended). Under it the gate must still be open with gateSnap and a live fabric (else
     // GateMoved, read lock-free), and the PLX page must already be mapped (else Unmapped: it never
     // maps). It takes no other lock and never calls setErr, coreGateAllows or the mapper. Then hb
     // (seeded from the word when !*seeded), a barrier, and the magic: two 32-bit stores.
     f1::BeatStore plxlBeatStore(uint64_t gateSnap, uint32_t plxlPhys, uint32_t* hb, bool* seeded);
-    // R1 idle-entry stream clear (review 20:18, STATE trigger; r1_idle_paint.hpp): one bitstream
+    // R1 idle-entry stream clear (FPGA Bug 20:18, STATE trigger; r1_idle_paint.hpp): one bitstream
     // ring epoch reset, so the reader's out_flush raises generation_clear and drops fb_live. DDR
     // only (no SPI), ACKed by the reader's reset_epoch. Refused while a session, a ring reset or
     // an abort is active or pending.
@@ -552,7 +552,7 @@ private:
     SpiAckWaitStats lastAckClr_{};
     int lastStatusWriteFailedAt_ = -1;
     // Persistent HPS DDR frame window: both banks. It stops below the doorbell page, which only
-    // ensureDdrMailboxMap maps (review 08:17 (a): one mapper of the PLX page).
+    // ensureDdrMailboxMap maps (FPGA Bug 08:17 (a): one mapper of the PLX page).
     int ddrMemFd_ = -1;
     uint8_t* ddrMap_ = nullptr;
     size_t ddrMapLen_ = 0;
@@ -563,7 +563,7 @@ private:
     // The doorbell (PLX) pages, uncached /dev/mem, keyed by page: ensureDdrMailboxMap is their
     // one mapper and ddrPageMu_ (lockDdrPage) their one lock. Every access through a page runs
     // under the lock, and the pages are unmapped under it (releaseDdrMap, close), so no access
-    // is in flight at an munmap (review 07:30 C2, 08:17 (a), 08:18).
+    // is in flight at an munmap (FPGA Bug 07:30 C2, 08:17 (a), 08:18).
     struct DdrPageMap {
         uint32_t phys = 0;
         int fd = -1;

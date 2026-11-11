@@ -24,6 +24,36 @@ inline char lowerCh(char c) {
     return c;
 }
 
+inline std::string pctDecodeStable(std::string s) {
+    const auto hex = [](char c) -> int {
+        c = lowerCh(c);
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        return -1;
+    };
+    for (int round = 0; round < 8; ++round) {
+        std::string out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '%' && i + 2 < s.size()) {
+                const int hi = hex(s[i + 1]), lo = hex(s[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            out.push_back(s[i]);
+        }
+        if (out == s)
+            break;
+        s = std::move(out);
+    }
+    return s;
+}
+
 inline bool ciAt(const std::string& s, size_t pos, const char* lit) {
     const size_t n = std::strlen(lit);
     if (pos + n > s.size())
@@ -53,6 +83,7 @@ inline bool keyBoundary(const std::string& s, size_t pos) {
 // Longer keys first so a short key ("token") does not win over a longer one.
 inline const char* const* secretKeyList() {
     static const char* kKeys[] = {
+        "x%2dplex%2dtoken",
         "x-plex-token",
         "myplexaccesstoken",
         "authenticationtoken",
@@ -136,6 +167,11 @@ inline std::string redactSensitive(std::string s) {
             const size_t klen = std::strlen(key);
             if (!ciAt(s, i, key) || !keyBoundary(s, i))
                 continue;
+#ifdef MUT_334_REDACT_CASE
+            // Mutant: key match is case-sensitive.
+            if (s.compare(i, klen, key) != 0)
+                continue;
+#endif
             size_t j = i + klen;
             // JSON: "accessToken": "secret" — the key's closing quote sits before ':'.
             if (j < s.size() && s[j] == '"')
@@ -188,8 +224,99 @@ inline std::string redactSensitive(std::string s) {
 
 // A URL or any log line. Same rules as redactSensitive, including percent-encoded
 // separators. Only the logged copy.
+// A resolved googlevideo URL is a signed bearer URL (sig, lsig, ip, expire ...): its whole query is
+// dropped from any logged copy. Byte-identical when the text has no googlevideo URL.
+inline std::string dropGooglevideoQuery(std::string s) {
+    static const char kHost[] = "googlevideo.com/";
+    size_t pos = 0;
+    while ((pos = s.find(kHost, pos)) != std::string::npos) {
+        size_t i = pos + sizeof(kHost) - 1;
+        while (i < s.size() && s[i] != '?' && !std::strchr(" \t\r\n\"'<>", s[i]))
+            ++i;
+        if (i < s.size() && s[i] == '?') {
+            size_t e = i + 1;
+            while (e < s.size() && !std::strchr(" \t\r\n\"'<>", s[e]))
+                ++e;
+            s.replace(i, e - i, "?<redacted>");
+            i += 11;
+        }
+        pos = i;
+    }
+    return s;
+}
+
 inline std::string redactUrlTokens(std::string s) {
-    return redactSensitive(std::move(s));
+    return dropGooglevideoQuery(redactSensitive(std::move(s)));
+}
+
+// #352: never log a raw Plex Part or Stream URL query (token, session, or
+// unknown keys). The request URL is untouched; only the logged copy is stripped.
+inline std::string stripPlexPartStreamQuery(std::string s) {
+#ifdef MUT_352_LOG_PART_RAW
+    return s;
+#else
+    const char* paths[] = {"/library/parts/", "/library/streams/"};
+    for (const char* path : paths) {
+        size_t pos = 0;
+        const size_t plen = std::strlen(path);
+        while ((pos = s.find(path, pos)) != std::string::npos) {
+            size_t i = pos + plen;
+            while (i < s.size() && s[i] != '?' && !std::strchr(" \t\r\n\"'<>", s[i]))
+                ++i;
+            if (i < s.size() && s[i] == '?') {
+                size_t e = i + 1;
+                while (e < s.size() && !std::strchr(" \t\r\n\"'<>", s[e]))
+                    ++e;
+                s.replace(i, e - i, "?REDACTED");
+                pos = i + 9;
+            } else {
+                pos = i;
+            }
+        }
+    }
+    return s;
+#endif
+}
+
+// #334 glass: the one helper every log line that prints a URL or argv goes through
+// (PLAY, [owenb-play] playing, airplay /play, timeline/browse bases). The request
+// keeps its real token; only the logged copy is redacted.
+inline std::string logUrl(const std::string& s) {
+#ifdef MUT_334_LOG_URL_RAW
+    return s;
+#else
+    return stripPlexPartStreamQuery(redactUrlTokens(s));
+#endif
+}
+
+// #334 review: the one case-insensitive test for an X-Plex-Token key in a URL,
+// argv or config string (X-PLEX-TOKEN, x-plex-token, percent-encoded x%2Dplex%2Dtoken).
+// findPlexTokenKey returns the key's offset (npos if none); keyLen is 12 or 16.
+inline size_t findPlexTokenKey(const std::string& s, size_t from = 0, size_t* keyLen = nullptr) {
+#ifdef MUT_334_TOKEN_KEY_CASE
+    if (keyLen)
+        *keyLen = 12;
+    return s.find("X-Plex-Token", from);
+#else
+    for (size_t i = from; i < s.size(); ++i) {
+        if (redact_detail::ciAt(s, i, "x-plex-token")) {
+            if (keyLen)
+                *keyLen = 12;
+            return i;
+        }
+        if (redact_detail::ciAt(s, i, "x%2dplex%2dtoken")) {
+            if (keyLen)
+                *keyLen = 16;
+            return i;
+        }
+    }
+    return std::string::npos;
+#endif
+}
+
+inline bool hasPlexTokenKey(const std::string& s) {
+    return findPlexTokenKey(s) != std::string::npos ||
+           findPlexTokenKey(redact_detail::pctDecodeStable(s)) != std::string::npos;
 }
 
 // True when `pending` ends in a known key plus a separator and the value has not

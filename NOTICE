@@ -1,0 +1,93 @@
+MiSTerPlex
+Copyright (C) 2026 Shawn Henderson and contributors.
+
+MiSTerPlex is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option)
+any later version (SPDX: GPL-3.0-or-later). The FPGA core and the daemons
+are GPL-3.0-or-later, matching owenb321/MiSTer_h264_decoder. The hps/ client
+library from owenb321 stays under its own MIT licence (see below and
+packaging/licenses/owenb-h264ring). The full GPL text is in the file LICENSE. There is
+no warranty; see LICENSE.
+
+SOURCE CODE
+Source code and releases: https://github.com/flynnsbit/misterplex-cast
+(releases: https://github.com/flynnsbit/misterplex-cast/releases). The source for the MiSTerPlex program, the boot
+scripts, the cast helpers and the packaging scripts is there and is also
+available under the written offer below.
+The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast.
+The on-card AirPlay helper is built from FFmpeg 8.1.2, x264, and OpenSSL 3.0.15.
+This repository ships that helper's licence text and checksums
+(packaging/licenses/gcast-ffmpeg/NOTICE), not the helper source tarballs.
+Written offer: for three years from the date of a release that contains these
+programs, the distributor will provide the corresponding source on a physical
+medium for no more than the cost of distribution.
+https://github.com/flynnsbit/misterplex-cast/issues
+
+FORKED AND VENDORED CODE
+For the changes to forked code, see this repository.
+- PlexOB core: a modified fork of the MiSTer_h264_decoder project by owenb321
+  (upstream's licence is GPL-3.0-or-later). The RTL file headers keep the upstream
+  notices unchanged. Upstream credit: owenb321,
+  https://github.com/owenb321/MiSTer_h264_decoder . The PlexOB core and the
+  MiSTerPlex daemons are GPL-3.0-or-later. Upstream's h264/ files carry no
+  per-file licence header; the grant is upstream's NOTICE (fpga/owenb-combo-s9/PlexOB_480p/vendor-upstream/NOTICE).
+- MIT exception: owenb's vendored hps/ directory (the HPS client library from
+  MiSTer_h264_decoder) stays MIT. In this repo that tree is
+  third_party/owenb-h264ring (its LICENSE is upstream hps/LICENSE). In the
+  export the same files sit at
+  fpga/owenb-combo-s9/PlexOB_480p/vendor-upstream/hps/ with hps/LICENSE beside
+  them. That MIT grant does not cover the FPGA core or the daemons.
+- This package ships one FPGA core, MiSTerPlex.rbf (built from the PlexOB
+  core; older builds named it PlexOB.rbf). It does not ship Plex.rbf.
+- Altera/Intel: the FPGA tree contains the MiSTer framework (Template_MiSTer,
+  MiSTer-devel) sys/ files and other files that carry Altera Corporation / Intel
+  Corporation copyright and licence notices. Those notices are kept unchanged in the
+  tarball (in the file headers and in upstream's NOTICE) and apply to those files.
+- Licence texts are in packaging/licenses/. Note: packaging/licenses/rbf/GPL-2 is the
+  GPL-2 text and packaging/licenses/rbf/LICENSE is the GPL-3 text (same as LICENSE).
+  See packaging/licenses/rbf/README.md. x264's GPL-2.0-or-later text is
+  packaging/licenses/x264/COPYING. Forked RTL grant: fpga/NOTICE.
+
+BUNDLED THIRD-PARTY COMPONENTS (each keeps its own licence; texts and versions
+are in packaging/licenses/)
+- UxPlay (FDH2): AirPlay receiver library. LGPL-2.1-or-later, parts GPL-3.0.
+- RPiPlay (FD-) crypto code and playfair (via UxPlay): GPL-3.0-or-later / GPL-3.0.
+- csrp (Tom Cocagne), llhttp: MIT.  mdnsd (via UxPlay): LGPL-2.1-or-later.
+- libplist (libimobiledevice): LGPL-2.1-or-later.
+- FFmpeg 8.1.2: libav linked into misterplexd is LGPL-2.1-or-later. The
+  on-card helper ffmpeg is configured --enable-gpl --enable-version3
+  --enable-libx264 --enable-openssl, so the helper binary is distributed under GPL version 3; ffprobe
+  has no libx264 or --enable-gpl and is LGPL-2.1-or-later with OpenSSL.
+- x264 (VideoLAN): in the helper ffmpeg only. GPL-2.0-or-later
+  (packaging/licenses/x264/COPYING).
+- OpenSSL 3.0.15: Apache-2.0 (static in the helper ffmpeg and ffprobe).
+- yt-dlp 2026.08.19 armv7l PyInstaller build: Unlicense. It packs a CPython
+  runtime (PSF License) and the PyInstaller bootloader (GPL-2.0 with the
+  bootloader exception). update_ytdlp.sh checks a network download against
+  upstream SHA2-256SUMS from the same GitHub origin (corruption only; not a
+  signature). Optional pins, default off: YTDLP_PIN_VERSION (release tag
+  instead of latest) and YTDLP_PIN_SHA256 (exact 64-hex of the zip). Set both.
+  A SHA pin alone still follows latest.
+- stb (Sean Barrett): public domain.  QOI (Dominic Szablewski): MIT.
+- Roboto (Google): Apache-2.0 (host/libmisterplex/plexui/third_party).
+- Spleen 8x16 2.2.0 (Frederic Cambus): BSD-2-Clause (THIRD_PARTY.md).
+- Mozilla CA bundle (curl.se extract): MPL-2.0.
+- curl and the GNU C Library / GCC runtime come with the MiSTer's own Linux:
+  curl licence (MIT-style); glibc LGPL-2.1-or-later; GCC GPL-3.0 with the
+  runtime exception.
+
+TRADEMARKS
+Plex is a trademark of Plex, Inc. AirPlay, iPhone, iPad and Mac are trademarks of
+Apple Inc. YouTube is a trademark of Google LLC. MiSTer is the name of the MiSTer
+FPGA project. MiSTerPlex is an independent project and is not affiliated with or
+endorsed by Plex, Apple, Google or the MiSTer FPGA project.
+
+PREBUILT CORE AND SOURCE REVISION
+The public source tree ships one prebuilt core, cores/MiSTerPlex.rbf (md5
+ecae698fa3220149fd767b9623137864, BUILD_ID 0x0B2403A7). The FPGA source beside
+it is pinned at commit 7f2b165, the commit that added that file. That pin is not
+a verified build of BUILD_ID 0x0B2403A7. The exact source revision of the
+shipped bitstream will be recorded here when the core is rebuilt.
+release_artifacts/GPL-SOURCE.md lists each RBF and the misterplexd binaries.
+The complete corresponding source is this repository (see SOURCE CODE above).

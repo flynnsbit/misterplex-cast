@@ -3,11 +3,15 @@
 #include "plexui_font.hpp"
 #include "plexui_images.hpp"
 #include "plexui_types.hpp"
+#include "libmisterplex/overscan_safe.hpp"
+#include "libmisterplex/ui_safe_layout.hpp"
+#include "libmisterplex/watched_badges.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -27,17 +31,79 @@ ScreenGeom& screenGeom();
 // s = h / 480; w and h are clamped to [160, 1920] x [120, 1080].
 void setScreenGeom(int w, int h);
 inline bool isR1Geom() { return screenGeom().w == 640 && screenGeom().h == 480; }
+inline bool is240pGeom() { return screenGeom().w == 320 && screenGeom().h == 240; }
 inline float uiScale() { return screenGeom().s; }
-inline int P(int v) { return static_cast<int>(std::lround(static_cast<float>(v) * screenGeom().s)); }
-inline float PF(float v) { return v * screenGeom().s; }
+// Raster scale (h/480) times UI_SIZE. Default normal keeps P(32)==32 on R1.
+inline float uiLayoutScale() { return screenGeom().s * uiSizeScale(uiSafePrefs().size); }
+inline int P(int v) { return static_cast<int>(std::lround(static_cast<float>(v) * uiLayoutScale())); }
+inline float PF(float v) { return v * uiLayoutScale(); }
 
 inline int kScreenW() { return screenGeom().w; }
 inline int kScreenH() { return screenGeom().h; }
-inline int kSafeMargin() { return P(32); }
-// a lab MiSTer HDMI path scales the 640 raster ~1.2x and crops ~40 px on the right (glass 10-18): extra
+// 240p CRT: P() and 5% both drop under 24 px and clip header/sidebar glyphs.
+// Floor the uiSafe* legacy argument; 480p/480i/R1 still use P(32).
+inline int kSafe240pFloor() { return 24; }
+// Floor at the configured percent; never smaller than the historic P(32)/R1-72
+// so UI_SIZE=normal + UI_SAFE_MARGIN=5 keeps test_plexui_geom goldens.
+// E9: OVERSCAN_LEFT replaces this when set. Unset is the line above.
+inline int kSafeMarginUncalibrated() {
+    return uiSafeLeftPx(kScreenW(), uiSafePrefs().marginPct,
+                        is240pGeom() ? kSafe240pFloor() : P(32));
+}
+inline int kSafeMargin() {
+    return overscanEdgeOr(overscanEdges().left, kScreenW(), kSafeMarginUncalibrated());
+}
+// Vertical frame. Unset matches kSafeMarginUncalibrated(), which is today's kSafeMargin().
+inline int kSafeTopInset() {
+    return overscanEdgeOr(overscanEdges().top, kScreenH(), kSafeMarginUncalibrated());
+}
+inline int kSafeBottomInset() {
+    return overscanEdgeOr(overscanEdges().bottom, kScreenH(), kSafeMarginUncalibrated());
+}
+//  lab HDMI path scales the 640 raster ~1.2x and crops ~40 px on the right (glass 10-18): extra
 // right inset. The OB overlay is drawn 1:1 on the raster: a plain scaled margin is enough there.
-inline int kSafeRight() { return isR1Geom() ? 72 : P(40); }
-inline int kSidebarW() { return P(200); }
+inline int kSafeRight() {
+    const int legacy = uiSafeRightPx(kScreenW(), uiSafePrefs().marginPct, isR1Geom() ? 72 : P(40));
+    return overscanEdgeOr(overscanEdges().right, kScreenW(), legacy);
+}
+inline int kFocusRingPad() { return P(5); }
+// Server-list status: P(440) at default 5%/normal (R1 golden). Large / a
+// taller percent lifts the line so it stays inside title-safe.
+inline int kStatusLineY() {
+    const int yPct = uiSafeTopPx(kScreenH(), uiSafePrefs().marginPct,
+                                 is240pGeom() ? kSafe240pFloor() : 0);
+    const int bottom = overscanEdgeOr(overscanEdges().bottom, kScreenH(), yPct);
+    const int floorY = kScreenH() - bottom - P(16);
+    return std::min(P(440), floorY);
+}
+// Left edge of the sidebar content (focus pill, icons, labels). The pill historically sat at P(8): 1.1% of a 720-wide
+// raster and 0.9% of 1280, outside the UI_SAFE_MARGIN frame (glass #53, 480p/480i). Content now starts at the
+// configured safe margin. Exactly R1 (640x480, normal, default 5%) is the
+// golden path of test_plexui_geom and stays at P(8).
+inline int kSidebarFocusX() {
+    const int legacy = P(8);
+#if defined(MUT_SIDEBAR_NO_SAFE_LEFT)
+    return legacy;
+#endif
+    if (overscanEdges().left >= 0)
+        return std::max(legacy, overscanInsetPx(kScreenW(), overscanEdges().left));
+    const UiSafePrefs pr = uiSafePrefs();
+    if (isR1Geom() && pr.size == UiSize::Normal && pr.marginPct == kUiSafeMarginDefaultPct)
+        return legacy;
+    return std::max(legacy, uiSafeLeftPx(kScreenW(), pr.marginPct,
+                                         is240pGeom() ? kSafe240pFloor() : 0));
+}
+// How far the pre-fix layout (pill at P(8), icon at P(12), label at P(40)) moves right.
+inline int kSidebarShiftX() { return kSidebarFocusX() - P(8); }
+// Moving labels into title-safe must not consume their width (F2196).
+// The dedicated 240p rail already has extra room beyond its scaled width.
+inline int kSidebarW() { return is240pGeom() ? 128 : P(200) + kSidebarShiftX(); }
+// Library-grid page title / item-count x. Full-bleed when the drawer is closed;
+// when the rail is open, sit to the right of kSidebarW so "MiSTerPlex" and the
+// library title do not share kSafeMargin() (glass-1026).
+inline int kGridTitleX(bool drawerOpen) {
+    return kSafeMargin() + (drawerOpen ? kSidebarW() : 0);
+}
 inline int kSidebarRowH() { return P(44); }
 inline int kSidebarIconSize() { return P(22); }
 inline int kTextRightInset() { return P(8); }
@@ -50,9 +116,52 @@ inline float kGridChipGap() { return PF(8.f); }
 inline int kHubPosterW() { return P(96); }
 inline int kHubPosterH() { return P(144); }
 inline int kHubGap() { return P(12); }
-inline int kHubTop() { return P(64); }
+inline int kHubTop() {
+    const int legacy = P(64);
+    if (overscanEdges().top < 0)
+        return legacy;
+    return std::max(legacy, overscanInsetPx(kScreenH(), overscanEdges().top));
+}
 inline int kHubRowAdvance() { return kHubPosterH() + P(52); }
 inline int kHubPosterOffY() { return P(26); }
+// #206 glass: Home had no vertical scroll. Rows past the screen (row 2+ on  lab) were never drawn,
+// so focus moved off screen. The first drawn hub row keeps the focused row fully on screen.
+inline int homeVisibleHubRows() {
+    int n = 0;
+    while (kHubTop() + n * kHubRowAdvance() + kHubPosterOffY() + kHubPosterH() <= kScreenH())
+        ++n;
+    return std::max(1, n);
+}
+inline int homeFirstHubRow(int focusRow, int hubCount) {
+#ifdef MUT_HOME_NO_VSCROLL
+    (void)focusRow; (void)hubCount;
+    return 0;
+#else
+    if (hubCount <= 0 || focusRow <= 0)
+        return 0;
+    const int row = std::min(focusRow, hubCount - 1);
+    return std::max(0, row - (homeVisibleHubRows() - 1));
+#endif
+}
+// Y of hub row 0 after the vertical scroll (rows above the first drawn row are negative).
+inline int homeRowY0(int focusRow, int hubCount) {
+    return kHubTop() - homeFirstHubRow(focusRow, hubCount) * kHubRowAdvance();
+}
+// Shared Home row origin: Y of hub row `row` after the vertical scroll. Every Home render,
+// patch, shift and dirty-rect site uses this so the scroll math lives in one place.
+inline int homeRowTopY(int focusRow, int hubCount, int row) {
+    return homeRowY0(focusRow, hubCount) + row * kHubRowAdvance();
+}
+// False for rows scrolled above the hub band: draw/patch/shift paths skip them so they never
+// overdraw the header band (drawHome and the dynamic-redraw paths alike).
+inline bool homeRowDrawable(int focusRow, int hubCount, int row) {
+#ifdef MUT_HOME_PATCH_NO_SKIP
+    (void)focusRow; (void)hubCount; (void)row;
+    return true;
+#else
+    return homeRowTopY(focusRow, hubCount, row) >= kHubTop();
+#endif
+}
 // Grid columns: 5 on the R1 raster; wider canvases fit more posters of the same scaled size.
 inline int kGridCols() {
     if (isR1Geom())
@@ -81,11 +190,30 @@ inline GridLayout computeGridLayout(bool categoryRow = false) {
     const int avail = kScreenW() - kSafeMargin() - kSafeRight();
     g.posterW = (avail - (g.cols - 1) * g.gap) / g.cols;
     g.posterH = g.posterW * 3 / 2;
-    const int countY = kSafeMargin() + P(30);
+    const int countY = kSafeTopInset() + P(30);
     const int chipY = countY + P(14);
     g.y0 = categoryRow ? chipY + kGridChipRowH() + P(6) : countY + P(14) + P(12);
-    g.rowStep = g.posterH + P(34);  // room for the focused title under a scaled poster
+    g.rowStep = g.posterH + P(28);  // one clipped caption line under every tile
     return g;
+}
+
+// True when a decoded poster is empty or a near-white miss (PMS placeholder JPEG).
+inline bool artLooksBlank(const DecodedImage& img) {
+    if (img.rgba.empty() || img.w <= 0 || img.h <= 0)
+        return true;
+    const std::size_t n = static_cast<std::size_t>(img.w) * static_cast<std::size_t>(img.h);
+    if (img.rgba.size() < n * 4u)
+        return true;
+    const std::size_t step = n > 64 ? n / 64 : 1;
+    int bright = 0, samples = 0;
+    for (std::size_t i = 0; i < n; i += step) {
+        const std::uint8_t* p = img.rgba.data() + i * 4;
+        const int y = (static_cast<int>(p[0]) * 3 + static_cast<int>(p[1]) * 6 + static_cast<int>(p[2])) / 10;
+        if (y >= 230)
+            ++bright;
+        ++samples;
+    }
+    return samples > 0 && bright * 10 >= samples * 8;
 }
 
 inline float measureCategoryChipWidth(const FontSet& fonts, const std::string& text) {
@@ -94,11 +222,27 @@ inline float measureCategoryChipWidth(const FontSet& fonts, const std::string& t
     return fonts.measureText(text, PF(12.f), false) + kGridChipPadX() * 2.f;
 }
 
+// Season posters need a second caption line (episode count) under the title.
+inline GridLayout seasonGridLayout() {
+    GridLayout g = computeGridLayout(false);
+    g.rowStep = g.posterH + P(46);
+    return g;
+}
+
+inline int episodeRowH() { return P(52); }
+inline int episodeListTop() { return kSafeTopInset() + P(36); }
+inline int episodeListBottom() { return kScreenH() - kSafeBottomInset() - P(64); }
+inline int episodeVisibleRows() {
+    const int span = episodeListBottom() - episodeListTop();
+    const int n = span / episodeRowH();
+    return n > 1 ? n : 1;
+}
+
 inline int gridVisibleRowCount(const GridLayout& g) {
     int rows = 0;
     for (;;) {
         const int py = g.y0 + rows * g.rowStep;
-        if (py + g.posterH > kScreenH() - kSafeMargin())
+        if (py + g.posterH > kScreenH() - kSafeBottomInset())
             break;
         ++rows;
     }
@@ -124,6 +268,7 @@ struct RenderState {
     UiFocus focus{};
     int focusAnim = 3;
     std::string status;
+    std::string queueLine;
     std::string backdropUrl;
     ImageCacheKey backdropKey{};
     bool backdropKeyValid = false;
@@ -134,8 +279,27 @@ struct RenderState {
     int gridActiveChip = 0;
     int gridChipScrollX = 0;
     int gridScrollRow = 0;
+    // AZ_JUMP applied filter. 0 keeps the section title line as it is.
+    char gridLetterFilter = 0;
+    // FILTER_4_3 toggle. False while the flag is off, so the title line is unchanged.
+    bool filter43On = false;
     bool detailBackdrop = false;
     uint64_t dataGeneration = 0;
+    std::vector<PlexItem> seasons;
+    std::vector<PlexItem> episodes;
+    // Matches the controller's list generation. Paint skips the season and episode copy when it matches.
+    uint64_t listSnap = 0;
+    int seasonScrollRow = 0;
+    int episodeScrollRow = 0;
+    std::string listTitle;
+    PlexItem upNext;
+    int upNextSeconds = 0;
+    std::string linkCode;
+    int linkSeconds = 0;
+    std::vector<SidebarLibraryEntry> homeRows;
+    std::string homePin;
+    int homePinSlot = 0;
+    std::string homePinTitle;
 };
 
 // The render target's pixel format: R1 idle FB (RGB24) or the OB overlay page (fbdev 8888:
@@ -150,6 +314,8 @@ public:
     void setImageCache(ImageCache* cache) { cache_ = cache; }
 
     void markStaticDirty() { staticValid_ = false; }
+    // #219: called from the ImageCache worker threads while copyFrame renders on the paint
+    // thread. Thread-safe: it only queues the key; render() applies it on the render thread.
     void markImageReady(const ImageCacheKey& key);
 
     struct RenderPerf {
@@ -179,10 +345,15 @@ private:
     void shiftStaticHomeColumns(const RenderState& st, int hubRow, int deltaPx);
     void drawPoster(int x, int y, int w, int h, const ImageCacheKey& imgKey, const std::string& url,
                     const std::string& title, bool focused, int animFrame,
-                    std::uint8_t* target = nullptr);
+                    std::uint8_t* target = nullptr, int viewCount = 0, int64_t viewOffsetMs = 0);
+    void drawHubItemDecor(int x, int y, int w, int h, const PlexItem& it, bool focused,
+                          int animFrame, std::uint8_t* target);
+    void drawHubItemPoster(int x, int y, int w, int h, const ImageCacheKey& imgKey,
+                           const std::string& url, const PlexItem& it, bool focused, int animFrame,
+                           std::uint8_t* target = nullptr);
     void drawPosterScaled(int x, int y, int w, int h, const DecodedImage& prescaled,
                           const std::string& title, bool haveImg, int animFrame,
-                          std::uint8_t* target = nullptr);
+                          std::uint8_t* target = nullptr, int viewCount = 0, int64_t viewOffsetMs = 0);
     void blitPosterRgba(int x, int y, int w, int h, const std::uint8_t* src, int srcW, int srcH,
                         std::uint8_t* target);
     void drawPlexLogo();
@@ -194,10 +365,20 @@ private:
     void drawHouseIcon(int x, int y, bool focused);
     void drawSidebar(const RenderState& st);
     void patchSidebar(const RenderState& st);
+    void patchChipRow(const RenderState& st);
     void paintUnfocusedHubPoster(const RenderState& st, int row, int col);
     void drawHome(const RenderState& st, bool omitFocusedPoster = false);
     void drawGrid(const RenderState& st, bool omitFocusedPoster = false);
     void drawDetail(const RenderState& st);
+    void drawSeasonList(const RenderState& st);
+    void drawEpisodeList(const RenderState& st);
+    void drawUpNext(const RenderState& st);
+    void drawLinkSignIn(const RenderState& st);
+    void drawHomeUsers(const RenderState& st);
+    void drawHomePin(const RenderState& st);
+    void drawSubtitlePicker(const RenderState& st);
+    void drawAudioPicker(const RenderState& st);
+    void drawBrowseHint(const std::string& queueLine);
     void buildStaticLayer(const RenderState& st);
     std::string staticLayerKey(const RenderState& st) const;
     void copyRgbaRect(const std::uint8_t* src, std::uint8_t* dst, int x0, int y0, int x1,
@@ -236,11 +417,18 @@ private:
     int lastSidebarScrollY_ = 0;
     bool lastGridOnChips_ = false;
     int lastGridChip_ = -1;
+    bool lastGridOnLetters_ = false;
+    int lastGridLetter_ = 0;
     ViewId lastView_ = ViewId::ServerList;
     int lastGridScrollRow_ = 0;
     int lastHubScrollX_ = 0;
     std::string lastBackdropUrl_;
     std::vector<ImageCacheKey> dirtyImageKeys_;
+    // #219: arrivals from the image workers, drained by render() (readyMu_ guards only this).
+    std::mutex readyMu_;
+    std::vector<ImageCacheKey> readyInbox_;
+    void applyImageReady(const ImageCacheKey& key);   // render thread only
+    void drainImageReady();                            // render thread only
     // View-layer cache: the static layer of the last views left (Home/grid/detail), so Back restores
     // instead of a 100-220 ms rebuild. pending = images that arrived while away (patched on restore).
     struct LayerSnap {
@@ -248,6 +436,8 @@ private:
         std::vector<std::uint8_t> stat, back;
         int gridScrollRow = 0, hubScrollX = 0, fRow = -1, fCol = -1, fSide = -1, gChip = -1;
         bool gOnChips = false;
+        bool gOnLetters = false;
+        int gLetter = 0;
         ViewId view = ViewId::ServerList;
         std::vector<ImageCacheKey> pending;
     };

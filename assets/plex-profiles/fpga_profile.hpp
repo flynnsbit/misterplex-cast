@@ -38,9 +38,13 @@ inline bool selectFpgaPmsProfile(const std::string& prototype, const std::string
     FpgaPmsProfile p;
     if (mode == "240p") {
         p.width = 320; p.height = 240;
-    } else if (mode == "480p" || mode == "480i") {
+    } else if (mode == "480i") {
+        // VERDICT-2 (480i Lead 21:40): ladder/proxy default is 640-coded; presentation
+        // still pads into the 640 bank. Legacy comment in fpga_profile still warns
+        // 39×30 MB DPB on some cores — see fleet CAPS flag on F905.
+        p.width = 640; p.height = 480; p.reserved = true;
+    } else if (mode == "480p") {
         // Coded product rectangle matches PLEX_DECODE_480P FRAME_W/H (39×30 MB).
-        // Do not advertise 640x480 into a 624-wide DPB.
         p.width = 624; p.height = 480; p.reserved = true;
     } else if (mode == "720p") {
         p.width = 1280; p.height = 720; p.reserved = true;

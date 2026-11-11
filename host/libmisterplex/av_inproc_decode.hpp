@@ -328,7 +328,7 @@ inline bool scaleI420NearestPlanes(const uint8_t* y, int yStride,
     return true;
 }
 
-// N2 (dev-480i 10/4; review F1-F4, review-rel-batch-1428-1004.md section 4): the
+// N2 (copilot-480i 10/4; FPGA Bug F1-F4, fpga-bug-reviewer-batch-1428-1004.md section 4): the
 // lab ladder proxy answers with Connection: close and no Content-Length, and FFmpeg's http
 // protocol ends such a response with AVERROR(EIO), "Stream ends prematurely ... should be
 // 18446744073709551615" (n8.0 http.c:1680-1691), not AVERROR_EOF. Every natural end of a
@@ -341,7 +341,7 @@ inline bool scaleI420NearestPlanes(const uint8_t* y, int yStride,
 //  F2  the input reached the declared end: its session position, the play's start offset plus
 //      the longest stream span read (last pts + duration - first pts, per stream), is within
 //      kInputCloseEndWindowMs of the PMS duration, or past it.
-// Limit (review N-g): the span is max(end) - min(first) per stream, so a forward pts jump
+// Limit (FPGA Bug N-g): the span is max(end) - min(first) per stream, so a forward pts jump
 // mid-stream would inflate it, and a server cut after such a jump could convert early. The
 // ladder's ffmpeg re-encode is continuous. If it shows up on glass, cap the span at the summed
 // packet durations or restart it at a discontinuity.
@@ -361,7 +361,7 @@ inline bool inputCloseIsEndOfStream(bool lengthUnknown, bool cancelled, bool rea
 // In-session read stall bound: one blocked input read longer than this ends the session with
 // AVERROR_EXIT ("Immediate exit requested"). LAN (lab PMS, ladder proxy) keeps the historic 5 s.
 // A remote/shared PMS universal transcode (location=wan) can pause several seconds right after its
-// first burst (a lab MiSTer 1011-cp-cutoff-playbar run-A: 155 KB / 3.6 s then >5 s silence, 4 of 4
+// first burst ( lab 1011-cp-cutoff-playbar run-A: 155 KB / 3.6 s then >5 s silence, 4 of 4
 // sessions; same signature on 198.51.100.153 F2/B1/J2 with mediaBufferSize set), so a WAN
 // read waits up to the open's rw_timeout (20 s). MPX_REMOTE_READ_STALL_MS (2000..60000) overrides
 // the WAN bound.

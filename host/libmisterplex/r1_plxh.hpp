@@ -1,5 +1,5 @@
 #pragma once
-// R1 PLXH host side, the whole of it (review 19:01 A, 19:16 (1)(c), 19:27 F5; kit K2):
+// R1 PLXH host side, the whole of it (FPGA Bug 19:01 A, 19:16 (1)(c), 19:27 F5; kit K2):
 //
 // 1. Write order (19:01 A). ddr_frame_store.sv:230-234 at r1-idlefb-mvpb 3a579e17 arms on the
 //    magic word (DOUT[31:0] == 'PLXH') and takes token[63:48], buf_sel[33] and en[32] from the
@@ -7,7 +7,7 @@
 //    store at PLXH+4, then a barrier (dmb), then the constant magic at PLXH+0 LAST. Tokens are
 //    16-bit and never 0; 0xFFFF wraps to 1. K2: PLXO is zeroed by one 64-bit store before the
 //    first arm. PlxhLink owns the one token sequence; every PLXH writer goes through it.
-//    Seed and prime (wW 20:05; review 20:23 RULING C). The RTL accepts only a token != the last
+//    Seed and prime (wW 20:05; Bug 20:23 RULING C). The RTL accepts only a token != the last
 //    accepted one, and its first good-magic poll after a reset only snaps (accepts nothing), so a
 //    cold slot would swallow the first request. A fresh link's tokens follow the PLXH slot's
 //    (else PLXO's) and avoid both. The first request after start and after every core reload
@@ -18,7 +18,7 @@
 //    the first AU: PLXO token_latched == token with idle_shown 0. A mid-session
 //    generation_clear then never selects the idle FB, so the FB geometry and ARX stay put.
 //    requestIdle is the only en=1 path, and it is refused inside a session.
-//    No-FB_VBL fallback (review 20:08 (a)-(c), N1). The RTL accepts PLXH off its free-running poll,
+//    No-FB_VBL fallback (Bug 20:08 (a)-(c), N1). The RTL accepts PLXH off its free-running poll,
 //    but registers it and writes PLXO only around an FB_VBL. So if PLXO stays bit-identical (to
 //    its value right after the en=0 request) over the whole wait and at a re-read 50 ms later,
 //    there was no FB_VBL: the session proceeds. The en=0 request stays armed in the slot (last
@@ -51,7 +51,7 @@ namespace misterplex {
 namespace r1 {
 
 // The PLX page as the daemon maps it (0x300FF000 on the 480p layout). Tests fake it.
-// store64 is ONLY for the K2 PLXO zero (review 20:00 N2). An STRD may land as two beats in
+// store64 is ONLY for the K2 PLXO zero (FPGA Bug 20:00 N2). An STRD may land as two beats in
 // either order, so a PLXH request must never go through it: the magic could arrive first. Every
 // PLXH store is a store32 (upper word, then barrier, then magic); the concrete FpgaSpi port
 // refuses a 64-bit store anywhere but PLXO.
@@ -70,13 +70,13 @@ public:
 
 class PlxhLink {
 public:
-    // log: the daemon's log, for the one line per prime (review 20:23 P5).
+    // log: the daemon's log, for the one line per prime (Bug 20:23 P5).
     explicit PlxhLink(PlxPort& port, uint16_t lastToken = 0,
                       std::function<void(const std::string&)> log = {})
         : port_(port), token_(lastToken), log_(std::move(log)) {}
 
     // One PLXH request; returns its token, or 0 when the port refused a store. The first request
-    // after start and after every core reload is primed (review 20:23 RULING C): it goes out twice,
+    // after start and after every core reload is primed (Bug 20:23 RULING C): it goes out twice,
     // as T and then T+1, and the token returned (the only one whose ACK counts) is T+1.
     uint16_t write(int bufSel, bool en) {
         std::string line;
@@ -311,14 +311,14 @@ public:
     inline void enterSession(uint64_t gen = 0);
 
     // After the BEGIN ack on an R1 core, before the first AU: PLXH en=0, ACKed by PLXO within
-    // `ticks` waits, or (review 20:08) PLXO bit-identical over them and at a re-read after
+    // `ticks` waits, or (Bug 20:08) PLXO bit-identical over them and at a re-read after
     // `recheckTicks` more: no FB_VBL, so proceed with en0Pending(). On true, *why is empty after
     // a prompt ACK, or says how the wait ended (ACK at the re-read, or the no-FB_VBL proof); on
     // false it says what PLXO showed.
     inline bool beginSession(int ticks, std::string* why, int recheckTicks = 50);
 
     // Ends the session (en=1 allowed again). When the session proceeded without the en=0 ACK,
-    // logs and returns the END line (review 20:08 (c)): ACKed late, or never ACKed. Else empty.
+    // logs and returns the END line (Bug 20:08 (c)): ACKed late, or never ACKed. Else empty.
     inline std::string endSession();
 
     // Where endSession's END line goes (the daemon's log).
@@ -332,12 +332,12 @@ public:
     // The session proceeded on the no-FB_VBL proof; its en=0 is armed but not yet ACKed.
     bool en0Pending() const { return en0Pending_.load(); }
 
-    // review 06:57 D3: the en=1 gate closes at the PLAY request, not at BEGIN (the session
-    // enters only after the resolve). review 07:30 C1: the hold belongs to one request, keyed by
+    // FPGA Bug 06:57 D3: the en=1 gate closes at the PLAY request, not at BEGIN (the session
+    // enters only after the resolve). FPGA Bug 07:30 C1: the hold belongs to one request, keyed by
     // its play generation, so a stale request's end can never release a newer request's hold. It
     // ends when that request's session enters (enterSession(gen), atomically with inSession), when
     // that request ends without a session (playRequestEnded(gen)), or when a later STOP ends it
-    // (playRequestsEndedBefore). review 08:17 (2): while that request's doPlay runs it OWNS the
+    // (playRequestsEndedBefore). FPGA Bug 08:17 (2): while that request's doPlay runs it OWNS the
     // hold (PlayRequestHold) and the hold does not expire; doPlay's exit (return or throw) releases
     // or disowns it. A hold nobody owns (begun, dispatch pending; or left by a doPlay that a seek's
     // replay replaced) expires kPlayRequestHoldMs after it lost its owner. kPlayRequestOwnedMaxMs only
@@ -404,12 +404,12 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
 #ifndef MUT_PLXH_EN1_IN_SESSION
         if (inSession_.load())
-            return fail(why, "PLXH en=1 refused inside a session (review 19:16 (1)(c))");
+            return fail(why, "PLXH en=1 refused inside a session (Bug 19:16 (1)(c))");
 #endif
         std::lock_guard<std::mutex> hold(holdMu_);
         if (pendingLocked())
             return fail(why, "PLXH en=1 refused: a PLAY request is pending, its session not yet entered "
-                             "(review 06:57 D3)");
+                             "(FPGA Bug 06:57 D3)");
         const uint16_t t = link_.write(bufSel, true);
         if (!t)
             return fail(why, "PLXH store refused");
@@ -478,7 +478,7 @@ private:
     PlxhF5Pacer* pacer_ = nullptr;
 };
 
-// doPlay's PLAY-request guard (review 06:57 D3, 07:30 C1, 08:17 (2)). From doPlay's start it owns
+// doPlay's PLAY-request guard (FPGA Bug 06:57 D3, 07:30 C1, 08:17 (2)). From doPlay's start it owns
 // its generation's hold (the hold does not expire while it runs). On every exit, return or throw:
 // a play that started no session and was not replaced by a seek's replay (`releasable`: still the
 // current request, or stopped) releases its own generation's hold; otherwise the hold is only
@@ -676,7 +676,7 @@ inline bool PlxhSessionPolicy::beginSession(int ticks, std::string* why, int rec
         std::snprintf(s, sizeof s, "0x%016llx", static_cast<unsigned long long>(w));
         return std::string(s);
     };
-    // review 20:08 (a): the reference is PLXO right after the en=0 request (after any K2 zero). Only
+    // Bug 20:08 (a): the reference is PLXO right after the en=0 request (after any K2 zero). Only
     // an FB_VBL can change it.
     uint64_t ref = 0;
     bool readable = link_.plxoRaw(&ref);
@@ -742,7 +742,7 @@ inline std::string PlxhSessionPolicy::endSession() {
     std::function<void(const std::string&)> log;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        if (en0Pending_.exchange(false)) {   // review 20:08 (c)
+        if (en0Pending_.exchange(false)) {   // Bug 20:08 (c)
             const uint16_t token = sessionToken_.load();
             const Plxo o = link_.plxo();
             if (o.valid && o.tokenLatched == token && !o.idleShown)

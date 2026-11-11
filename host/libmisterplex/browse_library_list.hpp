@@ -13,8 +13,10 @@
 // SkipBack; wide cores also emit Up/Down/Back. A on an item is the companion
 // playMedia key. B hides the list so the idle chevron paints again.
 
+#include "browse_nav.hpp"
 #include "input_mailbox.hpp"
 #include "library_browser.hpp"
+#include "plex_link_label.hpp"
 #include "../../arm/misterplexd/font_8x16.hpp"
 
 #include <algorithm>
@@ -202,16 +204,47 @@ inline LibraryList buildLibraryList(const std::string& sectionsXml,
     return list;
 }
 
-inline HomeLibraryFetch fetchHomeLibrary(const PathGetFn& get) {
+// Ready-screen code only. A live PIN marker (!LINKWAIT / !LINKERR) is not a code,
+// and this does not start a new plex.tv PIN request.
+inline std::string browseUnlinkedStatus(const std::string& linkCode) {
+    if (linkCode.empty() || isPlexTvLinkMarker(linkCode))
+        return "Link this device at plex.tv/link";
+    return std::string("Link this device at plex.tv/link ") + linkCode;
+}
+
+inline bool libraryResponseUnauthorized(const std::string& body) {
+    if (body.find("401") == std::string::npos)
+        return false;
+    return body.find("Unauthorized") != std::string::npos || body.find("unauthorized") != std::string::npos;
+}
+
+inline HomeLibraryFetch fetchHomeLibrary(const PathGetFn& get, bool linked = true,
+                                         const std::string& linkCode = {}) {
     HomeLibraryFetch out;
     if (!get) {
         out.list.status = "NO PLEX SERVER";
+        return out;
+    }
+    if (!linked) {
+        out.list.status = browseUnlinkedStatus(linkCode);
         return out;
     }
     out.paths.push_back("/library/sections");
     const std::string sections = get("/library/sections");
     if (sections.empty()) {
         out.list.status = "FETCH FAILED";
+        return out;
+    }
+    if (libraryResponseUnauthorized(sections)) {
+        out.list.status = browseUnlinkedStatus(linkCode);
+        out.sectionsOk = false;
+        out.paths.resize(1);
+        return out;
+    }
+    if (sections.find("<MediaContainer") == std::string::npos &&
+        sections.find("<Directory") == std::string::npos) {
+        out.list.status = "FETCH FAILED";
+        out.sectionsOk = false;
         return out;
     }
     out.sectionsOk = true;
@@ -481,8 +514,15 @@ inline void blitLibraryListIdle(const LibraryList& list, std::uint8_t* fb, int f
         }
 
         std::string foot = list.status;
-        if (foot.empty() && !list.rows.empty())
-            foot = std::to_string(cursor + 1) + "/" + std::to_string(list.rows.size());
+        if (foot.empty()) {
+            foot = browseHintLine();
+            if (!list.rows.empty()) {
+                const std::string pos =
+                    std::to_string(cursor + 1) + "/" + std::to_string(list.rows.size());
+                if (foot.size() + 2 + pos.size() <= static_cast<std::size_t>(kTitleColumns))
+                    foot += foot.empty() ? pos : "  " + pos;
+            }
+        }
         drawText(line, y, 16, kLibraryListFooterY, contentW, listClip(listSanitize(foot), kTitleColumns), kDim);
     }
 }

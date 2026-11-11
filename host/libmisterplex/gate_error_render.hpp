@@ -7,7 +7,7 @@
 // e * 9 / 10): the text keeps the margin on every side AND ends inside the visible 90% of the active rect. The glass
 // capture of the 800x600 HDMI output is 720x576, i.e. only the first 90% of a full-width target's columns (and 96% of
 // its rows): the old (activeW - 2*margin)/8 wrap gave 76-col lines at 640 wide, which ran to x = 624 and lost
-// everything past x = 576 (R7 'No ladd|er', release 11:36; Track D 17:17). At 640 it now wraps at 70 cols (x < 576).
+// everything past x = 576 (R7 'No ladd|er', reviewer 11:36; Track D 17:17). At 640 it now wraps at 70 cols (x < 576).
 // The text origin (activeX + margin, margin) is unchanged. When text remains, the last line ends "..." (the 8x16
 // font is printable ASCII only, so no U+2026; other bytes render as '?'). Like the chevron renderers (idle_screen.hpp),
 // each renderer fills the WHOLE target buffer with the background, and the glyphs land only inside the active rect

@@ -22,6 +22,18 @@
 
 namespace misterplex::mem_stat {
 
+// GH#27: 30-minute soak RSS growth ceiling after warm-up (40 MB). Host unit
+// tests may use a tighter gate. A mutant that always returns true fails the pin.
+inline constexpr unsigned long long kSoakRssGrowthKb = 40ull * 1024ull;
+inline bool soakRssGrowthOk(unsigned long long grewKb) {
+#ifdef MUT_SOAK_RSS_UNLIMITED
+    (void)grewKb;
+    return true;
+#else
+    return grewKb <= kSoakRssGrowthKb;
+#endif
+}
+
 // 0 = disabled. Accepts 1..3600 seconds; anything else (empty, junk, 0, negative, huge) disables.
 inline int parsePeriodSec(const char* v) {
     if (!v || !*v)

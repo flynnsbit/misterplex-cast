@@ -1,6 +1,6 @@
 #pragma once
-// F1 (PLEX_IDLE_FB_240P) daemon beat: F1-PREREG-1006 v2.2 (ba1ae917; review 01:39 CLEAR-WITH-BARS
-// for code, H264 53b1779c x1-x4, Bug k1-k3; review 01:30 p2/p3).
+// F1 (PLEX_IDLE_FB_240P) daemon beat: F1-PREREG-1006 v2.2 (ba1ae917; FPGA Bug 01:39 CLEAR-WITH-BARS
+// for code, H264 53b1779c x1-x4, Bug k1-k3; Bug 01:30 p2/p3).
 //
 // The 240p F1 core turns its MISTER_FB (the R1 idle buffers, flipped by PLXH) on only while it sees
 // the daemon alive: the PLXL word <PLX page> + 0x148 = {hb32 [63:32], 'PLXL' 0x504C584C [31:0]} must
@@ -81,7 +81,7 @@ inline bool f1GateOpenNow(uint64_t* snap, uint32_t* plxlPhys) {
 
 // paintIdle (media_player.cpp): a row whose core is publish-only with the F1 idle FB never presents
 // a host-painted bank, so the present-bank paint (blitDisplayedBank, sendYuv420pFrameDdr, the PLXK
-// kick) is dead work there and never runs (review 01:05: the blit excluded on F1 builds).
+// kick) is dead work there and never runs (FPGA Bug 01:05: the blit excluded on F1 builds).
 inline bool idlePaintsPresentBank(const FpgaBuildInfo* gateRow) {
 #ifdef MUT_F1_IDLE_LEGACY   // test-only mutant: F1 rows keep the present-bank idle paint
     (void)gateRow;

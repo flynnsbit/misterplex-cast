@@ -1,5 +1,6 @@
 #pragma once
 
+#include "build_id_mutants.hpp"
 #include "ddr_frame_layout.hpp"
 #include "fpga_build_ids.hpp"
 
@@ -84,7 +85,7 @@ inline uint32_t selectedCoreIdForContentLabel(const char* label) {
 // Goal F menu reload: prod Plex.rbf may be loaded while the play ladder is 240p/480i.
 // rc2.1: mediaProgressive = PMS says the stream is progressive (scanType=progressive or a
 // videoFrameRate like 24p/30p). The NTSC 480-line heuristic below (00008470: unknown-scan
-// remote PMS SD -> Plex_480i) must not send known-progressive 480-line media (e.g. 624x480p24) to the
+// reviewer SD -> Plex_480i) must not send known-progressive 480-line media (e.g. 624x480p24) to the
 // 480i Utility: that core cannot present the 640-wide 480p decode and the play CLOSED-STOPs.
 inline uint32_t menuReloadTargetForPlay(const char* contentLabel, int mediaW, int mediaH,
                                         bool mediaInterlaced, const std::string& weakProfile,
@@ -110,7 +111,7 @@ inline uint32_t menuReloadTargetForPlay(const char* contentLabel, int mediaW, in
     return target;
 }
 
-// PMS universal decision output (e.g. remote PMS 624x468 on a 480-tier ladder).
+// PMS universal decision output (e.g. reviewer 624x468 on a 480-tier ladder).
 inline uint32_t selectedCoreIdForDecisionOutput(int width, int height) {
     if (width <= 0 || height <= 0)
         return 0;
@@ -118,7 +119,7 @@ inline uint32_t selectedCoreIdForDecisionOutput(int width, int height) {
         return kSelectedCoreId240p;
     if (width == kPlex480iCodedWidth && height == kPlex480iCodedHeight)
         return kSelectedCoreId480i;
-    // remote PMS universal 624-wide ladder: 468 → 240p (29729); ~454 field → 480i (37985).
+    // reviewer universal 624-wide ladder: 468 → 240p (29729); ~454 field → 480i (37985).
     if (width == kPlex480pCodedWidth && height == 468)
         return kSelectedCoreId240p;
     if (width == kPlex480pCodedWidth && height >= 450 && height < kPlex480pCodedHeight)
@@ -128,7 +129,7 @@ inline uint32_t selectedCoreIdForDecisionOutput(int width, int height) {
 
 // Decision geometry may replace the play target only for a known ladder remap.
 // A 240p-sized decision (320x232, or 624x264) must not cancel a 480i or 480p
-// Utility load. remote PMS 624x468 still remaps a 480p default to the 240p core.
+// Utility load. reviewer 624x468 still remaps a 480p default to the 240p core.
 inline uint32_t menuTargetAfterDecision(uint32_t menuTarget, int decisionW, int decisionH) {
     const uint32_t decisionTarget = selectedCoreIdForDecisionOutput(decisionW, decisionH);
     if (!decisionTarget)
@@ -184,6 +185,10 @@ inline uint32_t pairedBuildForEntropy(int width, int height, bool interlaced, bo
 // Named Utility file for a closed pair. High has no resolver name, so it
 // returns null and the caller must not load_core. Never the generic Plex.rbf.
 inline const char* utilityRbfForBuild(uint32_t id) {
+    if (buildIdMutRejects(id))
+        return nullptr;
+    if (buildIdMutAccepts(id))
+        return "/media/fat/_Utility/MiSTerPlex.rbf";
     switch (id) {
     case kSelectedCoreId240p:
         return "/media/fat/_Utility/Plex_240p15.rbf";
@@ -193,14 +198,26 @@ inline const char* utilityRbfForBuild(uint32_t id) {
     case 0x48C51FF1u: // matrix 480p 6365a3d6
     case 0x48CFEE31u: // v12 052990c6
         return "/media/fat/_Utility/Plex_480p.rbf";
+    case 0x0B59C11Au:
+    case 0x0BFCE8C5u: // idle_vis=0 build; the rollback id above stays
+    // 240p is the O[24] option inside the same core, so it has NO RBF filename of its own: it is deployed
+    // as MiSTerPlex.rbf. Fit artifact plexob-yc-0b2403a7.
+    case 0x0B2403A7u:
+    case 0x0B1101C5u: // shipped id, seed 10, md5 96eb13d2; same installed file name as 0x0B2403A7
+        return "/media/fat/_Utility/MiSTerPlex.rbf";
     default:
         return nullptr;
     }
 }
 
 // One swap when the paired id is a named file and is not the core already loaded.
+// OwenB (0x0B59C11A, 0x0BFCE8C5, 0x0B2403A7) is the product: stay on PlexOB. Never dump Plex_480p /
+// Plex_240p after F12 menu. Fire5 log: load_core Plex_480p.rbf while loaded
+// 0x0B59C11A.
 inline bool menuReloadWanted(uint32_t loaded, uint32_t paired) {
     if (loaded == 0 || paired == 0 || loaded == paired)
+        return false;
+    if (recognisedPlexObBuildRow(loaded))
         return false;
     return utilityRbfForBuild(paired) != nullptr;
 }
@@ -352,13 +369,13 @@ inline bool owenbNeedsLoadCore(OwenbCore loaded, OwenbCore target) {
 inline const char* owenbUtilityRbf(OwenbCore core) {
     if (core == OwenbCore::PlexOB240p)
         return "/media/fat/_Utility/PlexOB_240p.rbf";
-    return "/media/fat/_Utility/PlexOB.rbf";
+    return "/media/fat/_Utility/MiSTerPlex.rbf";
 }
 
 inline const char* owenbLoadCoreLine(OwenbCore core) {
     if (core == OwenbCore::PlexOB240p)
         return "load_core /media/fat/_Utility/PlexOB_240p.rbf";
-    return "load_core /media/fat/_Utility/PlexOB.rbf";
+    return "load_core /media/fat/_Utility/MiSTerPlex.rbf";
 }
 
 // A PlexOB RBF the Y/C reload may target: the file that is actually loaded, when
@@ -382,7 +399,7 @@ inline bool plexObReloadPathOk(const std::string& path) {
     if (base.size() < 10 || base.compare(base.size() - 4, 4, ".rbf") != 0)
         return false;
     const std::string name = base.substr(0, base.size() - 4);
-    return name == "PlexOB" || name == "PlexOB_240p" || name == "PlexOB_480p";
+    return name == "PlexOB" || name == "PlexOB_240p" || name == "PlexOB_480p" || name == "MiSTerPlex";
 }
 
 inline bool plexObReloadFileExists(const std::string& path) {
@@ -391,9 +408,10 @@ inline bool plexObReloadFileExists(const std::string& path) {
 }
 
 // Resolve the RBF that is actually loaded. /tmp/RBFNAME is the CONF_STR core
-// name ("PlexOB"), not a path. Prod is /media/fat/PlexOB.rbf, preferred over
-// the _Utility copy. A full allow-listed path is used only when that file
-// exists. An empty result means the bounce must be refused.
+// name ("PlexOB"), not a path. Prod is /media/fat/MiSTerPlex.rbf, then the
+// _Utility copy. Old PlexOB.rbf paths are fallbacks until the upgrade removes
+// them. A full allow-listed path is used only when that file exists. An empty
+// result means the bounce must be refused.
 template <typename Exists>
 inline std::string plexObReloadResolvePath(const std::string& loadedNameOrPath, Exists exists) {
     if (plexObReloadPathOk(loadedNameOrPath))
@@ -406,9 +424,14 @@ inline std::string plexObReloadResolvePath(const std::string& loadedNameOrPath, 
         base.resize(base.size() - 4);
     const char* first = nullptr;
     const char* second = nullptr;
-    if (base == "PlexOB" || base.empty()) {
-        first = "/media/fat/PlexOB.rbf";
-        second = "/media/fat/_Utility/PlexOB.rbf";
+    if (base == "PlexOB" || base == "MiSTerPlex" || base.empty()) {
+        const char* order[] = {"/media/fat/MiSTerPlex.rbf", "/media/fat/_Utility/MiSTerPlex.rbf",
+                               "/media/fat/PlexOB.rbf", "/media/fat/_Utility/PlexOB.rbf"};
+        for (const char* p : order) {
+            if (p && exists(p))
+                return p;
+        }
+        return {};
     } else if (base == "PlexOB_240p") {
         first = "/media/fat/PlexOB_240p.rbf";
         second = "/media/fat/_Utility/PlexOB_240p.rbf";
@@ -525,10 +548,14 @@ inline bool plexObReloadWriteCore(bool shuttingDown, bool menuLoaded) {
 inline bool loadCoreLineAllowed(const char* line) {
     if (!line)
         return false;
+    if (std::strcmp(line, "load_core /media/fat/_Utility/Plex_240p.rbf") == 0 ||
+        std::strcmp(line, "load_core /media/fat/Plex_240p.rbf") == 0)
+        return false;
     if (std::strcmp(line, "load_core /media/fat/menu.rbf") == 0 ||
         std::strcmp(line, "load_core /media/fat/_Utility/Plex_240p15.rbf") == 0 ||
         std::strcmp(line, "load_core /media/fat/_Utility/Plex_480i.rbf") == 0 ||
         std::strcmp(line, "load_core /media/fat/_Utility/Plex_480p.rbf") == 0 ||
+        std::strcmp(line, "load_core /media/fat/_Utility/MiSTerPlex.rbf") == 0 ||
         std::strcmp(line, "load_core /media/fat/_Utility/PlexOB.rbf") == 0 ||
         std::strcmp(line, "load_core /media/fat/_Utility/PlexOB_240p.rbf") == 0)
         return true;

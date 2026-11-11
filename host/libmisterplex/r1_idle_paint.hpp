@@ -3,7 +3,7 @@
 // the two 640x480 RGB24 idle buffers (IdleFbMap, 0x31600000 / 0x31700000) and flips them through
 // the PLXH host side (r1_plxh.hpp, w9: one token sequence, session en=0 policy, F5 pacer).
 //
-// Entry clear (review 20:18 ruling: STATE trigger, no IdleMode trigger; wX premise check).
+// Entry clear (FPGA Bug 20:18 ruling: STATE trigger, no IdleMode trigger; wX premise check).
 // PLXH en=1 does not override a live decoded picture: plex_fb480.sv:333
 // idle_sel <= h_en_sys && (!fb_live || generation_clear), registered at each FB_VBL rise. A normal
 // stop or EOF already drops fb_live, because the reader pulses out_flush on FLUSH and END
@@ -88,7 +88,7 @@ public:
         return t;
     }
 
-    // D3 (review 06:57): no flip from the PLAY request on, not only from BEGIN.
+    // D3 (FPGA Bug 06:57): no flip from the PLAY request on, not only from BEGIN.
     bool flipAllowed() override {
         return !policy_.inSession() && !policy_.playRequestPending() && pacer_.ready();
     }
@@ -151,7 +151,7 @@ public:
     int entryClearsWithoutEffect() const { return noEffect_; }
 
 private:
-    // review 20:12 N1: a clear that was ACKed but left idle_shown 0 through the settle window
+    // FPGA Bug 20:12 N1: a clear that was ACKed but left idle_shown 0 through the settle window
     // is logged once, and the entry stops there (no further clear until the next entry).
     void noteClearNoEffect(uint16_t tok) {
         ++noEffect_;
@@ -230,7 +230,7 @@ private:
     int noEffect_ = 0;
 };
 
-// review 06:57 D2: a session's en=0 takes the idle FB off screen behind the planner's back, so the
+// FPGA Bug 06:57 D2: a session's en=0 takes the idle FB off screen behind the planner's back, so the
 // first idle paint after every session END repaints in full and flips, even an unchanged frame (the
 // planner would call it NoChange), and owes one log line: re-shown, or why not.
 class R1SessionEndRearm {
@@ -251,7 +251,7 @@ private:
     uint64_t seen_ = 0;
 };
 
-// review 06:57 D1: an idle flip that is still owed (refused, not ACKed in the 400 ms bound, or due
+// FPGA Bug 06:57 D1: an idle flip that is still owed (refused, not ACKed in the 400 ms bound, or due
 // after a session END) is retried by the idle thread within kFlipRetryMs, never left to the 30 s
 // static-screen safety net.
 constexpr int kIdleStaticRepaintMs = 30000;

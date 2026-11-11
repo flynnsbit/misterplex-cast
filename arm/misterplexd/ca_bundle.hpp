@@ -10,7 +10,7 @@
 //   /etc/ssl/certs/cacert.pem
 //   /etc/ssl/cert.pem
 // An empty or truncated file does not win; the next candidate is tried.
-// The last two are all that stock MiSTer (a lab MiSTer) has today: a 2021 bundle
+// The last two are all that stock MiSTer ( lab) has today: a 2021 bundle
 // and a symlink to it. stat() follows that symlink. A stock image has no
 // ca-certificates.crt, so the release package also installs misterplex-cacert.pem.
 //

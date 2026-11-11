@@ -1,14 +1,6 @@
 # Third-party notices
 
-This file covers the files vendored in this source tree that are not listed elsewhere. The licence texts for everything that ships in the release package (UxPlay, RPiPlay, playfair, csrp, llhttp, mdnsd, libplist, FFmpeg, x264, OpenSSL, yt-dlp, stb, QOI, the Mozilla CA bundle, glibc and GCC, and the FPGA cores) are in [packaging/licenses/](packaging/licenses/).
-
-## Roboto
-
-The Plex menus use the Roboto font (`host/libmisterplex/plexui/third_party/Roboto-Regular.ttf` and `Roboto-Bold.ttf`), Copyright Google LLC, under the Apache License 2.0. The licence text is `host/libmisterplex/plexui/third_party/LICENSE-Roboto.txt`.
-
-## Big Buck Bunny test frame
-
-`tests/fixtures/glass_baseline/b6_play_sample_mjpeg720.jpg` is a frame from *Big Buck Bunny*, (c) copyright 2008, Blender Foundation, www.bigbuckbunny.org, used under the Creative Commons Attribution 3.0 license (https://creativecommons.org/licenses/by/3.0/).
+Root [LICENSE](LICENSE) is GPL-3.0-or-later. Root [NOTICE](NOTICE) is the source offer and bundled-work list. Full texts for vendored pieces also live under `packaging/licenses/` (stb, qoi, spleen, mozilla-ca, ffmpeg, x264, openssl, uxplay, ytdlp). x264 GPL-2.0-or-later: `packaging/licenses/x264/COPYING`. Forked RTL: `fpga/NOTICE`. Big Buck Bunny sample clips, when shipped, are CC-BY. Python/PyInstaller notices for the yt-dlp ARM zip are in NOTICE.
 
 ## Spleen 8x16
 

@@ -231,7 +231,7 @@ size_t h264ring_split_annexb(const uint8_t *buf, size_t n, struct h264ring_au *o
 enum h264ring_opt {                    /* the options, in the mirror's order */
     H264RING_OPT_ASPECT,               /* 0 Auto, 1 4:3, 2 16:9 */
     H264RING_OPT_DEINTERLACE,          /* 0 Weave, 1 Bob, 2 Blend */
-    H264RING_OPT_VIDEO_OUTPUT,         /* 0 Auto, 1 Interlaced, 2 Progressive, 3 Native (HDMI) (0.10) */
+    H264RING_OPT_VIDEO_OUTPUT,         /* 0 Auto, 1 15kHz CRT, 2 31kHz VGA, 3 HDMI Native (0.10) */
     H264RING_OPT_HDMI_DEINTERLACE,     /* 0 Weave, 1 Bob */
     H264RING_OPT_ANALOG_ASPECT,        /* 0 Auto, 1 Fit, 2 Letterbox, 3 Crop */
     H264RING_OPT_REFRESH_RATE,         /* 0 Auto, 1 59.94 Hz, 2 60 Hz, 3 50 Hz */
@@ -359,7 +359,7 @@ void h264ring_raster(const struct h264ring_status *st, struct h264ring_raster *r
  * manual's integrating/status.md): the largest picture in macroblocks (a larger one is refused,
  * counted in RC_REF_SIZE), the macroblock rate the core is designed for (above it the decoding
  * falls behind; real time below it also depends on the bitrate), and the tallest 16:9 picture
- * Video Output's Native (HDMI) shows at its own size (a taller one is fitted to the 720-wide
+ * Video Output's HDMI Native shows at its own size (a taller one is fitted to the 720-wide
  * raster -- a program choosing a transcode's size gains nothing above it). A word 81 of 0 (no
  * status frame yet) reads as 0.10's limits. */
 struct h264ring_caps {
@@ -369,11 +369,11 @@ struct h264ring_caps {
 };
 void h264ring_caps(const struct h264ring_status *st, struct h264ring_caps *c);
 /* (0.14) Video Output as the core resolved it (word 80's video_out; docs/architecture.md "Video
- * Output resolved (0.14)"): its Auto is Interlaced (an analog TV in MiSTer.ini), Progressive (a
- * 31 kHz VGA monitor on the core's own raster) or Native (HDMI) -- so a program asking "is the
+ * Output resolved (0.14)"): its Auto is 15kHz CRT (an analog TV in MiSTer.ini), 31kHz VGA (a
+ * 31 kHz VGA monitor on the core's own raster) or HDMI Native -- so a program asking "is the
  * picture shown at its own pixels?" reads this, never the menu's value (word 27's mirror). A core
- * before 0.14 reads 0 there: the menu's value, its Auto then Interlaced or Progressive by word
- * 30's raster_il (Auto never chose Native before 0.14). */
+ * before 0.14 reads 0 there: the menu's value, its Auto then 15kHz CRT or 31kHz VGA by word
+ * 30's raster_il (Auto never chose HDMI Native before 0.14). */
 #define H264RING_VOUT_INTERLACED  1
 #define H264RING_VOUT_PROGRESSIVE 2
 #define H264RING_VOUT_NATIVE      3

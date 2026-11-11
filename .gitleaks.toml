@@ -1,0 +1,5 @@
+title = "misterplex export"
+[extend]
+useDefault = true
+[allowlist]
+regexes = ['''REDACTED''']

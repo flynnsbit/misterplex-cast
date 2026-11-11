@@ -15,6 +15,9 @@
 
 #include "libmisterplex/ddr_frame_layout.hpp"
 #include "log_redact.hpp"
+#include "queue_add_http.hpp"
+#include "libmisterplex/phone_status_page.hpp"
+#include "libmisterplex/track_select.hpp"
 
 namespace misterplex {
 
@@ -26,7 +29,7 @@ bool spsRejectHigh(const std::vector<uint8_t>& nalu);
 bool annexbNeedsBaselineTranscode(const uint8_t* p, size_t n);
 bool highLibavTranscodeEnabled();
 
-// 104: remote PMS still emitted CAVLC after decision extra=cabac=1 and directPlay=0.
+// 104: reviewer still emitted CAVLC after decision extra=cabac=1 and directPlay=0.
 // MPX_HIGH_HOST_CABAC=0 keeps the refuse. Unset means the box ffmpeg re-encodes
 // that AU to Main CABAC (one ref, no B, no 8x8) before the High core sees it.
 bool highHostCabacTranscodeEnabled();
@@ -97,6 +100,7 @@ struct PlayRequest;
 PlayRequest parsePlayRequest(const std::string& req);
 
 struct PlayRequest {
+    bool targetRejected = false;  // SEC-M2: address/protocol/port failed guard::playTargetOk and were cleared
     std::string key;
     std::string containerKey;
     std::string playQueueId;
@@ -109,6 +113,9 @@ struct PlayRequest {
     std::string port;
     std::string token;
     std::string serverMachineId;
+    // Source IP of the playMedia/mirror request (never parsed from HTTP): the PMS relay's LAN IPv4
+    // when Plex Web casts through the PMS. Candidate for the IPv4 fallback of an unreachable IPv6 PMS.
+    std::string peerAddress;
     int64_t offsetMs = 0;
     bool offsetPresent = false;
     uint64_t dispatchGeneration = 0;
@@ -147,10 +154,44 @@ struct PlayRequest {
     int cropRight = 0;
     int cropTop = 0;
     int cropBottom = 0;
+    // playMedia subtitleStreamID / audioStreamID. Absent = unset.
+    bool hasSubtitleStreamId = false;
+    int subtitleStreamId = 0;
+    bool hasAudioStreamId = false;
+    int audioStreamId = 0;
 };
 
+// GDM + /resources. Plex Web's remote stream menu checks protocolCapabilities
+// (not only Timeline@controllable) for audioStream/subtitleStream before it
+// will send setStreams. Without these it re-sends playMedia and treats a
+// buffering ACK as Playback Error.
+inline constexpr const char* kCompanionProtocolCapabilities =
+    "timeline,playback,navigation,mirror,playqueues,audioStream,subtitleStream";
+
+// Same-item playMedia that only names new stream ids is a setStreams, not a
+// new cast. A buffering ACK with the stream ids cleared is what Plex Web
+// surfaces as Playback Error, then it sends /playback/stop.
+inline bool playMediaIsInPlaceStreamChange(bool wantPlay, const std::string& state,
+                                           const std::string& pendingKey, int64_t timeMs,
+                                           const PlayRequest& pr) {
+    if (!wantPlay)
+        return false;
+    if (state != "playing" && state != "paused")
+        return false;
+    if (pr.key.empty() || pendingKey.empty() || pr.key != pendingKey)
+        return false;
+    if (!pr.hasSubtitleStreamId && !pr.hasAudioStreamId)
+        return false;
+    if (pr.offsetPresent) {
+        const int64_t d = pr.offsetMs > timeMs ? pr.offsetMs - timeMs : timeMs - pr.offsetMs;
+        if (d > 2000)
+            return false;
+    }
+    return true;
+}
+
 // Session-start DIRECT vs PROXY from the playMedia key (not PlayRequest.protocol).
-// Matches resolvePlayTarget pass-through: testsrc / URL / local path DIRECT;
+// Matches resolvePlayTarget pass-through: URL / local path DIRECT;
 // /library and /playQueues PROXY until stream facts exist.
 std::string titlePlayPolicy(const PlayRequest& pr);
 
@@ -174,6 +215,9 @@ void apply240pActiveHeight(PlayRequest& pr, int codedWidth, int codedHeight, int
 
 // Token a cast request may install as the playing server's auth (empty: keep the current one).
 std::string castControlRefreshToken(const std::string& req);
+// True when a control request's token belongs to the session that is ALREADY playing (seek, playback/*,
+// command). False for playMedia: its token is the incoming cast's, not the active session's.
+bool tokenRefreshesActiveSession(const std::string& req);
 
 enum class TransportCommand { Pause, Resume, Stop, Seek, Previous };
 
@@ -201,6 +245,20 @@ public:
     void setName(std::string n) { name_ = std::move(n); }
     void setMachineId(std::string id) { machineId_ = std::move(id); }
     void setPort(uint16_t p) { port_ = p; }
+    // Conf / --pms LAN base. Used to rewrite a playMedia ULA or plex.direct
+    // host onto the PMS IPv4 the player actually opens (Timeline.address).
+    void setLanPreferredBase(std::string base) { lanPreferredBase_ = std::move(base); }
+    // Tests / resolve: this box's IPv4 so bindTimelinePmsLocked can rewrite a
+    // same-/24 VLAN gateway (203.0.113.1) onto lanPreferredBase_. Empty → lanIp().
+    void setPlayerLanHint(std::string ip) { playerLanHint_ = std::move(ip); }
+    // After resolve: Timeline.address/port/protocol become this reachable
+    // http(s)://host:port (never ULA / plex.direct / player-LAN gateway).
+    // Official protocol: this field is the PMS, not the player. /resources
+    // still advertises the player.
+    void setTimelinePmsBase(const std::string& base);
+    // Honest play decision for Timeline videoDecision/audioDecision.
+    // "direct" / "transcode"; empty omits the attributes (unknown / shim-like).
+    void setPlayDecision(std::string decision);
     void setLog(LogFn f) { log_ = std::move(f); }
     void setPlay(PlayFn f) { onPlay_ = std::move(f); }
     // Fired on the HTTP thread as soon as playMedia plants scrubber state (before
@@ -211,6 +269,10 @@ public:
     // (seek, second playMedia, some polls). Forward to PMS timeline session.
     using TokenFn = std::function<void(const std::string& token)>;
     void setTokenUpdate(TokenFn f) { onTokenUpdate_ = std::move(f); }
+    // fr-glass-1032-1025 F1: playMedia carries the NEW cast's server token. It must not refresh the ACTIVE
+    // session's token (onTokenUpdate_); it goes here instead, so the old session's supersede stop/timeline
+    // keep the old server's own token.
+    void setPlayMediaToken(TokenFn f) { onPlayMediaToken_ = std::move(f); }
     // Called under the state lock; the hook may perform only nonblocking atomic work.
     void setTransportQueued(TransportQueuedFn f) { onTransportQueued_ = std::move(f); }
     void setPause(TransportFn f) { onPause_ = std::move(f); }
@@ -224,17 +286,81 @@ public:
     using VolumeFn = std::function<void(int volume)>;
     void setVolume(VolumeFn f) { onVolume_ = std::move(f); }
     int volume() const { return volume_.load(); }
+    // /player/playback/setStreams (Plex Web / app). The callback may rewrite the ids
+    // (an image subtitle is forced off). The timeline ACK echoes the result.
+    using StreamsFn = std::function<SetStreamsResult(const SetStreamsRequest&)>;
+    void setOnStreams(StreamsFn f) { onStreams_ = std::move(f); }
+    // Apply a setStreams (or same-item playMedia stream change). Timeline stays
+    // in the current playing/paused state; the ACK echoes the ids the player kept.
+    SetStreamsResult applyAndEchoStreams(const SetStreamsRequest& asked);
+    // The player reports the streams it actually opened (PMS selected flag or a per-show choice)
+    // so a poll before the user touches the menu already shows that selection.
+    void noteStreams(int audioStreamId, int subtitleStreamId);
     // Relative scrubber step (stepForward/stepBack); deltaMs may be negative.
     void setStep(StepFn f) { onStep_ = std::move(f); }
     void setSkipNext(CtrlFn f) { onSkipNext_ = std::move(f); }
     void setSkipPrevious(TransportFn f) { onSkipPrevious_ = std::move(f); }
+    // SPELUNKR: skipNext/Prev while companion wantPlay_ is false (Owenb play).
+    // Plex idle stays ACK-only.
+    void setSkipWhenStopped(bool on) { skipWhenStopped_ = on; }
     using PlexUiNavFn = std::function<void(const std::string& op)>;
     void setPlexUiNavEnabled(bool on) { plexUiNavEnabled_ = on; }
     void setPlexUiNav(PlexUiNavFn f) { onPlexUiNav_ = std::move(f); }
-    void setPlexTvEnabled(bool) {}
-    void setPlexTvToken(const std::string&) {}
-    void setPlexTvLinkPath(const std::string&) {}
-    void setPlexTvPersist(std::function<void(const std::string&)>) {}
+    // POST /misterplex/queue/add (queue_add_http.hpp): the daemon supplies the PMS transport (base URL + token header).
+    // Unset = the endpoint answers 503 and sends nothing.
+    void setQueueAddTransport(qadd::Transport f) {
+        std::lock_guard<std::mutex> lock(mu_);
+        queueAddTransport_ = std::move(f);
+    }
+    // The TV toast for a finished POST /misterplex/queue/add (fixed texts only, see qadd::noticeText). Unset = silent.
+    using QueueNoticeFn = std::function<void(const std::string&)>;
+    void setQueueAddNotice(QueueNoticeFn f) {
+        std::lock_guard<std::mutex> lock(mu_);
+        queueAddNotice_ = std::move(f);
+    }
+    // GET /misterplex/status + POST /misterplex/update (phone_status_page.hpp), behind the same SEC-M2/M5 guard. The
+    // provider fills the static facts (version, core, helper); the companion overlays playing/position/mode and the
+    // per-boot nonce. Without an update starter the page says "update: not available" and POST /update is refused.
+    using StatusFn = std::function<phonestatus::Status()>;
+    void setStatusProvider(StatusFn f) { std::lock_guard<std::mutex> lock(mu_); statusProvider_ = std::move(f); }
+    // True = the updater accepted one run. False = off or already running (the page answers 409).
+    // Called only from an accepted POST /misterplex/update, never from the status refresh loop.
+    using UpdateStartFn = std::function<bool()>;
+    void setUpdateStart(UpdateStartFn f) { std::lock_guard<std::mutex> lock(mu_); updateStart_ = std::move(f); }
+
+    // Issue #57 glass page (phone_status_http.hpp). The HTTP thread copies these into the page. Strings are
+    // scrubbed at render time. The nonce is chosen once per process, on the first status or update request,
+    // and cleared after a start the updater accepts. POST /misterplex/update calls updateStart_ only when
+    // the page says startUpdate (updates on, idle, nonce matches). No starter: the page stays "not available".
+    void setPhoneIdentity(std::string version, std::string commit, std::string md5) {
+        std::lock_guard<std::mutex> lock(mu_);
+        phoneVersion_ = std::move(version);
+        phoneCommit_ = std::move(commit);
+        phoneMd5_ = std::move(md5);
+    }
+    void notePhoneCore(std::string buildId, std::string pairing) {
+        std::lock_guard<std::mutex> lock(mu_);
+        phoneCore_ = std::move(buildId);
+        phonePairing_ = std::move(pairing);
+    }
+    void notePhoneTitle(std::string title) {
+        std::lock_guard<std::mutex> lock(mu_);
+        phoneTitle_ = std::move(title);
+    }
+    void notePhoneHelper(std::string state) {
+        std::lock_guard<std::mutex> lock(mu_);
+        phoneHelper_ = std::move(state);
+    }
+    void notePhoneNewer(std::string state) {
+        std::lock_guard<std::mutex> lock(mu_);
+        phoneNewer_ = std::move(state);
+    }
+    void setPlexTvEnabled(bool on);
+    void setPlexTvToken(const std::string& token);
+    void setPlexTvLinkPath(const std::string& path);
+    void setPlexTvPersist(std::function<bool(const std::string&)> fn);
+    // Empty until a plex.tv/link code is on screen. Never the account token.
+    std::string plexTvCode() const;
     // A stop that arrived while resolve was still in flight (179 holds the generation).
     // A play that never reaches playing must not leave the scrubber on fullScreenVideo.
     void noteStopDuringResolve();
@@ -259,7 +385,11 @@ public:
     bool bindMedia(const PlayRequest& req, int64_t durationMs);
 
     // 480i: 480-line frame / 240-line field. 480p/240p keep their own active heights.
+#ifdef MUT_480I_FRAME_IS_FIELD
+    static constexpr int k480iActiveHeight = 240;
+#else
     static constexpr int k480iActiveHeight = 480;
+#endif
     static constexpr int k480iPicHeight = 240;
     void setActiveHeight(int activeHeight, int picHeight);
     void setRasterMode(const std::string& mode);
@@ -307,7 +437,8 @@ public:
 private:
     struct TimelineSubscriber {
         std::string id;
-        std::string host;
+        std::string host;   // callback host (address=, or the socket peer when address= is absent)
+        std::string peer;   // socket peer IP that subscribed. address= cannot change this.
         std::string protocol;
         std::string commandId;
         uint16_t port = 0;
@@ -323,14 +454,23 @@ private:
     void gdmLoop();
     void httpLoop();
     void timelinePushLoop();
+    // fr-playbar-1025: true while a cast play is up (playing/paused/buffering) and a controller is
+    // subscribed. The push loop then re-sends the timeline every kSubscriberKeepalive even when nothing
+    // changed, so a paused/buffering/stalled play never goes silent to its subscribers (PMS relay,
+    // iPhone app, Plex Web). Takes subscriberMu_ and mu_ one after the other, never while holding timelinePushMu_.
+    bool keepaliveWanted();
+    static constexpr std::chrono::seconds kSubscriberKeepalive{3};
     void requestTimelinePush(bool immediate);
-    // Bounded buffering@navigation hold (holdIdle RCA, review H1-H4). Caller holds mu_.
+    // Bounded buffering@navigation hold (holdIdle RCA, FPGA Bug H1-H4). Caller holds mu_.
     static int holdMsFromEnv(const char* name, int fallback);
     void armHoldLocked(int ms);
     void disarmHoldLocked();
+    // peer is the socket peer IP. host is the callback address (address= may
+    // differ). A defaulted peer means the caller has no separate socket peer
+    // and host is used for both. The HTTP handler always passes the socket peer.
     void subscribeTimeline(const std::string& id, const std::string& host,
                            const std::string& protocol, uint16_t port,
-                           const std::string& commandId);
+                           const std::string& commandId, const std::string& peer = {});
     void updateTimelineCommand(const std::string& id, const std::string& host,
                                const std::string& commandId);
     std::string timelineCommandFor(const std::string& id, const std::string& host,
@@ -339,17 +479,43 @@ private:
     // carried a commandID echoes this owner's commandID instead of 0 (a relay that
     // strips the browser's id/commandID must not make Plex Web drop every timeline).
     void setCastOwner(const std::string& id, const std::string& host);
+    // Install id/host as the cast owner. A non-empty suppliedToken replaces
+    // pendingToken_. With no token, the stored credential is kept only when
+    // this caller is the verified owner: the same client id and the same peer
+    // IP. Anyone else clears it.
+    void noteCastOwner(const std::string& id, const std::string& host,
+                       const std::string& suppliedToken);
+    // Id the push loop passes into timelineXml. Normally the subscriber's own id.
+    std::string tokenRecipientForPush(const TimelineSubscriber& subscriber) const;
+    // Peer the push may name when deciding token=. Empty unless the callback
+    // host is that row's own subscribing peer, so address= cannot aim the token
+    // at another host.
+    std::string tokenPeerForPush(const TimelineSubscriber& subscriber) const;
     std::string pushCommandFor(const TimelineSubscriber& subscriber);
     bool unsubscribeTimeline(const std::string& id, const std::string& host);
     bool postTimeline(const TimelineSubscriber& subscriber,
                       const std::string& xml) const;
     std::string gdmPayload() const;
-    std::string resourcesXml() const;
-    std::string timelineXml(const std::string& commandId) const;
+    std::string gdmPayload(bool hello) const;
+    std::string resourcesXml(const std::string& playerIp = {}) const;
+    // recipientId is the caller's X-Plex-Client-Identifier. recipientPeer is the
+    // poll/subscribe source IP, or the subscriber callback host on a push.
+    // token= is included only when the id is non-empty and equal to castOwnerId_
+    // and the peer is non-empty and equal to the owner IP stored by setCastOwner.
+    // An empty owner matches nobody. Read on every call, so a later owner change
+    // drops the previous recipient. No flag: this is the credential gate.
+    std::string timelineXml(const std::string& commandId, const std::string& recipientId = {},
+                            const std::string& recipientPeer = {}) const;
     std::string lanIp() const;
+    // Caller holds mu_. Rewrites ULA / plex.direct / player-LAN gateway onto
+    // lanPreferredBase_.
+    void bindTimelinePmsLocked(const std::string& address, const std::string& port,
+                               const std::string& protocol);
     void log(const std::string& s) const;
     mutable SyncedLogAssembler logAsm_;
     TransportRequest transportRequestLocked(TransportCommand command);
+    void clearRefusedServerLocked();
+    bool serverTargetRejected_ = false;   // #355: last bind/stage carried a refused target
     bool acceptSeekLocked(int64_t ms, TransportRequest& request);
     bool acceptPauseResumeLocked(bool pause, TransportRequest& request);
     static std::string xmlEsc(const std::string& s);
@@ -361,6 +527,7 @@ private:
     PlayFn onPlay_;
     PlayQueuedFn onPlayQueued_;
     TokenFn onTokenUpdate_;
+    TokenFn onPlayMediaToken_;
     TransportQueuedFn onTransportQueued_;
     TransportFn onPause_;
     TransportFn onResume_;
@@ -370,21 +537,37 @@ private:
     StepFn onStep_;
     CtrlFn onSkipNext_;
     TransportFn onSkipPrevious_;
+    bool skipWhenStopped_ = false;
     VolumeFn onVolume_;
     std::atomic<int> volume_{100};   // OWENB-P1B T5: the last setParameters volume
+    StreamsFn onStreams_;
+    bool streamsKnown_ = false;      // timeline carries audioStreamID / subtitleStreamID
+    int audioStreamId_ = 0;
+    int subtitleStreamId_ = 0;       // 0 = off
     PlexUiNavFn onPlexUiNav_;
+    qadd::Transport queueAddTransport_;  // under mu_
+    QueueNoticeFn queueAddNotice_;       // under mu_
     bool plexUiNavEnabled_ = false;
+    bool plexTvEnabled_ = false;
+    std::string plexTvToken_;
+    std::string plexTvLinkPath_;
+    std::string plexTvCode_;
+    std::function<bool(const std::string&)> plexTvPersist_;
+    std::thread plexTvThr_;
 
     bool openHttpListen();
+    void plexTvLoop();
+    void publishPlexTvCode(const std::string& code);
 
     std::atomic<bool> running_{false};
+    std::atomic<uint64_t> timelineGen_{0};   // bumped by requestTimelinePush; releases a held poll
     std::atomic<bool> httpReady_{false};
     int httpListenFd_{-1};
     std::thread gdmThr_;
     std::thread httpThr_;
     std::thread timelinePushThr_;
 
-    std::mutex subscriberMu_;
+    mutable std::mutex subscriberMu_;
     std::vector<TimelineSubscriber> subscribers_;
     std::vector<ControllerCommand> controllerCommands_;
     // Under subscriberMu_: the active playMedia controller (see setCastOwner).
@@ -423,8 +606,12 @@ private:
     // Wire shows buffering@navigation only while now < holdUntil_ (epoch = no hold).
     // castBound_ alone never holds; a pure poll never sets this.
     std::chrono::steady_clock::time_point holdUntil_{};
+    // fr-glass-1032-1025 F3: the position/duration the stopped play had. The post-Stop buffering hold reports
+    // these, not 0/0 (0 = unknown: a mirror hold, a stop before the play resolved, no hold).
+    int64_t holdTimeMs_ = 0;
+    int64_t holdDurMs_ = 0;
     const int stopHoldMs_ = holdMsFromEnv("MPX_COMPANION_STOP_HOLD_MS", 8000);
-    // BUG2-RECAST (owner 10-18): after a queue ends with nothing to advance to, the wire keeps the ended
+    // BUG2-RECAST (Shawn 10-18): after a queue ends with nothing to advance to, the wire keeps the ended
     // frame (stopped @ final time, key/playQueue bound) for this long, then reports the clean idle a fresh
     // daemon sends (navigation, no key/containerKey/playQueueID). Plex Web treats "stopped + old playQueue"
     // as the player still owning that session: a new cast's POST /playQueues closes it again and Web logs
@@ -444,13 +631,35 @@ private:
     std::string pendingPlayQueueItemId_;
     std::string pendingPlayQueueVersion_;
     std::string pendingRatingKey_;
+    // rc-1034: identity of the play that was just stopped, kept for the post-Stop buffering hold and the final
+    // stopped push (glass legs rc-1033: rk= was blank there). Never carries the token. Bounded by idleKeyUntil_.
+    std::string idleKey_, idleRatingKey_, idleContainer_;
+    std::chrono::steady_clock::time_point idleKeyUntil_{};
+    const int idleKeyMs_ = holdMsFromEnv("MPX_COMPANION_IDLE_KEY_MS", 5000);   // 0 = old behaviour (blank)
+    static std::string containerOf(const std::string& containerKey, const std::string& playQueueId);
     std::string pendingToken_;
     uint64_t pendingGeneration_ = 0;
     std::string serverMachineId_;
+    std::string serverPeer_;
     std::string serverHost_;
     std::string serverPort_;
     std::string serverProto_ = "http";
+    std::string lanPreferredBase_;
+    std::string playerLanHint_;
+    std::string playDecision_;
     std::string rasterMode_;
+    StatusFn statusProvider_;               // under mu_
+    UpdateStartFn updateStart_;             // under mu_; empty = updates off
+    std::string statusNonce_;               // under mu_, per boot, rotated after each accepted update
+    std::string phoneVersion_ = "unknown";
+    std::string phoneCommit_ = "unknown";
+    std::string phoneMd5_ = "unknown";
+    std::string phoneCore_ = "unknown";
+    std::string phonePairing_ = "unknown";
+    std::string phoneTitle_;
+    std::string phoneHelper_ = "unknown";
+    std::string phoneNewer_ = "unknown";
+    std::string phoneNonce_;
     int activeHeight_ = 0;
     int picHeight_ = 0;
 };

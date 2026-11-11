@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# review A-logiclock-qsf.md (md5 a5606be9): Block A (Template.qsf:28-50 + ROUTER MAX), optional Block B pins.
+# FPGA Bug A-logiclock-qsf.md (md5 a5606be9): Block A (Template.qsf:28-50 + ROUTER MAX), optional Block B pins.
 # Block C (LogicLock) NOT applied: Lite 17.0.2. Usage: apply_tplfit_qsf.sh <H264.qsf> A|AB
 set -euo pipefail
 Q="${1:?qsf}"; V="${2:?A|AB}"
@@ -12,7 +12,7 @@ for k in FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ROUTER_TIMING_OPTIMIZATION_L
   sed -i "/^set_global_assignment -name ${k}/d" "$Q"
 done
 {
-echo "# TPLFIT Block A (Template.qsf:28-50 + ROUTER MAX), review 2026-10-17"
+echo "# TPLFIT Block A (Template.qsf:28-50 + ROUTER MAX), FPGA Bug 2026-10-17"
 for l in 'OPTIMIZE_POWER_DURING_FITTING OFF' 'FINAL_PLACEMENT_OPTIMIZATION ALWAYS' 'FITTER_EFFORT "STANDARD FIT"' \
  'OPTIMIZATION_MODE "HIGH PERFORMANCE EFFORT"' 'ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON' \
  'PHYSICAL_SYNTHESIS_COMBO_LOGIC ON' 'PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON' 'PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON' \

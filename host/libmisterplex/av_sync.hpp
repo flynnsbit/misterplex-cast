@@ -1,5 +1,5 @@
 #pragma once
-// A/V clock-master resync for the FPGA H.264 path (avsync45, release 19:22 10/3: the 45 MHz
+// A/V clock-master resync for the FPGA H.264 path (avsync45, reviewer 19:22 10/3: the 45 MHz
 // core ships only if the HDMI A/V offset stays within 40 ms for the whole soak).
 //
 // What the daemon can see: the core freezes the audio DMA's consumed-sample count at each

@@ -1,5 +1,5 @@
 #pragma once
-// R1 host idle frame buffer (build kit §6c R1.1/R1.2, H264 kit 4f6177b6 house layout; RTL dev/r1-idlefb-mvpb
+// R1 host idle frame buffer (build kit §6c R1.1/R1.2, H264 kit 4f6177b6 house layout; RTL copilot/r1-idlefb-mvpb
 // ddr_frame_store.sv:78-79/210-234/2328-2335, plex_fb480.sv:34-36). Bug cleared the addresses (16:4x CDT 10/4).
 //   IDLE0 0x31600000, IDLE1 0x31700000: RGB24 640x480, stride 1920 (921,600 B each), inside the 2 MiB K1 window.
 //   PLXH 0x300FF138 (host -> FPGA): {token[63:48], rsvd[47:34]=0, buf_sel[33], en[32], 'PLXH' 0x504C5848[31:0]}

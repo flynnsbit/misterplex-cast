@@ -2,7 +2,7 @@
 // T-SPS-GATE-FALLBACK (pre-reg v1.4.3 b57a87fb, section 1): the stream gate's view of the LOADED core's CAPS
 // readback. Pure: VideoCapabilities in, a verdict out. No daemon state, no I/O.
 //
-// DCAP grant bits live in MPC1[31:16] (r1, review 02:02: no new CAPS word, no layout bump). Every core of record
+// DCAP grant bits live in MPC1[31:16] (r1, FPGA Bug 02:02: no new CAPS word, no layout bump). Every core of record
 // publishes [31:16] = 0 (a1), which is the v1 rule: Baseline/CAVLC, refs <= 1, P16x16 only, no B, progressive,
 // level <= 3.0, i.e. exactly the limits CompressedSyntax::inspect hard-codes today. So v1 is behaviour-identical.
 #include "libmisterplex/ddr_bitstream_ring.hpp"
@@ -40,7 +40,7 @@ constexpr uint32_t kEnumKnownLowMask =
     ring::Deblock | ring::ConsumedAudioClock | ring::SeparateOverlay | ring::Native240 | ring::Native480i |
     ring::Progressive480 | ring::Hd720 | ring::PresentationFeedback | ring::AudioSessionControl | ring::FencedReset;
 
-// maxLevel code table (s7, review 01:46). Code 0 is v1. Any unlisted code is a hard error.
+// maxLevel code table (s7, FPGA Bug 01:46). Code 0 is v1. Any unlisted code is a hard error.
 constexpr int maxLevelIdcForCode(uint32_t code) {
     switch (code) {
     case 0: return 30;
@@ -180,9 +180,9 @@ inline CapsVerdict evaluateCaps(const ring::VideoCapabilities& c, uint32_t known
 
 // Stream verdict (pre-reg v1.4.3 section 3 (a)): what CompressedSyntax::inspect decided for one AU.
 // Kind follows the stream: legal H.264 that this core or decoder cannot take (a CAPS/product bound, or more active
-// references than max_num_ref_frames DPB slots, review 04:16 n1) is OUT; non-conforming H.264 (truncation, ue
+// references than max_num_ref_frames DPB slots, FPGA Bug 04:16 n1) is OUT; non-conforming H.264 (truncation, ue
 // overflow, a spec range, a missing parameter set, a P slice under max_num_ref_frames 0) is MALFORMED. Only MALFORMED
-// may hard-error; every OUT takes the transcode fallback (review 04:16, standing bar for the wiring layer).
+// may hard-error; every OUT takes the transcode fallback (FPGA Bug 04:16, standing bar for the wiring layer).
 enum class StreamOutcome { In, Out, Malformed };
 
 struct StreamVerdict {

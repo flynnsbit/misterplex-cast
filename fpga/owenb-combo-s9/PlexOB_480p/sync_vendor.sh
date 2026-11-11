@@ -4,7 +4,7 @@
 # (H264.qsf, emu.sv, ring_stat.sv, and the rest). sys/ is not a fork: it comes from the pin.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VENDOR="${OWENB_VENDOR_ROOT:?set OWENB_VENDOR_ROOT to an owenb321 MiSTer_h264_decoder checkout at eac1064}"
+VENDOR="${OWENB_VENDOR_ROOT:-$ROOT/vendor-upstream}"
 DEST="$ROOT/vendor"
 test -f "$VENDOR/H264.qsf" || { echo "missing vendor at $VENDOR (pin eac1064)"; exit 1; }
 mkdir -p "$DEST"
@@ -17,7 +17,10 @@ EXCLUDES=(
   h264/emu.sv
   h264/h264.sdc
   h264/ring_in.sv
+  h264/ovl_plane.sv
   h264/ring_stat.sv
+  h264/sync_gen.sv
+  h264/vid_out.sv
 )
 args=()
 for e in "${EXCLUDES[@]}"; do

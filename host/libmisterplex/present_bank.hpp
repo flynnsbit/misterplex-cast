@@ -100,26 +100,107 @@ inline std::string rbfPinBasename(std::string s) {
     return s;
 }
 
-inline std::string md5Prefix8OfFile(const char* path) {
+// RFC 1321 MD5, in-process. The pin check used to popen("md5sum \"<path>\""), which handed the
+// path to a shell (#66). Reading the file here needs no shell and no md5sum binary.
+struct Md5Ctx {
+    uint32_t a = 0x67452301u, b = 0xefcdab89u, c = 0x98badcfeu, d = 0x10325476u;
+    uint64_t len = 0;
+    unsigned char buf[64];
+    size_t fill = 0;
+
+    static uint32_t rol(uint32_t x, int s) { return (x << s) | (x >> (32 - s)); }
+
+    void block(const unsigned char* p) {
+        static const uint32_t K[64] = {
+            0xd76aa478u, 0xe8c7b756u, 0x242070dbu, 0xc1bdceeeu, 0xf57c0fafu, 0x4787c62au, 0xa8304613u, 0xfd469501u,
+            0x698098d8u, 0x8b44f7afu, 0xffff5bb1u, 0x895cd7beu, 0x6b901122u, 0xfd987193u, 0xa679438eu, 0x49b40821u,
+            0xf61e2562u, 0xc040b340u, 0x265e5a51u, 0xe9b6c7aau, 0xd62f105du, 0x02441453u, 0xd8a1e681u, 0xe7d3fbc8u,
+            0x21e1cde6u, 0xc33707d6u, 0xf4d50d87u, 0x455a14edu, 0xa9e3e905u, 0xfcefa3f8u, 0x676f02d9u, 0x8d2a4c8au,
+            0xfffa3942u, 0x8771f681u, 0x6d9d6122u, 0xfde5380cu, 0xa4beea44u, 0x4bdecfa9u, 0xf6bb4b60u, 0xbebfbc70u,
+            0x289b7ec6u, 0xeaa127fau, 0xd4ef3085u, 0x04881d05u, 0xd9d4d039u, 0xe6db99e5u, 0x1fa27cf8u, 0xc4ac5665u,
+            0xf4292244u, 0x432aff97u, 0xab9423a7u, 0xfc93a039u, 0x655b59c3u, 0x8f0ccc92u, 0xffeff47du, 0x85845dd1u,
+            0x6fa87e4fu, 0xfe2ce6e0u, 0xa3014314u, 0x4e0811a1u, 0xf7537e82u, 0xbd3af235u, 0x2ad7d2bbu, 0xeb86d391u};
+        static const int R[64] = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+                                  5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
+                                  4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+                                  6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+        uint32_t w[16];
+        for (int i = 0; i < 16; ++i)
+            w[i] = static_cast<uint32_t>(p[i * 4]) | (static_cast<uint32_t>(p[i * 4 + 1]) << 8) |
+                   (static_cast<uint32_t>(p[i * 4 + 2]) << 16) | (static_cast<uint32_t>(p[i * 4 + 3]) << 24);
+        uint32_t A = a, B = b, C = c, D = d;
+        for (int i = 0; i < 64; ++i) {
+            uint32_t f;
+            int g;
+            if (i < 16)      { f = (B & C) | (~B & D); g = i; }
+            else if (i < 32) { f = (D & B) | (~D & C); g = (5 * i + 1) & 15; }
+            else if (i < 48) { f = B ^ C ^ D;          g = (3 * i + 5) & 15; }
+            else             { f = C ^ (B | ~D);       g = (7 * i) & 15; }
+            const uint32_t t = D;
+            D = C;
+            C = B;
+            B = B + rol(A + f + K[i] + w[g], R[i]);
+            A = t;
+        }
+        a += A; b += B; c += C; d += D;
+    }
+
+    void update(const unsigned char* p, size_t n) {
+        len += n;
+        while (n) {
+            const size_t take = (64 - fill < n) ? 64 - fill : n;
+            std::memcpy(buf + fill, p, take);
+            fill += take; p += take; n -= take;
+            if (fill == 64) { block(buf); fill = 0; }
+        }
+    }
+
+    std::string hex() {
+        const uint64_t bits = len * 8;
+        unsigned char pad[72] = {0x80};
+        const size_t padn = (fill < 56) ? 56 - fill : 120 - fill;
+        for (int i = 0; i < 8; ++i)
+            pad[padn + i] = static_cast<unsigned char>(bits >> (8 * i));
+        update(pad, padn + 8);
+        static const char H[] = "0123456789abcdef";
+        std::string out;
+        const uint32_t v[4] = {a, b, c, d};
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) {
+                const unsigned char byte = static_cast<unsigned char>(v[i] >> (8 * j));
+                out.push_back(H[byte >> 4]);
+                out.push_back(H[byte & 15]);
+            }
+        return out;
+    }
+};
+
+inline std::string md5HexOfBytes(const void* p, size_t n) {
+    Md5Ctx c;
+    c.update(static_cast<const unsigned char*>(p), n);
+    return c.hex();
+}
+
+// 32 lowercase hex chars, or "" when the file cannot be opened or read to the end.
+inline std::string md5HexOfFile(const char* path) {
     if (!path || !*path)
         return {};
-    // MiSTer has md5sum; keep this light (once at daemon start).
-    std::string cmd = std::string("md5sum \"") + path + "\" 2>/dev/null";
-    FILE* pipe = ::popen(cmd.c_str(), "r");
-    if (!pipe)
+    FILE* f = std::fopen(path, "rb");
+    if (!f)
         return {};
-    char buf[128] = {};
-    const char* got = std::fgets(buf, sizeof(buf), pipe);
-    ::pclose(pipe);
-    if (!got)
-        return {};
-    // "0826ef77….  /path"
-    std::string hex;
-    for (const char* p = buf; *p && *p != ' ' && *p != '\t' && *p != '\n'; ++p)
-        hex.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*p))));
-    if (hex.size() < 8)
-        return {};
-    return hex.substr(0, 8);
+    Md5Ctx c;
+    unsigned char chunk[4096];
+    size_t n;
+    while ((n = std::fread(chunk, 1, sizeof(chunk), f)) > 0)
+        c.update(chunk, n);
+    const bool bad = std::ferror(f) != 0;
+    std::fclose(f);
+    return bad ? std::string() : c.hex();
+}
+
+inline std::string md5Prefix8OfFile(const char* path) {
+    const std::string hex = md5HexOfFile(path);
+    return hex.size() < 8 ? std::string() : hex.substr(0, 8);
 }
 
 inline LiveGlassPin readLiveGlassPin(const char* plexRbfPath = "/media/fat/_Utility/Plex.rbf",
@@ -311,7 +392,7 @@ inline constexpr PlxPageSet kTrue480PlxPages = true480PlxPagesFromRows();
 // heartbeat seq (ddr_frame_store republishes PLXS at least every 2^18 clk_ddr,
 // ~3 ms) and PLXD [63:48] counts bank swaps. PLXI/PLXJ low words are magics.
 // Both pages read the heartbeat: an idle L4 core loaded before its first PLXJ
-// commit has nothing else that moves (review 01:51 N2).
+// commit has nothing else that moves (Bug 01:51 N2).
 struct LiveGlassSample {
     uint32_t l4Plxj = 0;
     uint32_t l4PlxdHi = 0;

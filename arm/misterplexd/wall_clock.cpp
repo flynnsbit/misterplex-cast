@@ -344,8 +344,20 @@ TlsHttpResult tlsHttpExchange(const HttpsDateTarget& target, int timeoutMs) {
     }
     SSL* ssl = SSL_new(ctx);
     SSL_set_fd(ssl, fd);
-    SSL_set_tlsext_host_name(ssl, target.verifyHost.c_str());
-    if (SSL_set1_host(ssl, target.verifyHost.c_str()) != 1) {
+    in_addr lit{};
+    const bool ipHost = ::inet_pton(AF_INET, target.verifyHost.c_str(), &lit) == 1;
+    if (!ipHost)
+        SSL_set_tlsext_host_name(ssl, target.verifyHost.c_str());
+    if (ipHost) {
+        if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), target.verifyHost.c_str()) != 1) {
+            r.err = "IP SAN check failed for " + target.verifyHost;
+            std::fprintf(stderr, "misterplexd: %s\n", r.err.c_str());
+            SSL_free(ssl);
+            SSL_CTX_free(ctx);
+            ::close(fd);
+            return r;
+        }
+    } else if (SSL_set1_host(ssl, target.verifyHost.c_str()) != 1) {
         r.err = "SSL_set1_host failed for " + target.verifyHost;
         std::fprintf(stderr, "misterplexd: %s\n", r.err.c_str());
         SSL_free(ssl);

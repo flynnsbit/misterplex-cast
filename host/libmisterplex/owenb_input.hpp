@@ -14,6 +14,7 @@
 // A lost queue (read more than H264RING_IN_Q_LEN events late) releases every key and button.
 
 #include "h264ring.h"
+#include "idle_menu_key.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -41,13 +42,52 @@ inline bool obNavForKey(unsigned code, bool ext, ObNav& n) {
         {0x5A, true, ObNav::Select},   {0x6C, true, ObNav::Home},     {0x5A, false, ObNav::Select},
         {0x76, false, ObNav::Back},    {0x66, false, ObNav::Back},    {0x29, false, ObNav::PlayPause},
         {0x43, false, ObNav::Info},    {0x3A, false, ObNav::Menu},    {0x0D, false, ObNav::Menu},
-    };   // arrows, PgUp/PgDn, Enter, Home; Esc/Backspace back, Space, I(nfo), M(enu)/Tab
+        {0x07, false, ObNav::Menu},    {0x05, false, ObNav::Home},
+    };   // arrows, PgUp/PgDn, Enter, Home; Esc/Backspace back, Space, I(nfo), M(enu)/Tab, F12, F1
+         // 'P' (0x4D) is not in this table. obIdleMenuKey maps it on Ready idle only.
     for (const K& x : k)
         if (x.code == code && x.ext == ext) {
             n = x.nav;
             return true;
         }
     return false;
+}
+
+// Ready idle is the card: nothing is playing, and the library / PlexUI page is not up.
+inline bool obReadyIdleForMenuKey(bool playing, bool libraryVisible) {
+    return !playing && !libraryVisible;
+}
+
+// PS/2 set-2 'P' (0x4D, no E0). Not in obNavForKey. Aux on Ready idle only, and only
+// when IDLE_MENU_KEY is on. Elsewhere it is not a navigation: in a play Aux means
+// Skip Back, and in PlexUI Aux toggles UI size. M, Tab, and F12 stay Menu.
+inline bool obIdleMenuKey(unsigned code, bool ext, ObNav& n, bool readyIdle) {
+    if (code != 0x4Du || ext)
+        return false;
+#ifdef MUT_IDLE_MENU_KEY_NOT_IDLE
+    (void)readyIdle;
+    if (idleMenuKeyEnabled()) {   // mutant: P is Aux in a play and in PlexUI (Skip Back / UI size)
+        n = ObNav::Aux;
+        return true;
+    }
+    return false;
+#elif defined(MUT_IDLE_MENU_KEY_OFF_BINDS)
+    if (readyIdle) {   // mutant: P is Aux on idle with the flag off
+        n = ObNav::Aux;
+        return true;
+    }
+    return false;
+#elif defined(MUT_IDLE_MENU_KEY_IGNORED)
+    (void)n;
+    (void)readyIdle;
+    return false;   // mutant: the flag on does not bind P
+#else
+    if (readyIdle && idleMenuKeyEnabled()) {
+        n = ObNav::Aux;
+        return true;
+    }
+    return false;
+#endif
 }
 
 // one pad button -> a navigation (A select, B back, X info, Y / Start menu, LB/RB page, Back home)
@@ -118,6 +158,9 @@ public:
         st_.navs += unsigned(out.size());
         return out;
     }
+    // The input thread sets this from the play and the library page before each feed.
+    // Keyboard P is Aux only while it is true and IDLE_MENU_KEY is on.
+    void setReadyIdle(bool idle) { readyIdle_ = idle; }
     bool osdOpen() const { return osd_; }
     const ObInputStats& stats() const { return st_; }
 
@@ -126,10 +169,13 @@ private:
         ++st_.events;
         const unsigned type = H264RING_EV_TYPE(e);
         if (type == H264RING_EV_KEY) {
-            ObNav nv;
-            if (H264RING_EV_PRESSED(e) && !obNavForKey(H264RING_EV_CODE(e), H264RING_EV_EXT(e) != 0, nv)) {
+            ObNav nv{};
+            const unsigned code = H264RING_EV_CODE(e);
+            const bool ext = H264RING_EV_EXT(e) != 0;
+            const bool known = obNavForKey(code, ext, nv) || obIdleMenuKey(code, ext, nv, readyIdle_);
+            if (H264RING_EV_PRESSED(e) && !known) {
                 ++st_.unmappedKeys;
-                st_.lastUnmappedKey = int(H264RING_EV_CODE(e) | (H264RING_EV_EXT(e) ? 0x100u : 0u));
+                st_.lastUnmappedKey = int(code | (ext ? 0x100u : 0u));
             } else if (H264RING_EV_PRESSED(e)) {
                 ++st_.keys;
 #ifndef MUT_INPUT_ACT_IN_OSD
@@ -185,7 +231,7 @@ private:
             ++i;
         return i;
     }
-    bool started_ = false, osd_ = false;
+    bool started_ = false, osd_ = false, readyIdle_ = false;
     uint32_t count_ = 0, pads_ = 0;
     int64_t nextRepeat_[16] = {};
     std::vector<ObNav> pending_;

@@ -87,6 +87,76 @@ inline const char* videoModeCmdIfChanged(const char* nextCmd, const char* lastCm
     return nextCmd;
 }
 
+// OwenB 0x0B59C11A: 720p CEA poke drops Ready to FPGA color bars (GH#12).
+// idle_vis=0 builds (0x0BFCE8C5, 0x0B1101C5 / 96eb13d2): the daemon overlay owns
+// idle, so CEA 720p60 is Native HDMI, 15 kHz CRT 240p stays 15.70-class (GH#10),
+// and 480p SVGA stays 31 kHz (GH#15 analog video2 lock after 480p latch).
+// applyDisplayRaster always noteIdleEvent so the keeper re-arms Ready after the
+// poke. 31 kHz 240p_lcd still remaps to 480i.
+inline bool plexObOverlayOwnsIdle(uint32_t loaded) {
+#ifdef MUT_GH12_NO_IDLE_VIS0
+    (void)loaded;
+    return false;
+#else
+    return loaded == 0x0BFCE8C5u || loaded == 0x0B1101C5u;
+#endif
+}
+
+inline bool plexObAllowsCrt240p(uint32_t loaded) {
+#ifdef MUT_GH10_NO_240P
+    (void)loaded;
+    return false;
+#else
+    return plexObOverlayOwnsIdle(loaded);
+#endif
+}
+
+inline bool plexObAllowsSvga480p(uint32_t loaded) {
+#ifdef MUT_GH15_NO_480P
+    (void)loaded;
+    return false;
+#else
+    return plexObOverlayOwnsIdle(loaded);
+#endif
+}
+
+inline bool videoModeCmdAllowedForBuild(uint32_t loaded, const char* cmd) {
+    if (!videoModeCmdIsSafe(cmd))
+        return false;
+    if (!recognisedPlexObBuildRow(loaded))
+        return true;
+    if (std::strcmp(cmd, kVideoModeCmd480i) == 0)
+        return true;
+    if (plexObOverlayOwnsIdle(loaded) && std::strcmp(cmd, kVideoModeCmd720p) == 0)
+        return true;
+    if (plexObAllowsCrt240p(loaded) && std::strcmp(cmd, kVideoModeCmd240p) == 0)
+        return true;
+#ifdef MUT_GH10_ALLOW_LCD
+    if (std::strcmp(cmd, kVideoModeCmd240pLcd) == 0)
+        return true;
+#endif
+    return plexObAllowsSvga480p(loaded) && std::strcmp(cmd, kVideoModeCmd480p) == 0;
+}
+
+inline const char* videoModeCmdForLoadedBuild(uint32_t loaded, const char* cmd) {
+    if (!videoModeCmdIsSafe(cmd))
+        return nullptr;
+    if (recognisedPlexObBuildRow(loaded)) {
+        if (plexObOverlayOwnsIdle(loaded) && std::strcmp(cmd, kVideoModeCmd720p) == 0)
+            return cmd;
+        if (plexObAllowsCrt240p(loaded) && std::strcmp(cmd, kVideoModeCmd240p) == 0)
+            return cmd;
+#ifdef MUT_GH10_ALLOW_LCD
+        if (std::strcmp(cmd, kVideoModeCmd240pLcd) == 0)
+            return cmd;
+#endif
+        if (plexObAllowsSvga480p(loaded) && std::strcmp(cmd, kVideoModeCmd480p) == 0)
+            return cmd;
+        return kVideoModeCmd480i;
+    }
+    return cmd;
+}
+
 // Content O[5:4] applies live. Display O[15:14] latches at daemon start / core
 // reset only — flipping F12 Display must not poke video_mode until reset.
 inline bool displayRasterApplyOnOsdChange() { return false; }
@@ -95,7 +165,11 @@ inline bool displayRasterApplyOnStartup() { return true; }
 // Cast/play must not rewrite /dev/MiSTer_cmd when the latched CEA mode is
 // already live. force=true renegotiates HDMI, drops vsync, and leaves glass
 // on the last chevron while Plex Web still reports playing (hw_presents=0).
+#ifdef MUT_FORCE_RASTER_ON_PLAY
+inline constexpr bool kForceDisplayRasterOnPlay = true;
+#else
 inline constexpr bool kForceDisplayRasterOnPlay = false;
+#endif
 
 // Last comma field of a frozen custom modeline is Fpix in kHz.
 inline int videoModePixelKhz(const char* cmd) {

@@ -118,7 +118,7 @@ inline SourceAspect sourceAspectForSend(const SourceAspect& in, std::string* not
     return sent;
 }
 
-// The first-AU PLXA on the FPGA path (review 19:24 L1/L2). A transcode (ladder proxy or PMS
+// The first-AU PLXA on the FPGA path (FPGA Bug 19:24 L1/L2). A transcode (ladder proxy or PMS
 // universal) sends its stream's DAR when the stream carries one: that raster is the
 // transcoder's, and every ladder rung is padded with setsar=1/1 (624x480 -> 13:10, 640x480 and
 // 320x240 -> 4:3). The movie's metadata there double-letterboxes: 16:9 on the 624 rung makes

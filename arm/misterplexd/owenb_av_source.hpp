@@ -9,11 +9,18 @@
 // session's rate guard decide what plays. cancel() aborts a blocked network read (stop).
 #include "libmisterplex/owenb_session.hpp"
 
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace misterplex::owenb {
 
 std::unique_ptr<IMediaSource> openAvSource(const OpenRequest& req, std::string& err);
+
+// #334: demux one embedded subrip track (container index) out of a PMS Part and
+// return it as an SRT body. headers carries the token (X-Plex-Token: ...\r\n);
+// partUrl must carry no query. Bounded by timeoutMs. False + err on failure.
+bool extractPartTextSrt(const std::string& partUrl, const std::string& headers, int index, int timeoutMs,
+                        const std::function<bool()>& cancelled, std::string& srt, std::string& err);
 
 } // namespace misterplex::owenb

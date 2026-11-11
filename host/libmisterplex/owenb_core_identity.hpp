@@ -24,6 +24,7 @@
 // Self-contained (no h264ring.h), so core_gate.hpp can include it. test_owenb_core_gate
 // static_asserts these constants against the vendored h264ring_layout.h.
 
+#include "build_id_mutants.hpp"
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -77,7 +78,8 @@ inline std::string rbfBaseName(const std::string& rbf) {
 inline bool coreNameIsPlexOwenb(const std::string& name) { return name == "PlexOB" || name == "PLEXOB"; }
 inline bool coreNameIsRawH264(const std::string& name) { return lowerAscii(name) == "h264"; }
 inline bool rbfNameIsPlexOwenb(const std::string& rbf) {
-    return lowerAscii(rbfBaseName(rbf)).compare(0, 6, kOwenbRbfPrefix) == 0;
+    const std::string base = lowerAscii(rbfBaseName(rbf));
+    return base.compare(0, 6, kOwenbRbfPrefix) == 0 || base == "misterplex";
 }
 inline bool rbfNameIsRawH264(const std::string& rbf) {
     return lowerAscii(rbfBaseName(rbf)).compare(0, 4, "h264") == 0;
@@ -189,13 +191,27 @@ inline constexpr OwenbBuildInfo kOwenbBuilds[] = {
     {0x0B593F92u, "PlexOB T10 MPXB stamped", false,
      "lane/owenb-t10-plexob; RBF md5 <pending closed R1 fit>"},
     {0x0B59C11Au, "PlexOB Y/C word 87", false,
-     "rel/yc-plexob-1019; vendor/H264.qsf MPX_PLEXOB_BUILD_ID 32'h0B59C11A; "
+     "review/yc-plexob-1019; vendor/H264.qsf MPX_PLEXOB_BUILD_ID 32'h0B59C11A; "
      "ring word 87 [3:0]=status[23:20], [9:4] tied 0; O[24] reserved for 240p; "
      "ring_in restored; dead fit 0x0B59C119 is not this id; shipped PlexOB RBF md5 c8b34604"},
+    {0x0BFCE8C5u, "PlexOB Y/C word 87, idle_vis=0", false,
+     "rtl/owenb-idle0-f12-1023 (3e173d25 lineage); vendor/H264.qsf MPX_PLEXOB_BUILD_ID 32'h0BFCE8C5; "
+     "same Y/C map as 0x0B59C11A; idle_vis=0 (no FPGA colour bars, the daemon overlay owns idle); "
+     "RBF md5 <pending gated fit>; rollback is 0x0B59C11A / c8b34604"},
+    {0x0B2403A7u, "PlexOB Y/C word 87, 240p", false,
+     "240p option O[24] inside the PlexOB core (fit artifact plexob-yc-0b2403a7): same Y/C map and ring as 0x0B59C11A; "
+     "shipped RBF md5 ecae698f; rollback is 0x0B59C11A / c8b34604"},
+    {0x0B1101C5u, "MiSTerPlex 240p+ss1c", false,
+     "BUILD_ID 0x0B1101C5; same file MiSTerPlex.rbf; source 5588134126b965c8095eb2fa7cf3655f958579da; "
+     "RBF md5 96eb13d2; seed 10; 0x0B2403A7 stays accepted"},
 #endif
 };
 
 inline const OwenbBuildInfo* recognisedOwenbBuild(uint32_t id) {
+    if (buildIdMutRejects(id))
+        return nullptr;
+    if (buildIdMutAccepts(id))
+        return &kOwenbBuilds[0];
     for (const OwenbBuildInfo& b : kOwenbBuilds)
         if (b.id == id)
             return &b;

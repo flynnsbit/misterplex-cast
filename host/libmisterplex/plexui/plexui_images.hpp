@@ -70,6 +70,14 @@ std::size_t computeImageCacheBudgetBytes(int hubItemCount, int gridPosterW, int 
 std::size_t computeRamCacheBudgetBytes(int hubItemCount, int gridPosterW, int gridPosterH,
                                        int gridVisibleRows, int gridCols);
 
+// GH#22 / GH#27: PlexUI RAM art cache never exceeds the 40 MB soak growth ceiling
+// unless MPX_PLEXUI_RAM_CACHE_MB is set.
+#ifdef MUT_PLEXUI_RAM_96MB
+inline constexpr std::size_t kPlexUiRamCacheMaxBytes = 96u * 1024u * 1024u;
+#else
+inline constexpr std::size_t kPlexUiRamCacheMaxBytes = 40u * 1024u * 1024u;
+#endif
+
 // OB port: the canvas the decoded art is prepared for (corner radius, R1 backdrops, budget).
 // Defaults are R1 (640x480, radius 8, hub 96x144). Thread-safe.
 void setImageGeometry(int screenW, int screenH, int cornerRadius, int hubPosterW, int hubPosterH);

@@ -23,7 +23,7 @@ struct PmsEndpoint {
     std::string label;
 };
 
-// "http://192.0.2.24:32400", "https://[fd00::1]:32400/x", "192.0.2.2".
+// "http://192.0.2.10:32400", "https://[fd00::1]:32400/x", "203.0.113.2".
 inline PmsEndpoint parsePmsBase(const std::string& base) {
     PmsEndpoint ep;
     std::string h = base;

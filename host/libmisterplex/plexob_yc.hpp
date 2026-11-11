@@ -29,6 +29,7 @@
 // H264RING_L_OSD_OPEN), and that pair has been unchanged for a few seconds. An
 // unsaved menu flip therefore cannot reload the core out from under Save settings.
 
+#include "build_id_mutants.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -42,8 +43,27 @@ namespace misterplex::plexob {
 
 // vendor/H264.qsf MPX_PLEXOB_BUILD_ID. Distinct from T10 0x0B593F92, from the
 // word-82 lane 0x0B59C101, and from the dead input-tied-off fit 0x0B59C119.
-inline constexpr uint32_t kPlexObYcBuildId = 0x0B59C11Au;
+inline constexpr uint32_t kPlexObYcBuildId = 0x0B59C11Au;  // c8b34604, the rollback RBF
+// 1023 idle_vis=0 build (rtl/owenb-idle0-f12-1023). An exact-match list, never a mask or a range:
+// the daemon accepts BOTH, an older daemon knows only the first and refuses this one loudly.
+inline constexpr uint32_t kPlexObIdle0BuildId = 0x0BFCE8C5u;
+// 240p option O[24] inside the PlexOB core (/work/reviewer/240P-OWENB-RULING-1024-0140.md; the earlier
+// 0x0B240F9E was superseded and never fitted, so it is NOT accepted). Same ring, same Y/C word 87 map. Must be
+// in the daemon BEFORE any 240p RBF is loaded: an older daemon refuses the RBF loudly.
+inline constexpr uint32_t kPlexOb240pBuildId = 0x0B2403A7u;
+// PR #278 (240p + ss1c color). Accepted next to 0x0B2403A7. Not a fitted pin yet.
+inline constexpr uint32_t kPlexOb1101BuildId = 0x0B1101C5u;
+#ifdef MUT_YC_NO_1101
+inline constexpr uint32_t kPlexObYcBuildIds[] = {kPlexObYcBuildId, kPlexObIdle0BuildId, kPlexOb240pBuildId};
+#else
+inline constexpr uint32_t kPlexObYcBuildIds[] = {kPlexObYcBuildId, kPlexObIdle0BuildId,
+                                                  kPlexOb240pBuildId, kPlexOb1101BuildId};
+#endif
+#ifdef MUT_YC_WORD_82
+inline constexpr unsigned kRingWordYcMode = 82u;  // mutant: rumble word (GH#26 owenb #20 blocker)
+#else
 inline constexpr unsigned kRingWordYcMode = 87u;
+#endif
 inline constexpr uint32_t kYcRingLoMask = 0xFu;
 // h264ring_layout.h: H264RING_LIVE_W 4, LIVE_LSB 16, L_OSD_OPEN (1<<5).
 inline constexpr unsigned kRingWordLive = 4u;
@@ -51,7 +71,16 @@ inline constexpr unsigned kYcOsdOpenBit = 16u + 5u;
 inline constexpr int64_t kYcStableUs = 3000000;
 inline constexpr unsigned kYcReloadAttemptCap = 3u;
 
-inline bool isPlexObYcBuild(uint32_t buildId) { return buildId == kPlexObYcBuildId; }
+inline bool isPlexObYcBuild(uint32_t buildId) {
+    if (buildIdMutRejects(buildId))
+        return false;
+    if (buildIdMutAccepts(buildId))
+        return true;
+    for (const uint32_t id : kPlexObYcBuildIds)
+        if (buildId == id)
+            return true;
+    return false;
+}
 
 inline unsigned analogFromRingLo(uint32_t lo) { return lo & 3u; }
 inline unsigned ntscFromRingLo(uint32_t lo) { return (lo >> 2) & 3u; }
@@ -223,12 +252,12 @@ inline std::string plexObCfgPathForVersion(int version) {
 
 inline std::string plexObCfgPath() { return plexObCfgPathForVersion(kPlexObConfVersion); }
 
-// Word 88 after a Y/C reload: tag MPXB and this tree's BUILD_ID. Anything else
+// Word 88 after a Y/C reload: tag MPXB and a Y/C BUILD_ID of kPlexObYcBuildIds. Anything else
 // (T10 0x0B593F92, unstamped, unreadable) is a different bitstream.
 inline bool ycReloadStampOk(uint64_t word88) {
     const uint32_t tag = static_cast<uint32_t>(word88 >> 32);
     const uint32_t id = static_cast<uint32_t>(word88);
-    return tag == 0x4D505842u && id == kPlexObYcBuildId;
+    return tag == 0x4D505842u && isPlexObYcBuild(id);
 }
 
 // Little-endian status[31:0]. Bits 20-23 are the high nibble of byte 2.
@@ -324,6 +353,7 @@ struct YcPollResult {
     bool removedKeys = false;
     bool wantReload = false;
     bool gaveUp = false;
+    bool raster = false;   // ANALOG_RASTER job: no Y/C marker, finishes the raster state instead
     unsigned analog = 0;
     unsigned ntsc = 0;
     uint32_t value = 0;

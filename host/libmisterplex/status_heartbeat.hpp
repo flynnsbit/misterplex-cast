@@ -1,5 +1,5 @@
 // Status block heartbeat byte H (OSD-MENU-SPEC-1002 section 9; byte choice:
-// the status-byte-H lab note, release 09:40).
+// ~/notes/STATUS-BYTE-H.md, reviewer 09:40).
 //
 // H is status byte 6, bits [55:48]. Today it is the telemetry byte
 // first_mb_type, tied to 0 on every Plex core (bounded slice parser) and only
@@ -62,7 +62,7 @@ inline uint8_t compose(bool toggle, Server server, bool casting, uint8_t fps_cla
 // from the last real heartbeat.
 inline uint8_t stopValue(uint8_t last) { return static_cast<uint8_t>(last & kToggle); }
 
-// Lab only (release 11:46, 480i glass part B): MPX_STATUS_BLOCK_FORCE=1 makes every
+// Lab only (reviewer 11:46, 480i glass part B): MPX_STATUS_BLOCK_FORCE=1 makes every
 // negotiated build row act as statusBlock. Exactly "1"; anything else (or unset) is off.
 inline bool statusBlockForceEnv(const char* v) { return v && v[0] == '1' && v[1] == '\0'; }
 

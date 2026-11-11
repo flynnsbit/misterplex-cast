@@ -1,13 +1,11 @@
-// rc2: LAN-configurable helper endpoints (ladder :18767, mpx-menu :18769, gcast-xcode :18780).
-// One key, MPX_LAB_HOST=<host>, points all three at a LAN helper box; each service keeps its own
+// rc2: LAN-configurable helper endpoints (mpx-menu :18769, airplay-xcode :18780).
+// One key, MPX_LAB_HOST=<host>, points both at a LAN helper box; each service keeps its own
 // full-URL override. Env wins over /media/fat/linux/misterplex.conf. Pure: lookups are injected.
-//   ladder : MPX_LADDER_URL (env, empty = force direct PMS) > MPX_REMOTE_LADDER_PROXY (env, same) > REMOTE_LADDER_PROXY (env)
-//            > http://MPX_LAB_HOST:MPX_LAB_LADDER_PORT > "" (direct PMS, the product default).
-//            The conf ladder keys stay ignored (a stale conf must not re-enable a proxy); only
-//            an explicit MPX_LAB_HOST (env or conf) derives one.
+//   ladder : removed (#275). misterplexd plays via PMS only; ladder env/conf keys are ignored.
 //   menu   : MPX_MENU_URL (env) > MPX_MENU_BASE (env) + /menu > MPX_MENU_URL (conf)
 //            > http://MPX_LAB_HOST:MPX_LAB_MENU_PORT/menu > "" (no helper: PMS sections only). No built-in IP.
-//   xcode  : GCAST_XCODE (env, empty = none) > GCAST_XCODE (conf) > http://MPX_LAB_HOST:MPX_LAB_XCODE_PORT > "".
+//   xcode  : AIRPLAY_XCODE (env, empty = none) > GCAST_XCODE (env, compat alias, empty = none)
+//            > AIRPLAY_XCODE (conf) > GCAST_XCODE (conf) > http://MPX_LAB_HOST:MPX_LAB_XCODE_PORT > "".
 #pragma once
 #include <cstdlib>
 #include <functional>
@@ -19,16 +17,16 @@ namespace misterplex::lab_endpoints {
 
 using Lookup = std::function<std::optional<std::string>(const char* key)>;   // nullopt = key unset
 
-constexpr int kLadderPort = 18767, kMenuPort = 18769, kXcodePort = 18780;
+constexpr int kMenuPort = 18769, kXcodePort = 18780;
 
 struct Endpoints {
     std::string host;                 // normalized MPX_LAB_HOST ("" = unset)
-    std::string ladder, menu, xcode;  // "" = not configured
-    std::string ladderSrc, menuSrc, xcodeSrc;
+    std::string menu, xcode;  // "" = not configured
+    std::string menuSrc, xcodeSrc;
     std::vector<std::string> notes;   // rejected values
 };
 
-// "http://192.0.2.50/" -> "192.0.2.50". Hostnames, IPv4 and [IPv6] only; anything else -> "".
+// "http://203.0.113.55/" -> "203.0.113.55". Hostnames, IPv4 and [IPv6] only; anything else -> "".
 inline std::string normalizeHost(std::string v) {
     for (const char* p : {"http://", "https://"})
         if (v.rfind(p, 0) == 0)
@@ -81,34 +79,9 @@ inline Endpoints resolve(const Lookup& env, const Lookup& conf) {
         if (e.host.empty())
             e.notes.push_back("MPX_LAB_HOST=" + *raw + " ignored (not a host)");
     }
-    const int lp = parsePort(pick("MPX_LAB_LADDER_PORT"), kLadderPort, "MPX_LAB_LADDER_PORT", e.notes);
     const int mp = parsePort(pick("MPX_LAB_MENU_PORT"), kMenuPort, "MPX_LAB_MENU_PORT", e.notes);
     const int xp = parsePort(pick("MPX_LAB_XCODE_PORT"), kXcodePort, "MPX_LAB_XCODE_PORT", e.notes);
     const auto at = [&](int port) { return "http://" + e.host + ":" + std::to_string(port); };
-
-    // ladder: the explicit env key wins even when empty (forces direct PMS); conf ladder keys never count.
-    if (auto v = env("MPX_LADDER_URL")) {
-        e.ladder = *v;
-        e.ladderSrc = v->empty() ? "env MPX_LADDER_URL (empty: direct PMS)" : "env MPX_LADDER_URL";
-    } else if (auto v = env("MPX_REMOTE_LADDER_PROXY")) {
-        e.ladder = *v;
-        e.ladderSrc = v->empty() ? "env MPX_REMOTE_LADDER_PROXY (empty: direct PMS)" : "env MPX_REMOTE_LADDER_PROXY";
-    } else if (auto v = env("REMOTE_LADDER_PROXY"); v && !v->empty()) {
-        e.ladder = *v;
-        e.ladderSrc = "env REMOTE_LADDER_PROXY";
-#ifndef MUT_LE_CONF_LADDER
-    } else if (!e.host.empty()) {
-#else
-    } else if (auto c = conf("MPX_REMOTE_LADDER_PROXY"); c && !c->empty()) {
-        e.ladder = *c;
-        e.ladderSrc = "conf";
-    } else if (!e.host.empty()) {
-#endif
-        e.ladder = at(lp);
-        e.ladderSrc = "MPX_LAB_HOST";
-    } else {
-        e.ladderSrc = "unset (direct PMS)";
-    }
 
     if (auto v = env("MPX_MENU_URL"); v && !v->empty()) {
         e.menu = *v;
@@ -129,13 +102,24 @@ inline Endpoints resolve(const Lookup& env, const Lookup& conf) {
         e.menuSrc = "unset (PMS sections only)";
     }
 
+    const auto takeXcodeEnv = [&](const char* key) -> bool {
 #ifndef MUT_LE_XCODE_EMPTY_FALLS_THROUGH
-    if (auto v = env("GCAST_XCODE")) {
+        if (auto v = env(key)) {
 #else
-    if (auto v = env("GCAST_XCODE"); v && !v->empty()) {
+        if (auto v = env(key); v && !v->empty()) {
 #endif
-        e.xcode = *v;
-        e.xcodeSrc = v->empty() ? "env GCAST_XCODE (empty: none)" : "env GCAST_XCODE";
+            e.xcode = *v;
+            e.xcodeSrc = v->empty() ? std::string("env ") + key + " (empty: none)"
+                                    : std::string("env ") + key;
+            return true;
+        }
+        return false;
+    };
+    if (takeXcodeEnv("AIRPLAY_XCODE") || takeXcodeEnv("GCAST_XCODE")) {
+        // primary key wins, including an explicit empty (none). GCAST_XCODE is the compat alias.
+    } else if (auto c = conf("AIRPLAY_XCODE"); c && !c->empty()) {
+        e.xcode = *c;
+        e.xcodeSrc = "conf AIRPLAY_XCODE";
     } else if (auto c = conf("GCAST_XCODE"); c && !c->empty()) {
         e.xcode = *c;
         e.xcodeSrc = "conf GCAST_XCODE";
@@ -151,7 +135,6 @@ inline Endpoints resolve(const Lookup& env, const Lookup& conf) {
 inline std::string logLine(const Endpoints& e) {
     std::string s = "misterplexd: LAN endpoints";
     s += " lab_host=" + (e.host.empty() ? std::string("-") : e.host);
-    s += " ladder=" + (e.ladder.empty() ? std::string("-") : e.ladder) + " [" + e.ladderSrc + "]";
     s += " menu=" + (e.menu.empty() ? std::string("-") : e.menu) + " [" + e.menuSrc + "]";
     s += " xcode=" + (e.xcode.empty() ? std::string("-") : e.xcode) + " [" + e.xcodeSrc + "]";
     for (const auto& n : e.notes)

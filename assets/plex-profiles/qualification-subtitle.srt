@@ -1,0 +1,7 @@
+1
+00:00:02,000 --> 00:00:06,000
+MiSTerPlex P1: subtitle burn-in
+
+2
+00:00:09,000 --> 00:00:13,000
+23.976 source - non-H264 input

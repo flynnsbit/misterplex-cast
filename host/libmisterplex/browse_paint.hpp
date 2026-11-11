@@ -40,8 +40,8 @@ public:
     virtual std::uint32_t requestFlip(int idleBuf) = 0;
     // Non-blocking. Asked on every pump() with no paint or repoint in flight, even with nothing pending, so the
     // target's pacer runs from the ACK rather than from the next submit. False while no paint may start: between
-    // session BEGIN and END (review 19:16 (1)), and on /dev/mem until F5 pacing after the previous paint ACK is done
-    // (review 19:27: 2 same-buffer no-op PLXH latches; w9 PlxhF5Pacer::ready()).
+    // session BEGIN and END (Bug 19:16 (1)), and on /dev/mem until F5 pacing after the previous paint ACK is done
+    // (Bug 19:27: 2 same-buffer no-op PLXH latches; w9 PlxhF5Pacer::ready()).
     virtual bool flipAllowed() { return true; }
     // Called once per paint ACK with the idle buffer that ACK made shown (F5 pacing starts here). Not for repoints.
     virtual void paintAcked(int /*shownBuf*/) {}

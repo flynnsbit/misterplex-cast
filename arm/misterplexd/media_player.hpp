@@ -7,10 +7,23 @@
 #include "libmisterplex/present_bank.hpp"
 #include "libmisterplex/fabric_direct.hpp"
 #include "libmisterplex/library_browser.hpp"
+#include "libmisterplex/plex_server_catalog.hpp"
+#include "libmisterplex/ambient.hpp"
 #include "libmisterplex/browse_library_list.hpp"
 #include "libmisterplex/video_backend.hpp"
 #include "libmisterplex/h264_bitstream_transport.hpp"
+#include "gcast/airplay_mirror_pcm.hpp"
 #include "log_redact.hpp"
+#include "libmisterplex/track_select.hpp"
+#include "libmisterplex/track_shortcuts.hpp"
+#include "libmisterplex/subtitle_sink.hpp"
+#include "libmisterplex/osd_subtitle_sink.hpp"
+#include "libmisterplex/embedded_text_part.hpp"
+#include "libmisterplex/chapters.hpp"
+#include "libmisterplex/scrub_thumbs.hpp"
+#include "libmisterplex/marker_tracker.hpp"
+#include "libmisterplex/mark_watched.hpp"
+#include "libmisterplex/mraudio_oneshot.hpp"
 
 namespace misterplex {
 
@@ -164,7 +177,9 @@ bool letterboxCrop480i(int& outLeft, int& outRight, int& outTop, int& outBottom,
 #include "libmisterplex/stalled_pic_watchdog.hpp"
 
 #include "libmisterplex/owenb_core_identity.hpp"
+#include "libmisterplex/analog_raster.hpp"
 #include "libmisterplex/plexob_yc.hpp"
+#include "libmisterplex/service_switch.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -190,7 +205,7 @@ public:
     bool store64(uint32_t phys, uint64_t value) override { return fpga_.plxStore64(phys, value); }
     bool load64(uint32_t phys, uint64_t* value) override { return fpga_.plxLoad64(phys, value); }
     void barrier() override { __sync_synchronize(); }
-    // A core reload re-primes the next PLXH request (review 20:23 RULING C).
+    // A core reload re-primes the next PLXH request (FPGA Bug 20:23 RULING C).
     uint64_t coreChanges() override { return CoreGate::process().changes(); }
 
 private:
@@ -277,6 +292,7 @@ inline void ttfpTryComplete(TtfpTimestamps& t) {
 
 namespace owenb {
 class OwenbPlayer;
+struct PrefetchedInput;
 // Opaque here (owenb_session.hpp pulls in h264ring.h); must match owenb_session.hpp.
 enum class EndReason : uint8_t;
 struct ObMenuState;   // OWENB-P1B 0010 (owenb_menu.hpp)
@@ -329,20 +345,79 @@ public:
     // MPX_HAVE_OWENB_RING and MPX_HAVE_LIBAV. Without them the OB route refuses play with a clear
     // error. The OB route never falls back to the legacy path.
     bool owenbPlayActive() const;
+    bool owenbDecodedPicture() const;   // OB play showed a real decoded picture (remote direct fallback)
     // OWENB-P1B T7: the OB idle session (overlay without a play). The card shows this name; the main loop's
     // PMS probe feeds the "Plex server unreachable" screen (-1 unknown, 0 unreachable, 1 connected).
     void setObIdleName(const std::string& name);
     // GCAST P4: a line under the idle chevron (R1) and the OB idle card's hint. Empty = unchanged.
     void setIdleReadyLine(const std::string& line);
+    std::string idleReadyLine() { std::lock_guard<std::mutex> l(obMu_); return idleReadyLine_; }
+    // PLAY-PENDING: status card and PlexUI off, big chevron until the first HDMI picture.
+    // label is the source line ("Loading YouTube..."). Empty keeps the chevron alone.
+    // No-op unless this session's backend is OwenbRing. gen is the play generation.
+    void armPlayPendingCue(uint64_t gen, const std::string& label = {});
+    // Stop / open-fail / nothing queued for this generation: IDLE card, no big watermark.
+    // A newer generation's cue is left alone. gen 0 clears whatever is armed.
+    void abandonPlayPending(uint64_t gen);
+    // #226: forced remote transcode resolve failure — PLAY-PENDING off, StreamError on the idle card.
+    void showRemoteTranscodeFailure(uint64_t gen, const std::string& detail);
+    // AirPlay refuse: a toast for a few seconds on the ready card. Does not start playback.
+    void showIdleNotice(const std::string& text);
+    // A short fixed-text toast on the OB OSD (3 s), e.g. the queue-add result. Callers pass fixed texts only.
+    void showOsdNotice(const std::string& text);
+    void setServiceSwitchHandler(std::function<bool(bool)> handler) {
+        serviceSwitch_ = std::move(handler);
+    }
+    bool serviceReady() const;
+    void serviceTick();
+    // AirPlay screen-mirror only. Default producer is null: these are no-ops and do not
+    // touch the Plex/gcast URL path. AIRPLAY_MIRROR=1 attaches the existing OwenbRing
+    // (same IAvRecordProducer Plex/gcast play uses). Existing tests never call these.
+    void setAirplayMirrorProducer(h264stream::IAvRecordProducer* p);
+    h264stream::IAvRecordProducer* owenbRingProducer();
+    bool prepareAirplayMirrorProducer();
+    bool beginAirplayMirrorSession();
+    bool pushAirplayMirrorAu(const uint8_t* annexb, size_t len, int64_t pts90k);
+    void endAirplayMirrorSession();
+    bool airplayMirrorActive();   // a ring session is open (the first AU / MirrorStart began it)
+    // Decoded RAOP PCM (48k s16le stereo) during an active mirror session -> the same ring. false = dropped.
+    bool pushAirplayMirrorPcm(const uint8_t* pcm, size_t len);
     // MEMSTAT: owenb out_ / ready_ depths and the demuxer probe-packet bound. Zeros when no OB play.
     void owenbQueueDepths(unsigned long long& out, unsigned long long& ready, unsigned long long& probe) const;
     void setObPmsState(int state, const std::string& label);
+    // AMBIENT deck from the idle fetch. Empty is ignored. Republished when the
+    // OwenB idle session arms, so a fetch that finished first still reaches the card.
+    void setAmbientDeck(std::shared_ptr<const misterplex::AmbientDeck> deck);
     bool owenbIdleWanted() const;
     static void owenbFbconAtStart();   // OWENB-P1B 0009: give back a console a dead daemon left detached
     // The cast timeline's volume (Plex 0..100; companion setParameters). On OB it is the core's
     // attenuation (owenb::attenuationForVolume); the legacy path keeps full volume.
     void setVolumePercent(int volume);
     int volumePercent() const { return volumePercent_.load(); }
+    // Called on the resolve thread just before play(). Indexes are container indexes
+    // (PMS Stream@index); -1 leaves libav on its default (best audio, no subtitle).
+    // transcodeUrl is the universal template used when a later subtitle choice must burn.
+    void armTrackSelection(const TrackPick& pick, const StreamCatalog& catalog, const std::string& showKey,
+                           int partId, const std::string& pmsBase, const std::string& token,
+                           const std::string& transcodeUrl = {}, const std::string& softSubPath = {},
+                           const std::string& partKey = {});
+    // Companion setStreams. Saves and PUTs only after a real change is open on this item.
+    SetStreamsResult applyUserStreams(const SetStreamsRequest& req);
+    // Ids libav or the universal URL actually opened. The timeline echoes these, not the plan.
+    void setOpenedStreamsHandler(std::function<void(int audioStreamId, int subtitleStreamId)> f) {
+        onOpenedStreams_ = std::move(f);
+    }
+    // track_pref_server_sync. Default off: local show prefs only, no part PUT.
+    void setTrackPrefServerSync(bool on) { trackPrefServerSync_ = on; }
+    // Controller track shortcuts (docs/CONTROLLER-TRACK-SHORTCUTS.md). Call before start().
+    // An empty or unclear binding stays off (the default). There is no built-in chord.
+    // Returns true when the binding is valid. An OB-less build always returns false.
+    bool setControllerTrackShortcuts(const std::string& conf);
+    // SUBTITLES=burn: fetch/parse failure may restart as a PMS burn. Default off.
+    void setSubtitleBurnFallback(bool on) { subtitleBurnFallback_ = on; }
+    mpx::OsdSubtitleSink& osdSubtitleSink() { return osdSubtitleSink_; }
+    // Tests only. Call before the first play so hooks bind this sink.
+    void setSubtitleSinkForTest(mpx::SubtitleSink& sink) { subtitleWire_.rebind(sink); }
     int64_t consumedAudioSamples() const { return fpgaAudioConsumedSamples_.load(); }
 
     void setLog(LogFn f) { log_ = std::move(f); }
@@ -356,7 +431,41 @@ public:
     void setOnContentResolutionChanged(ContentResFn f) { onContentRes_ = std::move(f); }
     void setOnDisplayResolutionChanged(DisplayResFn f) { onDisplayRes_ = std::move(f); }
     void setLibraryFetch(LibraryFetchFn f) { libraryFetch_ = std::move(f); }
+    // PLEX_SERVERS with per-server tokens (memory only). More than one opens the picker.
+    void setPlexBrowseTargets(std::vector<PlexBrowseTarget> targets);
+    PlexBrowseTarget activePlexBrowseTarget() const;
+    int plexBrowseTargetCount() const;
+    std::string libraryFetchUrl(const std::string& path) const;
+    // linked() false, or a 401 body, paints the plex.tv/link line. linkCode() is the
+    // Ready-screen code (comp.plexTvCode). Neither callback starts a PIN request.
+    void setLibraryLink(std::function<bool()> linked, std::function<std::string()> linkCode) {
+        libraryLinked_ = std::move(linked);
+        libraryLinkCode_ = std::move(linkCode);
+    }
     void setLibraryPlay(LibraryPlayFn f) { libraryPlay_ = std::move(f); }
+    // MARK_WATCHED on: the playing item (separate from /:/timeline). Off: unset.
+    void setMarkWatchedFn(std::function<void(MarkWatchedOp)> f) { markWatchedFn_ = std::move(f); }
+    void setSpelunkrTv(bool on);
+    void showSpelunkrLanding();
+    void setSpelunkrGuideOpen(bool on) { spelunkrGuideOpen_.store(on); }
+    void setSpelunkrCmd(std::function<void(PlaybackCommand)> f) {
+        std::lock_guard<std::mutex> lock(spelunkrCmdMu_);
+        spelunkrCmd_ = std::move(f);
+    }
+    void handlePlaybackInput(PlaybackCommand command) { dispatchPlaybackInput(command); }
+    // OSD on the loaded owenb overlay (withObUi is private). Uses the overlay
+    // steady clock; a unix-epoch now would leave the banner up forever.
+    void showSpelunkrBanner(const std::string& dial, const std::string& name, const std::string& title,
+                           bool tuning = false);
+    void fillSpelunkrBannerTitle(const std::string& title, const std::string& name = {});
+    void beginSpelunkrTune(uint64_t gen, const std::string &dial, const std::string &name);
+    bool spelunkrUiPending();
+    void showSpelunkrError(const std::string& detail, bool landing = false);
+    void setSpelunkrGuideOverlay(bool open, int cursor, std::vector<std::string> lines);
+    // E9: Program menu "Safe area" writes OVERSCAN_* . Unset until this runs.
+    void setOverscanPersist(std::function<bool(int left, int right, int top, int bottom)> f) {
+        overscanPersist_ = std::move(f);
+    }
     // MPX_BROWSE_LIBLIST exactly "1" (browse_library_list.hpp). Off leaves browse and play alone.
     void setLibraryListEnabled(bool on) { libraryListOn_ = on; }
     bool libraryListEnabled() const { return libraryListOn_; }
@@ -373,6 +482,51 @@ public:
     void enablePlexUi(plexui::PlexUiController::Config cfg,
                       std::function<uint64_t(const BrowsePlayTicket&)> play);
     void plexUiCompanionNav(const std::string& op);
+    // True when an Up next card is up and this play must not also auto-advance.
+    bool plexUiArmUpNext(const std::string& endedRatingKey);
+
+    // Skip Intro / Up Next. Off unless armMarkers ran with MARKERS=1.
+    struct MarkerArm {
+        std::vector<markers::Marker> markers;
+        int64_t durationMs = 0;
+        markers::TrackerConfig cfg{};
+        bool preserveConsumed = false;
+        bool userLanded = false;
+        std::string ratingKey;
+        bool transcoded = false;
+        bool queued = false;
+        std::function<std::optional<markers::NextItem>()> resolveNext;
+    };
+    struct MarkerFire {
+        markers::Action action = markers::Action::None;
+        int64_t seekMs = -1;
+        int64_t markerEndMs = -1;
+        int64_t mediaMs = 0;
+        int64_t durationMs = 0;
+        bool transcoded = false;
+        bool queued = false;
+        bool hasNext = false;
+        markers::NextItem next;
+        std::string toast;
+    };
+    using MarkerActionFn = std::function<void(const MarkerFire&)>;
+    void armMarkers(MarkerArm arm);
+    void clearMarkers();
+    void setMarkerAction(MarkerActionFn fn);
+    bool markerSuppressEof() const;
+    int64_t mediaMs() const;
+    void seekMarker(int64_t ms);
+    // CHAPTERS on: the PMS chapter list for the play that just resolved.
+    // Off: clearChapters drops a list from earlier in this process. The menu
+    // still hides the rows because chaptersEnabled() is false.
+    void armChapters(std::vector<chapters::Chapter> chapters);
+    void clearChapters();
+    // SCRUB_THUMBS on: fetch the part's BIF after this call, before play().
+    // play() keeps that fetch. A play that was not armed drops the previous index.
+    // Off, or a part with no sd/hd index: clearScrubIndex, no GET.
+    void armScrubIndex(std::string pmsBase, std::string token, int partId, std::string kind);
+    void clearScrubIndex();
+    void onMarkerMedia(int64_t mediaMs, uint32_t stamp, bool paused);
     bool browseV2() const { return browseV2_; }
     bool plexUi() const { return plexUi_ != nullptr; }
     // Core reset / daemon start: latch Display and write video_mode once.
@@ -414,7 +568,15 @@ public:
     }
     void setAudioPath(std::string p) { audioDev_ = std::move(p); }
     void setAudioEnabled(bool on) { audioEnabled_ = on; }
+    // GH#235: s16le stereo 48 kHz clip. Mixes in audioPump while playing; idle writes MrAudio.
+    void pushOneShotPcm(std::vector<uint8_t> pcm);
+    void playUiClick() { pushOneShotPcm(uiClickPcm()); }
+    void maybePlayThemeHome(bool plexVisible);
     // present: "fb0" (default) and/or "fpga" (DDR YUV420p → frame_store)
+    void setAnalogRaster(plexob::RasterWant w) {
+        std::lock_guard<std::mutex> lk(ycMu_);
+        rasterWant_ = w;
+    }
     void setPresentMode(std::string mode) { presentMode_ = std::move(mode); }
     void setDdrMemSync(bool on) { fpga_.setDdrMemSync(on); }
     void setDdrMemFlush(bool on) { fpga_.setDdrMemFlush(on); }
@@ -509,6 +671,8 @@ public:
     // of the previous video on screen forever.
     void setIdleMode(IdleMode m) { idleMode_.store(static_cast<int>(m)); }
     IdleMode idleMode() const { return static_cast<IdleMode>(idleMode_.load()); }
+    void noteIdleQuietRestart();
+    IdleMode effectiveIdleModeNow() const;
     void setHoldLastFrame(bool on) { lastFrameHoldEnabled_.store(on); }
     bool holdLastFrame() const { return lastFrameHoldEnabled_.load(); }
     // IDLE-BLACK: the hold skips the end-of-session idle paint only where the core can keep the last AU, i.e.
@@ -543,7 +707,7 @@ public:
     // Lab --play-file runs before the main loop: tick the gate until it has verified the
     // loaded core (settle + CAPS probe), or timeoutMs runs out. True when open.
     bool waitCoreGateOpen(int timeoutMs);
-    // MAST-WEDGE (review 21:14, mast_reload.hpp): called once the hand-off of ONE guarded
+    // MAST-WEDGE (FPGA Bug 21:14, mast_reload.hpp): called once the hand-off of ONE guarded
     // core reload to $MPX_MAST_RELOAD_CMD has started; the caller makes misterplexd exit with
     // mast::kReloadExitCode. Unset: a wedge is a clean fail (no reload, no blind retries).
     void setMastReloadHandler(std::function<void(const std::string& where)> h) {
@@ -561,6 +725,10 @@ public:
         std::string reason;       // printed after "gate fallback: " in resolve's r.detail
         std::string row;          // R2 or R6
     };
+    // P2 11-10: Spelunkr mid-play failure -> true when main will skip the item with a banner.
+    void setSpelunkrPlayFailedHandler(std::function<bool(const std::string&)> h) {
+        spelunkrPlayFailed_ = std::move(h);
+    }
     void setGateFallbackHandler(std::function<void(const GateFallbackRequest&)> h) {
         gateFallbackHandler_ = std::move(h);
     }
@@ -604,6 +772,11 @@ public:
         sourceMediaH_ = h > 0 ? h : 0;
     }
     void setSourceInterlaced(bool interlaced) { sourceInterlaced_ = interlaced; }
+    bool prepareSpelunkrVideo();
+    std::shared_ptr<owenb::PrefetchedInput> prefetchSpelunkr(
+        const std::string& url, int64_t offsetMs, const std::string& headers,
+        const std::function<bool()>& cancelled, std::string& err, bool& timedOut,
+        int64_t headerCacheSize = -1, const std::string& headerCacheEtag = {});
     bool sourceInterlaced() const { return sourceInterlaced_; }
     uint32_t coreId480i() const { return coreId480i_; }
     uint32_t coreId240p() const { return coreId240p_; }
@@ -624,14 +797,14 @@ public:
     // When false, do not open ffmpeg pipe:3 (source has no audio stream).
     void setSourceHasAudio(bool v) { sourceHasAudio_ = v; }
     // Resolve served a transcode (ladder proxy or PMS universal), not the Part: the FPGA path then
-    // sends the stream's DAR over the metadata (firstAuSourceAspect, review 19:24 L2).
+    // sends the stream's DAR over the metadata (firstAuSourceAspect, FPGA Bug 19:24 L2).
     void setSourceTranscoded(bool v) { sourceTranscoded_.store(v); }
     // R1 PLXH host side for the idle painter: paint flips through r1PlxhPolicy().requestIdle,
-    // F5 pacing through r1PlxhPacer() (r1_plxh.hpp; review 19:16 (1)(c), 19:27).
+    // F5 pacing through r1PlxhPacer() (r1_plxh.hpp; FPGA Bug 19:16 (1)(c), 19:27).
     r1::PlxhLink& r1PlxhLink() { return plxhLink_; }
     r1::PlxhSessionPolicy& r1PlxhPolicy() { return plxhPolicy_; }
     r1::PlxhF5Pacer& r1PlxhPacer() { return plxhPacer_; }
-    // review 06:57 D3 + 07:30 C1: the PLXH en=1 gate closes at the PLAY request, before the
+    // FPGA Bug 06:57 D3 + 07:30 C1: the PLXH en=1 gate closes at the PLAY request, before the
     // resolve, with a hold keyed by the request's play generation (r1_plxh.hpp beginPlayRequest).
     // main.cpp begins it at every PLAY bump of playGen; each doPlay owns it while it runs
     // (r1_plxh.hpp PlayRequestHold on r1PlxhPolicy()); the session of that generation takes it over
@@ -658,7 +831,8 @@ public:
     // replay (seekMs) keeps the current play's context.
     bool play(const std::string& urlOrPath, int64_t startOffsetMs = 0,
               const std::string& httpHeaders = {}, int64_t durationMs = 0,
-              uint64_t generation = 0, const gate::GatePlayContext& gateCtx = {});
+              uint64_t generation = 0, const gate::GatePlayContext& gateCtx = {},
+              std::shared_ptr<owenb::PrefetchedInput> prefetched = {});
     // Next OB open (a YouTube cast) retries an empty body, an I/O failure, or a
     // helper 5xx without leaving this generation. previousMs >= 0 is where a
     // seek resumes when the new position still will not open.
@@ -681,6 +855,7 @@ public:
     void showPlaybackOverlay(PlaybackOverlayState state, int64_t positionMs, int64_t durationMs);
     void flashPlaybackSkip(int64_t deltaMs);
     void setPlaybackTitle(std::string title);
+    std::string playbackTitle() const;   // status page (frontier item 3): copy under mu_
     // Companion/PMS timeline tick: onProgress_ is bound in main.cpp to
     // PmsTimelineReporter::reportState and Companion::setState.
     void companionTimelineTick();
@@ -731,9 +906,12 @@ public:
 private:
     bool playOwenbRoute(const std::string& urlOrPath, int64_t startOffsetMs, const std::string& httpHeaders,
                         int64_t durationMs, uint64_t expectedEpoch, const StartedFn& started,
-                        uint64_t generation);
+                        uint64_t generation, std::shared_ptr<owenb::PrefetchedInput> prefetched = {});
     // OWENB-P1B T5: the OB transport (pause / resume / seek held / stop / volume) and its teardown.
     bool owenbSeek(int64_t ms, const StartedFn& started, uint64_t generation);
+    // OB position publication. A stamp from before the seek, or the seek's placeholder
+    // after the landing was committed, does not overwrite positionMs_.
+    void noteObPosition(uint32_t stamp, int64_t ms);
     void stopOwenbPlay();
     void owenbPauseResume(bool pause);
     // OWENB-P1B T6: f runs on the OB player's overlay UI bus, if an OB player exists (no-op otherwise).
@@ -741,6 +919,10 @@ private:
     // OWENB-P1B T7: from coreGateTick: arm the idle session on a verified PlexOB core, close it when the
     // core goes (a hop off OB), show / clear the PMS screen on it. ensureOwenbPlayerLocked: under obMu_.
     void owenbIdleTick();
+    void republishAmbientDeck();
+    // Colorbar removal 10-23: EVERY mode/raster/core event re-arms the Ready card: clear the retry gate and ask the
+    // keeper for a re-arm on its next tick. Lock-free (callable from play threads); never writes video_mode.
+    void noteIdleEvent(const char* why);
     void ensureOwenbPlayerLocked();
     // OWENB-P1B 0010: the OB input thread (mpx-ob-input): the core's input region (owenb_input.hpp) -> the
     // menu panel / the routing (owenb_menu.hpp) -> dispatchPlaybackInput, as the legacy DDR mailbox poll.
@@ -749,11 +931,39 @@ private:
     void stopObInput();
     void obInputLoop();
     void obMenuState(const std::shared_ptr<owenb::OwenbPlayer>& ob, owenb::ObMenuState& s);
+    void noteRememberPicture(int mode);
+    struct MarkerShown {
+        bool card = false;
+        int countdownS = -1;
+        std::string label, line1, line2, line3, line4;
+        bool same(const MarkerShown& o) const {
+            return card == o.card && countdownS == o.countdownS && label == o.label && line1 == o.line1 &&
+                   line2 == o.line2 && line3 == o.line3 && line4 == o.line4;
+        }
+        void clear() { *this = {}; }
+    };
+    void noteMarkerInput(int64_t nowMs);
+    void noteMarkerUserSeek();
+    void handleMarkerCommand(PlaybackCommand command);
+    void postMarkerAction(const markers::TrackerOutput& out, int64_t mediaMs);
+    void publishMarkerOverlay(const MarkerShown& ov);
+    MarkerShown overlayFor(const markers::TrackerOutput& out);
     // OWENB-P1B 0010: the daemon's browser (browse_ V2, else library_) as the overlay's library page; from
     // paintIdle (every browser repaint) and the input thread. Publishes only a change.
     void obLibraryPublish();
     std::mutex obInputMu_;
     std::atomic<bool> obInputRun_{false};
+    std::atomic<bool> spelunkrTv_{false};
+    std::atomic<bool> spelunkrHasPicture_{false};
+    std::atomic<int> spelunkrOsdAspect_{-1};  // -1 off, 1=4:3, 2=16:9
+    std::atomic<bool> spelunkrGuideOpen_{false};
+    std::mutex spelunkrCmdMu_;
+    std::function<void(PlaybackCommand)> spelunkrCmd_;
+    bool spelunkrBannerPending_ = false;   // under obMu_; flush when ob_ is created
+    std::string spelunkrBannerDial_;
+    std::string spelunkrBannerName_;
+    std::string spelunkrBannerTitle_;
+    bool spelunkrBannerTuning_ = false;   // under obMu_; replayed with the banner (P0 11-10)
     std::thread obInputThr_;
     std::mutex obLibMu_;
     std::shared_ptr<owenb_osd::LibraryPage> obLibLast_;   // under obLibMu_
@@ -779,7 +989,7 @@ private:
                         int64_t pos);
     bool playInternal(const std::string&, int64_t, const std::string&, int64_t,
                       uint64_t expectedEpoch, const StartedFn& started = {},
-                      uint64_t generation = 0);
+                      uint64_t generation = 0, std::shared_ptr<owenb::PrefetchedInput> prefetched = {});
     void fpgaThreadMain(std::string url, int64_t startMs, std::string headers,
                         int64_t durationMs, uint64_t epoch, uint64_t generation,
                         gate::GatePlayContext gateCtx);
@@ -824,7 +1034,7 @@ private:
     void paintIdleR1(bool forceOnce = false);
     // LastFrame idle (no paint): owes the D2 line for a session END that will not re-show the idle FB.
     void r1NoteNoIdleRequest(const char* why);
-    // The R1 idle-entry stream clear, under r1ClearMu_ (review 20:18 (3)).
+    // The R1 idle-entry stream clear, under r1ClearMu_ (FPGA Bug 20:18 (3)).
     bool r1EntryStreamClear(std::string* why);
     void startInputPollV2();
     void startOsdPollV2();
@@ -854,7 +1064,14 @@ private:
     ContentResFn onContentRes_;
     DisplayResFn onDisplayRes_;
     LibraryFetchFn libraryFetch_;
+    mutable std::mutex browseSrvMu_;
+    std::vector<PlexBrowseTarget> browseTargets_;
+    size_t activeBrowse_ = 0;
+    std::function<bool()> libraryLinked_;
+    std::function<std::string()> libraryLinkCode_;
     LibraryPlayFn libraryPlay_;
+    std::function<void(MarkWatchedOp)> markWatchedFn_;
+    std::function<bool(int, int, int, int)> overscanPersist_;
     LibraryBrowser library_;
     bool libraryListOn_ = false;
     bool libraryListVisible_ = false;
@@ -901,6 +1118,8 @@ private:
     std::string audioDev_ = "/dev/MrAudio";
     std::string presentMode_ = "fb0"; // "fb0", "fpga", "both"
     bool audioEnabled_ = true;
+    std::mutex oneshotMu_;
+    MrAudioOneShot oneshot_;
     bool streamEnabled_ = false; // annex-B → host recon F1 + F3 stub
     std::string streamSkipRgb_ = "auto"; // auto | on | off
     std::string subtitleMode_ = "off"; // off | ffmpeg
@@ -930,6 +1149,7 @@ private:
     // already in sync; the OSD poller overwrites it within ~100 ms.
     std::atomic<int> avOffsetMs_{misterplex::kOsdAvOffsetDefaultMs};
     std::atomic<int> idleMode_{static_cast<int>(IdleMode::Logo)};
+    std::atomic<int64_t> idleQuietStartMs_{0};
     std::atomic<bool> lastFrameHoldEnabled_{true};
     std::atomic<bool> idleRun_{false};
     std::atomic<bool> sourceTranscoded_{false};
@@ -946,6 +1166,7 @@ private:
     void applyOsd(uint16_t word);
     // Y/C: word 87 on the OB tick (owenbOpen), not the legacy OSD poll.
     void ycOwenbTick();
+    void analogRasterTick(const CoreGate& gate, const OwenbCtrlReader& reader);
     void enqueueYcReload(const plexob::YcPollResult& job);
     void ycReloadWorker();
     void stopYcReloadWorker();
@@ -967,6 +1188,22 @@ private:
     // One control-page map for as long as the OB gate stays open. The tick
     // reads word 87 through it; it is not opened and closed on every tick.
     OwenbCtrlPageMap ycMap_;
+    service::Selection serviceSelection_;
+    OwenbCtrlPageMap serviceMap_;
+    service::PlexCfg serviceCfg_;
+    service::FailureRecovery serviceFailureRecovery_;
+    bool serviceCfgFailed_ = false;
+    bool serviceUiReady() const;
+    std::function<bool(bool)> serviceSwitch_;
+    std::string servicePhase_;
+    std::string serviceLocalError_;
+    bool serviceLaunching_ = false;
+    std::optional<bool> serviceRequested_;
+    int64_t serviceNoticeDeadline_ = 0;
+    // ANALOG_RASTER (conf). Unset/auto: no action. Guarded by ycMu_.
+    plexob::RasterWant rasterWant_ = plexob::RasterWant::Unset;
+    plexob::RasterState rasterState_;
+    std::string rasterLastStatus_;
     std::mutex ycJobMu_;
     std::condition_variable ycJobCv_;
     plexob::YcPollResult ycJob_{};
@@ -1015,7 +1252,7 @@ private:
     bool r1PaintLogged_ = false;
     std::optional<std::chrono::steady_clock::time_point> plexuiR1SubmitAt_;
     int64_t plexuiPaintPlxhMs_ = 0;
-    // review 06:57 D2: the first paint after each session END re-arms the planner and owes one
+    // FPGA Bug 06:57 D2: the first paint after each session END re-arms the planner and owes one
     // line (re-shown, or why not). D1: r1FlipOwed_ makes the idle thread retry within 250 ms.
     r1::R1SessionEndRearm r1SessionRearm_;
     bool r1AfterSession_ = false;
@@ -1023,7 +1260,7 @@ private:
     std::atomic<bool> r1FlipOwed_{false};
     // F1 PLXL beat (f1_beat.hpp; F1-PREREG v2.2). Started where r1IdleFbReady arms the R1 target on
     // an idleBeatPlxl row; stopped in shutdown() before any member it reads goes away. Its idle
-    // condition reads only atomics (review 01:39 k1): r1Armed_, playing_, fpgaSession_ and the
+    // condition reads only atomics (FPGA Bug 01:39 k1): r1Armed_, playing_, fpgaSession_ and the
     // PLXH policy's inSession(). The idle paint logs its counters (logF1Beat).
     std::atomic<bool> r1Armed_{false};
     FpgaSpiBeatPort beatPort_{fpga_};
@@ -1042,12 +1279,75 @@ private:
     std::shared_ptr<owenb::OwenbPlayer> ob_;
     uint64_t obEpoch_ = 0;
     std::string obIdleName_ = "MiSTerPlex";   // T7, under obMu_
+    std::shared_ptr<const misterplex::AmbientDeck> ambientDeck_;   // AMBIENT, under obMu_
     std::string obPmsLabel_;                  // T7, under obMu_
     std::string idleReadyLine_;               // GCAST P4, under obMu_
     std::atomic<int> obPmsState_{-1};
-    int64_t obIdleRetryAtUs_ = 0;             // T7: main-loop thread only
+    std::atomic<int64_t> obIdleRetryAtUs_{0};   // T7: the idle-arm retry gate (noteIdleEvent clears it from any thread)
+    std::atomic<bool> obIdleRearmReq_{false};   // noteIdleEvent: owenbIdleTick forwards it to the OB keeper
     bool obPmsShown_ = false;                 // T7: main-loop thread only
     std::atomic<int> volumePercent_{100};
+    void ensureSubtitleHooks();
+    mpx::SubtitleTrackSpec makeSubtitleSpec(uint64_t epoch, int64_t streamId, const std::string& url);
+    std::string offerPlaySubtitles(uint64_t epoch, const std::string& url);
+    // #258 embedded SRT demux fallback. begin resets it before a subtitle offer
+    // and reports whether it was armed; try arms it from the sink's failure hook.
+    bool beginEmbeddedTextOffer();
+    bool tryEmbeddedTextFallback(uint64_t epoch, int64_t streamId);
+    void rearmPartText(int index);
+    void closeEmbeddedTextFallback(bool wasArmed);
+    void noteOpenedIds(const std::string& url, int containerAudioIndex);
+    void burnSubtitleAt(int64_t positionMs, int64_t streamId);
+    bool restartUniversalAt(int64_t positionMs, int audioId, int subtitleId, bool burn, uint64_t generation);
+    void rememberTracks(const ShowPreference& pref, int partId, int audioId, int subtitleId, const std::string& base,
+                        const std::string& token, bool noteAudio, bool noteSubtitle);
+    std::mutex trackMu_;
+    bool trackArmed_ = false;
+    bool trackLive_ = false;
+    bool openedKnown_ = false;
+    // The sink returned Soft. The timeline keeps that subtitle id even when the
+    // universal URL carries subtitleStreamID=0 so PMS does not also burn it.
+    bool trackSinkSoft_ = false;
+    int openedAudioId_ = 0;
+    int openedSubtitleId_ = 0;
+    int trackAudioIndex_ = -1;
+    int trackSubtitleIndex_ = -1;
+    TrackPick trackPick_{};
+    StreamCatalog trackCatalog_{};
+    std::string trackShowKey_;
+    int trackPartId_ = 0;
+    std::string trackPartKey_;   // #334: Part@key, the embedded text source
+    std::string trackPmsBase_;
+    std::string trackToken_;
+    std::string trackTranscodeUrl_;
+    // Local OpenSubtitles cache path (file or /media/fat/...). Empty = none.
+    std::string trackSoftSubPath_;
+    // Live setStreams/playMedia subtitleStreamID=0 (wire already 0 for soft overlay).
+    bool explicitSubtitleOff_ = false;
+    bool trackPending_ = false;
+    TrackPick trackPendingPick_{};
+    ShowPreference trackPendingPref_{};
+    int trackPendingAudioId_ = 0;
+    int trackPendingSubtitleId_ = 0;
+    int trackPendingPartId_ = 0;
+    std::string trackPendingBase_;
+    std::string trackPendingToken_;
+    bool trackPrefServerSync_ = false;
+    trackkeys::Binding obTrackBinding_{};   // read by the OB input thread; written before it starts
+    mpx::NullSubtitleSink nullSubtitleSink_;
+    bool subtitleBurnFallback_ = false;
+    int embeddedTextFallbackIdx_ = -1;     // under trackMu_; #258 PMS index or -1
+    int embeddedTextFallbackId_ = 0;       // Plex stream id to keep on a universal URL
+    std::string embeddedTextCodec_;
+    std::string embeddedTextLanguage_;
+    std::string embeddedTextTitle_;
+    bool embeddedTextForced_ = false;
+    int embeddedTextOrdinal_ = -1;
+    mpx::OsdSubtitleSink osdSubtitleSink_;
+    // #334: after the sink, so it is destroyed (worker joined) before the sink goes.
+    misterplex::PartTextLoader partText_;
+    mpx::SubtitleWire subtitleWire_{osdSubtitleSink_};
+    std::function<void(int, int)> onOpenedStreams_;
     std::atomic<uint64_t> playEpoch_{1};
     bool castOpenRetry_ = false;          // under mu_, consumed by the next OB play
     bool castOpenIdleOnFail_ = false;     // under mu_; a cast open failure ends on the chevron
@@ -1061,7 +1361,7 @@ private:
     // MAST-WEDGE: the gate-open liveness probe, and the one reload hand-off per process.
     void probeMastAtGateOpen();
     void onMastWedge(const std::string& where);
-    // R5a (review 01:10): started on an 'attempted' marker and the gate never opened: a
+    // R5a (FPGA Bug 01:10): started on an 'attempted' marker and the gate never opened: a
     // terminal, loud cure-failed. Main-loop thread only (coreGateTick).
     void checkMastSilentGate();
     const int64_t mastStartUs_ = coreGateNowUs();
@@ -1139,6 +1439,7 @@ private:
     std::atomic<bool> playing_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> audioActive_{false};
+    std::atomic<bool> themeHomeArmed_{false};
     // 720p: MrAudio stays closed-loop silent until warmup decode finishes, then
     // the HDMI lag hold lets it run. Default true so 480p is unchanged.
     std::atomic<bool> audioFeedRelease_{true};
@@ -1170,6 +1471,9 @@ private:
     std::atomic<bool> cabacSkip_{false};
     std::atomic<int64_t> seekReqMs_{-1};
     std::atomic<int64_t> positionMs_{0};
+    // OB play only: high 32 is the session posStamp, low 32 the milliseconds. Legacy
+    // paths write positionMs_ directly and leave this at 0.
+    std::atomic<uint64_t> obPosPacked_{0};
     std::atomic<int64_t> lastPosMs_{0};
     std::atomic<int64_t> lastKnownPositionMs_{0};
     TtfpTimestamps ttfp_{};
@@ -1186,6 +1490,7 @@ private:
     // SPS-gate L3. gateCtx_, gateFallbackPending_ and gateFallbackEpoch_ are guarded by mu_; gateErrorText_ by
     // gateErrMu_ (its own lock: the idle painters read it under presentMu_/r1PaintMu_).
     std::function<void(const GateFallbackRequest&)> gateFallbackHandler_;
+    std::function<bool(const std::string&)> spelunkrPlayFailed_;   // P2 11-10; set once before plays
     gate::GatePlayContext gateCtx_;
     std::optional<GateFallbackRequest> gateFallbackPending_;
     uint64_t gateFallbackEpoch_ = 0;
@@ -1226,6 +1531,41 @@ private:
     PtsWrapGuard ptsWrap_;
     int64_t last_good_offset_ = 0;
     int range_retry_ = 0;
+    h264stream::IAvRecordProducer* airplayMirrorProd_ = nullptr;
+    uint64_t airplayMirrorSession_ = 1;
+    uint32_t airplayMirrorSeq_ = 0;
+    bool airplayMirrorActive_ = false;
+    std::mutex airplayMirrorMu_;
+    misterplex::gcast::MirrorPcmBridge airplayMirrorPcm_;
+    bool airplayMirrorFirstAu_ = false;
+    bool airplayMirrorFirstIdr_ = false;
+    unsigned airplayMirrorAuTotal_ = 0;
+    unsigned airplayMirrorAuWindow_ = 0;
+    int64_t airplayMirrorRateMs_ = 0;
+    std::mutex chapterMu_;
+    std::vector<chapters::Chapter> chapters_;
+    std::shared_ptr<scrub_thumbs::ScrubSlot> scrubSlot_;
+    void noteScrubPlay();
+    void publishScrubPreview(int64_t ms, bool barAlready);
+    mutable std::mutex markerMu_;
+    markers::MarkerTracker marker_;
+    std::atomic<bool> markerEnabled_{false};
+    std::atomic<bool> markerBuffering_{false};
+    std::atomic<bool> markerSeekQuiet_{false};
+    std::atomic<int64_t> markerLastInputMs_{-1};
+    std::string markerRatingKey_;
+    int64_t markerDuration_ = 0;
+    int64_t markerLastMedia_ = 0;
+    bool markerTranscoded_ = false;
+    bool markerQueued_ = false;
+    bool markerHaveEpoch_ = false;
+    uint32_t markerEpoch_ = 0;
+    int64_t markerLastTickMs_ = -1;
+    int64_t markerPictureAt_ = -1;
+    bool markerNextStarted_ = false;
+    std::function<std::optional<markers::NextItem>()> markerResolveNext_;
+    MarkerActionFn markerAction_;
+    MarkerShown markerOverlay_;
 };
 
 // companion.cpp defines userStop_ for distinguishing user stop from daemon death.

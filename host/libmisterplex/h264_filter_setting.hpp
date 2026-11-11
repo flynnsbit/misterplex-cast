@@ -1,5 +1,5 @@
 #pragma once
-// The effective MPX_H264_FILTER and where it came from, for ONE daemon start-up line (review 17:17 (4)).
+// The effective MPX_H264_FILTER and where it came from, for ONE daemon start-up line (FPGA Bug 17:17 (4)).
 // Precedence matches main.cpp's conf loop (misterplex.conf wins over the shell env with setenv) and the readers:
 // media_player.cpp uses getenv("MPX_H264_FILTER") or "on"; plex_resolve.cpp refuses an FPGA play for any value
 // that is not exactly "on" or "off".

@@ -5,6 +5,7 @@
 #include "h264ring_cavlc.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -38,6 +39,18 @@ int64_t toPts90k(int64_t ts, uint32_t num, uint32_t den) {
     const uint64_t a = whole * q;                             // whole units of den: exact mod 2^64
     const uint64_t b = rem * (q / den) + rem * (q % den) / den;   // rem * (q % den) < 2^64
     return static_cast<int64_t>((a + b) & kMask);
+}
+
+int64_t originPts90k(int64_t ts, uint32_t num, uint32_t den) {
+    if (ts == INT64_MIN || num == 0 || den == 0)
+        return h264stream::kNoPts90k;
+    if (ts >= 0)
+        return toPts90k(ts, num, den);
+    const int64_t mag = toPts90k(-ts, num, den);
+    if (mag < 0)
+        return h264stream::kNoPts90k;
+    constexpr int64_t kMod = int64_t{1} << 33;
+    return (kMod - mag) & (kMod - 1);
 }
 
 namespace {
@@ -294,6 +307,7 @@ CoreStatus OwenbRing::coreStatus() const {
     cs.sessionOk = h264ring_session_ok(ring_) != 0;
     cs.ringLevel = window_.ringSize() - h264ring_free(ring_);
     cs.refusedCode = static_cast<unsigned>(H264RING_ST(&st, FE_REFUSED_CODE));
+    cs.picsReconstructed = static_cast<uint32_t>(H264RING_ST(&st, RC_PIC));
     return cs;
 }
 
@@ -328,6 +342,7 @@ OverlayCoreStatus OwenbRing::overlayStatus() const {
     os.videoOut = h264ring_video_out(&st);
     os.osdAnalogAspect = static_cast<unsigned>(H264RING_ST(&st, OSD_ANALOG_ASPECT));
     os.osdAspect = static_cast<unsigned>(H264RING_ST(&st, OSD_ASPECT));
+    os.osdVideoOut = static_cast<unsigned>(H264RING_ST(&st, OSD_VIDEO_OUT));
     os.setSeq = static_cast<unsigned>(H264RING_ST(&st, SET_SEQ));
     os.setErr = static_cast<unsigned>(H264RING_ST(&st, SET_ERR));
     // the core still runs this handle's session (after end()/release() too: the overlay and the
@@ -357,6 +372,17 @@ int OwenbRing::clearSettings() {
     return h264ring_clear_settings(ring_);
 }
 
+int OwenbRing::syncService(bool spelunkr) {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!ring_ || !window_.mapped())
+        return -ENOTCONN;
+    // Rumble is disabled in PlexOB. Word 38 carries only this tagged command.
+    volatile uint64_t* ctrl = window_.ctrl();
+    const uint8_t next = static_cast<uint8_t>(((ctrl[38] & 0xffu) + 2u) & 0xfeu);
+    ctrl[38] = 0x53525600u | next | (spelunkr ? 1u : 0u);
+    window_.barrier();
+    return 0;
+}
 std::string OwenbRing::rewriteWhy() const {
     std::lock_guard<std::mutex> g(mu_);
     if (!ring_)
