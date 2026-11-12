@@ -2,9 +2,9 @@
 
 All notable changes to MiSTerPlex, written for people running it on a MiSTer.
 
-## Unreleased (next pre-release, after rc5)
+## v1.0.0 (pre-release, 11 November 2026)
 
-Everything below is new since the **rc5** pre-release, the latest release published on the public repo (flynnsbit/misterplex-cast, 21 October 2026). It covers the merged PRs from #16 to #357. This is a draft. Some items have not been checked on a real TV yet; those are marked *(not yet TV-tested)*.
+Everything below is new since the **rc5** pre-release, published on the public repo (flynnsbit/misterplex-cast, 21 October 2026). It covers the merged PRs from #16 to #357. Some items have not been checked on a real TV yet; those are marked *(not yet TV-tested)*.
 
 **About optional features.** Many new features are **off by default**. Each has a switch in the settings file, `/media/fat/linux/misterplex.conf`. A feature that is off works exactly like the old build. To turn one on, add a line like `CHAPTERS=1`, then reboot. See the settings file for what each one does.
 
@@ -155,7 +155,7 @@ Everything below is new since the **rc5** pre-release, the latest release publis
 
 ## rc3 / Phase 2 (draft, built from main `14ee38b4`)
 
-_Naming note: "rc3 / Phase 2" is the release package of the Unreleased work above. The rc3 label predates rc5 and is kept for continuity with the staged builds; it is not newer than rc5._
+_Naming note: "rc3 / Phase 2" is the release package of the v1.0.0 work above. The rc3 label predates rc5 and is kept for continuity with the staged builds; it is not newer than rc5._
 
 Changes merged in PRs #286 to #298, #303, #306, #307 to #311, and #313. Core: `MiSTerPlex.rbf` (BUILD_ID `0x0B1101C5`). This is a draft entry until the release is tagged.
 
