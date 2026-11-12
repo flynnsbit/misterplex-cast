@@ -8,12 +8,13 @@ or SHA256SUMS. Card install uses the release package (bin/, SHA256SUMS). The
 installer script here is the same one that package uses.
 
 ## cores/MiSTerPlex.rbf
-- RBF md5: 96eb13d2cfc966fa56528703d0b542cf (fit artifact plexob-yc-0b1101c5, BUILD_ID 0x0B1101C5, seed 10)
+- RBF md5: 76cde669ad5ab2b42091e8adfc267455 (fit artifact plexob-yc-0b1101c5, BUILD_ID 0x0B1101C5, seed 10)
 - Sidecar: cores/MiSTerPlex.rbf.md5 (same md5; required by install-misterplex.sh)
-- Pin list in scripts/install-misterplex.sh: 96eb13d2cfc966fa56528703d0b542cf
-- FPGA tree pin: 5588134126b965c8095eb2fa7cf3655f958579da
-  This is the commit the shipped bitstream was built from. The bitstream file
-  is release_artifacts/plexob-yc-0b1101c5/MiSTerPlex.rbf on the daemon revision.
+- Pin list in scripts/install-misterplex.sh: 76cde669ad5ab2b42091e8adfc267455
+- FPGA tree pin: c7e929f4b78b9dc1347d298e2a9c0017bcb01fad
+  This is the commit the shipped bitstream was built from (Quartus 17.0.2,
+  fpga/owenb-combo-s9/PlexOB_480p/fit/yc/launch_yc.sh with YC_SEED=10; fit
+  artifact plexob-yc-0b1101c5-s10_20261112_1509.rbf).
   This export does not rebuild it.
 - Fork source in this tree: fpga/owenb-combo-s9/
 - Upstream, vendored where sync_vendor.sh reads it (OWENB_VENDOR_ROOT, default
@@ -26,8 +27,8 @@ installer script here is the same one that package uses.
 - Build: PlexOB_480p/build_plexob_480p.sh (Quartus; run_quartus_docker.sh)
 
 ## Prebuilt core
-cores/MiSTerPlex.rbf (md5 96eb13d2cfc966fa56528703d0b542cf) is the bitstream shipped with this export.
-BUILD_ID 0x0B1101C5, seed 10, built from 5588134126b965c8095eb2fa7cf3655f958579da. This export does not rebuild the bitstream.
+cores/MiSTerPlex.rbf (md5 76cde669ad5ab2b42091e8adfc267455) is the bitstream shipped with this export.
+BUILD_ID 0x0B1101C5, seed 10, built from c7e929f4b78b9dc1347d298e2a9c0017bcb01fad. This export does not rebuild the bitstream.
 The installer copies it to /media/fat/_Utility/MiSTerPlex.rbf only (one copy).
 
 ## misterplexd

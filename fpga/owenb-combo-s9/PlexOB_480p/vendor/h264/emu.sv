@@ -204,7 +204,7 @@ assign LOCKED    = locked & vid_locked;
 //   [0]       Reset
 //   [2:1]     Aspect Ratio                   Auto, 4:3, 16:9
 //   [4:3]     Deinterlace                    Weave, Bob, Blend
-//   [6:5]     Video Output                   Auto, Interlaced, Progressive, Native (HDMI)
+//   [6:5]     Video Output                   Auto, 15kHz CRT, 31kHz VGA, HDMI Native
 //   [7]       HDMI Deinterlace               Weave, Bob
 //   [9:8]     Analog Aspect                  Auto, Fit, Letterbox, Crop
 //   [10]      free
@@ -217,10 +217,11 @@ assign LOCKED    = locked & vid_locked;
 //   [19]      Analog Dither                  Off, On; forced off while Y/C is selected
 //   [21:20]   Analog Output                  RGB, S-Video, Composite
 //   [23:22]   NTSC Color                     NTSC, PAL60, PAL-M
-//   [24]      Analog Raster                  480i, 240p (MPX-FORK 240p): the 15 kHz raster is the 480i field pair or
-//                                            262-line progressive 240p; only while Video Output resolves to the
-//                                            interlaced analog raster (Auto on an analog setup, or Interlaced)
-//   [25+]     free
+//   [24]      Analog Raster                  480i, 240p (MPX-FORK 240p): applies under 15kHz CRT
+//                                            (Auto on a 15 kHz CRT, or Video Output = 15kHz CRT). The 15 kHz raster
+//                                            is the 480i field pair or 262-line progressive 240p.
+//   [25]      Service                        Plex, Spelunkr
+//   [26+]     free
 //
 // FEASIBILITY's O[20]-for-240p is retired. O[24] is the appended 240p bit (MPX-FORK 240p).
 // Y/C is published on ring word 87 (not word 82, which is rumble):
@@ -233,7 +234,8 @@ assign LOCKED    = locked & vid_locked;
 localparam CONF_STR = {
 	"PlexOB;;",
 	"-;",
-	"O[6:5],Video Output,Auto,Interlaced,Progressive,Native (HDMI);",
+	"O[6:5],Video Output,Auto,15kHz CRT,31kHz VGA,HDMI Native;",
+	"O[25],Service,Plex,Spelunkr;",
 	"O[12:11],Refresh Rate,Auto,59.94 Hz,60 Hz,50 Hz;",
 	"O[2:1],Aspect Ratio,Auto,4:3,16:9;",
 	"H0O[4:3],Deinterlace,Weave,Bob,Blend;",
@@ -242,7 +244,7 @@ localparam CONF_STR = {
 	"O[19],Analog Dither,Off,On;",
 	"O[21:20],Analog Output,RGB,S-Video,Composite;",
 	"O[23:22],NTSC Color,NTSC,PAL60,PAL-M;",
-	"O[24],Analog Raster,480i,240p;",
+	"O[24],15kHz CRT Raster,480i,240p;",
 	"-;",
 	"R[17],Send Home to the program;",
 	"R[18],Program menu;",
@@ -294,6 +296,29 @@ wire        il_pix_sys;               // 480i or 240p: pixels of two dots, the s
 // status_in / status_set: Main adopts it as if the user had chosen it)
 wire [127:0] req_status_in;
 wire         req_status_set;
+wire [127:0] settings_status_in;
+wire         settings_status_set;
+wire [95:0] service_command;
+reg [31:0] service_command_last = 0;
+reg [127:0] service_status_in = 0;
+reg service_status_set = 0;
+// Word 38 was unused (rumble is disabled). SRV + counter + value is a
+// session-scoped daemon command; its edge synchronizes Main's live menu.
+always @(posedge clk_sys) begin
+	service_status_set <= 0;
+	if (!reset_n || service_command[95:72] != 24'h535256) service_command_last <= 0;
+	else if (service_command[95:72] == 24'h535256 &&
+	         service_command[71:64] != service_command_last[7:0]) begin
+		service_command_last <= service_command[95:64];
+		service_status_in <= settings_status_set ? settings_status_in : status;
+		service_status_in[25] <= service_command[64];
+		service_status_in[0] <= 0;
+		service_status_in[18:17] <= 0;
+		service_status_set <= 1;
+	end
+end
+assign req_status_in = service_status_set ? service_status_in : settings_status_in;
+assign req_status_set = service_status_set | settings_status_set;
 wire  [1:0] raster_std;             // the raster standard: 0 59.94 Hz, 1 60.00 Hz, 2 50 Hz (625 lines)
 wire        raster_pal;             // raster_std == 2: 576 active lines (Refresh Rate, below)
 
@@ -302,7 +327,10 @@ reg user_rst_q = 1'b0;
 always @(posedge clk_sys) user_rst_q <= status[0];
 assign user_rst_qn = ~user_rst_q;
 
-hps_io #(.CONF_STR(CONF_STR)) hps_io_inst (
+// GH#14: F12KEYMOD=1 passes F12 to the core (PS/2 0x07 → ObNav::Menu). Idle Menu
+// with a library opens plexui Browse. Default 0 gives MiSTer Main (Arcade/Utility).
+// F12+GUI still opens Main. Needs an RBF rebuild to land on glass.
+hps_io #(.CONF_STR(CONF_STR), .F12KEYMOD(1)) hps_io_inst (
 	.clk_sys        (clk_sys),
 	.HPS_BUS        (HPS_BUS),
 	.EXT_BUS        (),
@@ -499,7 +527,7 @@ ring_rd ring_rd_inst (
 	.ctl_pause      (ctl_pause),            // 0.5: program word 34
 	.ctl_err        (ctl_err),
 	.ctl_atten      (ctl_atten),
-	.rumble         (),                     // q2t-c: snap tied to 0
+	.rumble         (service_command),       // word 38 only; never forwarded as pad rumble
 	.rum_changes    (),
 	.st_word        (st_word),
 	.st_ix          (st_ix),
@@ -573,8 +601,8 @@ osd_req osd_req_inst (
 	.status     (status),
 	.set_word   (rr_set_word),
 	.set_tog    (rr_set_tog),
-	.status_in  (req_status_in),
-	.status_set (req_status_set),
+	.status_in  (settings_status_in),
+	.status_set (settings_status_set),
 	.seq        (req_seq),
 	.err        (req_err),
 	.n_applied  ()
@@ -1867,7 +1895,7 @@ wire ar_exact   = (status[2:1] == 2'd0) && !raster_fitted && (stream_live || pla
 // raster is meant to be shown at 16:9, as a TV in its wide mode shows it, so HDMI's Auto is 16:9 there --
 // except on Main's SD modes, 720x480 and 720x576, which it sends as CEA's 16:9 VIC 3 / 18 (the AVI frame's
 // 16:9 bit set): the TV stretches that frame to 16:9 itself, so the raster FILLS it (the mode's own shape,
-// HDMI_WIDTH : HDMI_HEIGHT -- ascal treats the frame as square pixels). Found on lab 2026-10-11 with the
+// HDMI_WIDTH : HDMI_HEIGHT -- ascal treats the frame as square pixels). Found on a lab host 2026-10-11 with the
 // maintainer: 16:9 there gave a 720x405 window, letterboxed on the TV (docs/analog.md §5a).
 wire fit_169    = raster_fitted && (status[9:8] == 2'd1);
 reg  hdmi_sd16  = 1'b0;                        // Main's 720x480 / 720x576 HDMI modes (16:9 VIC 3 / 18)
@@ -1935,7 +1963,7 @@ wire [31:0] mpx_build_id = `MPX_PLEXOB_BUILD_ID;
 wire [31:0] mpx_build_id = 32'h0B1101C5;
 `endif
 wire [63:0] mpx_ring_sys_word =
-    (st_sys_ix == 7'd87) ? {32'd0, 22'd0, p240_act_sys, status[24], 4'd0, status[23:20]} :
+    (st_sys_ix == 7'd87) ? {32'd0, 20'd0, 1'b1, status[25], p240_act_sys, status[24], 4'd0, status[23:20]} :
     (st_sys_ix == 7'd88) ? {32'h4D505842, mpx_build_id} :
     st_sys_word;
 // interface 0.6: the input region (docs/architecture.md "Input (interface 0.6)"): hps_io's pads,

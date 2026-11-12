@@ -312,7 +312,7 @@
 #     logic, unchanged here; seed-dependent placement). Validate on the rig (the reader's output bit-exact) or retime it.
 #   2026-10-06 (feature/arm-codecs 0078de6: the pre-filter's horizontal stage retimed): SEED 3 re-rolled, clk_dec
 #     100.69/101.96 MARGINAL, clk_vid 90.87/88.9 PASS, clk_mem 91.42/88.4 (-0.20: f2sdram -> p_stg, next),
-#     H264_arm-codecs_MARGINAL_20261006_0147.rbf (installed on lab for the maintainer's composite test).
+#     H264_arm-codecs_MARGINAL_20261006_0147.rbf (installed on a lab host for the maintainer's composite test).
 #   2026-10-06 (feature/arm-codecs 63ca27d: the bridge's read data registered + Analog Dither, O[19]): SEED 3,
 #     clk_dec 98.15/97.2 MARGINAL, clk_vid 92.93/91.98 PASS, clk_mem -0.023 at -40 C (both retimes: was -1.08);
 #     H264_arm-codecs_MARGINAL_20261006_0245.rbf. A seed sweep follows.
@@ -321,7 +321,7 @@
 #     H264_arm-codecs_20261006_0327.rbf. SEED 5 pinned.
 #   2026-10-06 (fix/dither-latin a5cd75b: dac_dither's Latin-square matrix, CORE_VERSION dev-ditherlatin): SEED 5
 #     first roll, **clk_dec 103.61/102.79 PASS**, clk_vid 99.21/93.9 PASS, clk_mem 92.72/89.21 (-0.099 at -40 C,
-#     ungated: disp_reader pm_r[13..14] -> row_base[25], 3 paths -- not the bridge; on lab the reader's output
+#     ungated: disp_reader pm_r[13..14] -> row_base[25], 3 paths -- not the bridge; on a lab host the reader's output
 #     pixel-exact against main's build, chart480 at 480i, 2 shots each); ALM 37,938 (91 %), RAM 412, DSP 102, H264_ditherlatin_20261006_2313.rbf.
 #   2026-10-07 (feature/colour-matrix d01997d: interface 0.16, the colour -- disp_reader's six coefficient sets, the
 #     decoder's VUI colour, recon_out's table 232 bits, ring_rd's header code; CORE_VERSION dev-colour): SEED 5 first
@@ -358,7 +358,7 @@
 #     working -- the "PASS" lines after a FAIL are that, not passes; H264.qsf restored from git.)
 #     --release --compile with SEED 12 pinned reproduced 103.15/102.38, clk_vid 93.62/94.43 PASS; ungated: clk_sys ->
 #     clk_vid analog_want_l / status[6] -> ary[7] -0.206 / -0.086 at 100 C (quasi-static settings flags; seed placement);
-#     H264_20261009.rbf, smoke-tested on lab (docs/history.md S42).
+#     H264_20261009.rbf, smoke-tested on a lab host (docs/history.md S42).
 #   2026-10-10 (feature/chroma-interp 8be5f1e: chroma interpolated at the identity fit, docs/display.md "Chroma at
 #     the identity"; CORE_VERSION dev-chroma): SEED 12 first roll 94.17/95.05 MARGINAL, clk_vid 81.61/82.52 FAIL (gate 86)
 #     -- clk_vid's worst paths the new ahead index ((x_k0 + 1) >> 1 vs kmax >> 1) into the chroma RAMs' address;
@@ -391,7 +391,7 @@
 #     Sweep (detached): 2 100.67/101.55, **SEED 5 101.77/101.58 PASS**, clk_vid 91.65/87.57 PASS; hdmi_pll_check
 #     PASS (X0_Y5_N1); ALM 39,047 (93 %), RAM 421, DSP 109, H264_hdmi480sweep_20261011_1951.rbf (a02caba). SEED 5 pinned.
 #   2026-10-11 (the same pins on a83a388, the chroma build, SEED 2, BUILD_DATE pinned 261010 -- a test, not
-#     shipped): MARGINAL on clk_dec; output counter X0_Y5_N1; on lab HDMI 27.000 / 74.250 / 148.500 MHz (was 135 /
+#     shipped): MARGINAL on clk_dec; output counter X0_Y5_N1; on a lab host HDMI 27.000 / 74.250 / 148.500 MHz (was 135 /
 #     148.5 / 148.5 without the pins). Kept in .sim/hdmi480/seed2fix.
 #   2026-10-11 fix/fit-anamorphic (issue #11, Fit the anamorphic 16:9 fit; f66d842 + roadmap): SEED 5 first roll
 #     MARGINAL, clk_dec 100.45 / 98.98 (gate 101.4), clk_vid 94.23 / 90.98 PASS, HDMI gate PASS (X0_Y5_N1);

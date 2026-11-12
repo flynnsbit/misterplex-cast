@@ -2,7 +2,7 @@
 
 BUILD_ID is `0x0B59C11A` (word 88 is MPXB + this id). `ring_in` is restored. The sweep below stamped `0x0B59C119` on a bitstream that did not keep `ring_in`. That seed 5 closure is void. The re-fit winner is SEED 10.
 
-Built on buildhost from `9226e259` with `fit/yc/launch_yc.sh`: an isolated copy, the eac1064 pin, stock `sys/` (ascal `1b17376e`), notifications silenced. Nothing was deployed. The recipe pinned the seed that closed timing. The qsf change in that pin was the `SEED` line only (`45e3bdc54e581eed26658a4bf79332bc`, BUILD_ID `0x0B59C119`). The current qsf stamps `32'h0B59C11A` and SEED 10. That earlier sweep's closure is void.
+Built on lab-host from `9226e259` with `fit/yc/launch_yc.sh`: an isolated copy, the eac1064 pin, stock `sys/` (ascal `1b17376e`), notifications silenced. Nothing was deployed. The recipe pinned the seed that closed timing. The qsf change in that pin was the `SEED` line only (`45e3bdc54e581eed26658a4bf79332bc`, BUILD_ID `0x0B59C119`). The current qsf stamps `32'h0B59C11A` and SEED 10. That earlier sweep's closure is void.
 
 ## Re-fit, ring_in restored (RTL 08076620)
 
@@ -75,4 +75,4 @@ The thinnest fmax margin among the passing seeds is clk_vid at -40C on seed 5: *
 
 Seed 5 RBF md5 is omitted. That bitstream is void (no ring_in).
 
-It was produced in the sweep copy on buildhost (`plexob-yc-0b59c119-s5_20261019_0754.rbf`). It has not been copied to a device.
+It was produced in the sweep copy on lab-host (`plexob-yc-0b59c119-s5_20261019_0754.rbf`). It has not been copied to a device.

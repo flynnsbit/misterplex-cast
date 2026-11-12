@@ -20,7 +20,7 @@ FIT_NAME=plexob-yc-0b1101c5
 QSF_NORM=007cc9a1dc3f0a561d8b8c58ce8d0347
 SEED_PIN="${YC_SEED:-10}"
 case "$SEED_PIN" in ''|*[!0-9]*) echo "ABORT YC_SEED must be an integer, got '$SEED_PIN'" >&2; exit 1;; esac
-EMU8=e5ad3a52
+EMU8=f44288d5
 RING_IN8=e7a9e890
 RING8=1a2d93aa
 
@@ -265,8 +265,8 @@ rm -rf "$FIT/vendor/db" "$FIT/vendor/output_files" "$FIT/vendor/incremental_db"
 while :; do
   n=$(docker ps --format '{{.Names}}' | grep -c '^quartus_' || true)
   h=$(pgrep -c quartus_fit || true)
-  [ "${n:-0}" -lt 7 ] && [ "${h:-0}" -lt 7 ] && break
-  echo "$(date '+%T %Z') WAIT cap 7 (docker=$n host_fit=$h)"
+  [ "${n:-0}" -lt 5 ] && [ "${h:-0}" -lt 5 ] && break
+  echo "$(date '+%T %Z') WAIT cap 5 (local sweep) (docker=$n host_fit=$h)"
   sleep $((50 + RANDOM % 20))
 done
 

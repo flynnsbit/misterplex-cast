@@ -10,18 +10,18 @@ The public export ships one RBF, cores/MiSTerPlex.rbf (the 0x0B1101C5 bitstream 
 
 ## Shipped core
 
-The installed file is cores/MiSTerPlex.rbf. It is release_artifacts/plexob-yc-0b1101c5/MiSTerPlex.rbf.
+The installed file is cores/MiSTerPlex.rbf. It is the seed 10 fit of fpga/owenb-combo-s9/PlexOB_480p/fit/yc/launch_yc.sh (YC_SEED=10), artifact plexob-yc-0b1101c5-s10_20261112_1509.rbf.
 
 - BUILD_ID: 0x0B1101C5
 - SEED: 10
-- Source commit: 5588134126b965c8095eb2fa7cf3655f958579da
-- md5: 96eb13d2cfc966fa56528703d0b542cf
+- Source commit: c7e929f4b78b9dc1347d298e2a9c0017bcb01fad
+- md5: 76cde669ad5ab2b42091e8adfc267455
 
-The earlier file release_artifacts/plexob-yc-0b2403a7/PlexOB.rbf (md5 ecae698fa3220149fd767b9623137864, BUILD_ID 0x0B2403A7) stays in the tree. The daemon still accepts that id. The export FPGA tree is 5588134, the commit this bitstream was built from.
+The earlier file release_artifacts/plexob-yc-0b2403a7/PlexOB.rbf (md5 ecae698fa3220149fd767b9623137864, BUILD_ID 0x0B2403A7) stays in the tree. The daemon still accepts that id. The export FPGA tree is c7e929f4, the commit this bitstream was built from.
 
 | RBF | md5 | commit that added it | exact build commit |
 |---|---|---|---|
-| release_artifacts/plexob-yc-0b1101c5/MiSTerPlex.rbf | 96eb13d2cfc966fa56528703d0b542cf | this release branch | 5588134126b965c8095eb2fa7cf3655f958579da (BUILD_ID 0x0B1101C5, seed 10) |
+| cores/MiSTerPlex.rbf (fit plexob-yc-0b1101c5-s10_20261112_1509) | 76cde669ad5ab2b42091e8adfc267455 | this release | c7e929f4b78b9dc1347d298e2a9c0017bcb01fad (BUILD_ID 0x0B1101C5, seed 10) |
 | release_artifacts/plexob-yc-0b2403a7/PlexOB.rbf | ecae698fa3220149fd767b9623137864 | 7f2b165 | earlier 240p bitstream; not this package's core |
 | release_artifacts/plexob-yc-0b59c11a/PlexOB.rbf | c8b346048d680cc410a447490f57a820 | 0e3cdfc | UNVERIFIED: needs maintainer to confirm |
 | release_artifacts/v0.2.0-glass-baseline/Plex.rbf | dfebf2bfd08dd70b473b587dd7e81848 | e0f942e | UNVERIFIED: needs maintainer to confirm |
