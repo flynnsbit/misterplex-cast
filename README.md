@@ -27,7 +27,13 @@ The core file used to be called `PlexOB.rbf`; from rc3 it is `MiSTerPlex.rbf`, l
 
 ## Screenshots
 
-The screenshot gallery is not included in this source export.
+Live HDMI captures from a test MiSTer:
+
+| Plex library browser | Playback picture controls | CRT-safe screen area |
+| --- | --- | --- |
+| [![Plex movie library](docs/screenshots/hdmi/plex-browser-library.png)](docs/screenshots/hdmi/plex-browser-library.png) | [![Picture controls during playback](docs/screenshots/hdmi/in-play-picture-menu.png)](docs/screenshots/hdmi/in-play-picture-menu.png) | [![Screen safe-area adjustment](docs/screenshots/hdmi/screen-safe-area-setting.png)](docs/screenshots/hdmi/screen-safe-area-setting.png) |
+
+See the **[full screenshot gallery](docs/SCREENSHOTS.md)** for widescreen and 4:3 playback, picture modes, title details, and settings. Analog captures were unavailable during this session; the gallery records the missing views.
 
 ## What you need
 
