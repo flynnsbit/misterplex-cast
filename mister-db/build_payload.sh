@@ -69,6 +69,8 @@ for h in airplay gcast; do
   fi
 done
 cp "$HERE/misterplex_setup.sh" "$OUT/Scripts/misterplex_setup.sh"
+# Runtime only: no licence / notice / readme / release-notes files anywhere on the card.
+find "$OUT" -type f \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'NOTICE*' -o -iname 'README*' -o -iname 'RELEASE-NOTES*' -o -iname 'PROVENANCE*' \) -delete
 # External files: host upstream when the bytes match, else host the release copy here.
 python3 - "$HERE/external_files.csv" "$OUT" <<'PY'
 import csv, hashlib, os, sys

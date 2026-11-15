@@ -79,8 +79,8 @@ def main():
             err("path Downloader would reject: %s" % p)
         if parts[-1] in ("plexob.rbf", "misterplex.conf"):
             err("must not ship %s" % p)
-        if p.lower().startswith(("misterplex/docs", "misterplex/licenses")) or parts[-1] in (
-                "license", "notice", "readme.md", "readme.txt", "release-notes.md", "db-info.txt"):
+        if p.lower().startswith(("misterplex/docs", "misterplex/licenses")) or parts[-1].startswith((
+                "license", "licence", "notice", "readme", "release-notes", "provenance", "db-info")):
             err("non-runtime file must not ship: %s" % p)
     for p, d in files.items():
         if not isinstance(d.get("hash"), str) or len(d["hash"]) != 32: err("%s: bad hash" % p)
