@@ -1,0 +1,55 @@
+# Regenerate the MisterPlex Downloader / update_all db from the published GitHub release
+# (theypsilon/DB-Template_MiSTer build_db.yml pattern, adapted):
+#  - runs on `release: published` and on workflow_dispatch (optional tag input)
+#  - uses only the built-in GITHUB_TOKEN (contents: write); no other secrets
+#  - commits payload + db.json.zip to DB_BRANCH with normal commits and a normal push
+#    (the template force-pushes an orphan "db" branch; this never force-pushes)
+# GitHub runs release/workflow_dispatch workflows from the default branch (or the tag's
+# commit), so this file must be on main for those triggers to fire.
+name: MiSTer db from release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (empty = newest published, pre-releases included)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mister-db-release
+  cancel-in-progress: false
+
+env:
+  DB_BRANCH: castor/update-all-db
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DB_BRANCH }}
+          fetch-depth: 0
+      - name: Regenerate from the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MPX_DB_REPO: ${{ github.repository }}
+          MPX_DB_BRANCH: ${{ env.DB_BRANCH }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          bash mister-db/regen_from_release.sh "$TAG"
+      - name: Offline install with the real Downloader
+        run: |
+          git clone -q https://github.com/MiSTer-devel/Downloader_MiSTer /tmp/Downloader_MiSTer
+          git -C /tmp/Downloader_MiSTer checkout -q 5d0771359ae396aaea64453e6791ac87781d78f4
+          bash mister-db/test_offline_install.sh /tmp/Downloader_MiSTer
+      - name: Push (normal, no force)
+        run: git push origin "HEAD:refs/heads/$DB_BRANCH"

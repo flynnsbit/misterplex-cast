@@ -7,11 +7,12 @@
 #
 # Output mirrors the SD card root (/media/fat) at the paths install-misterplex.sh writes:
 #   _Utility/MiSTerPlex.rbf                  the core (exactly one copy)
-#   misterplex/{bin,scripts,docs,licenses,plexui,conf}/   program, scripts, docs, fonts
+#   misterplex/{bin,scripts,plexui,conf}/   program, scripts, fonts, default conf
 #   misterplex/yt_warm_helper.py             casting warm helper
 #   misterplex/cores/MiSTerPlex.rbf.md5      the release md5 slot (the boot hook checks it
 #                                            before it retires PlexOB.rbf)
-#   misterplex/LICENSE, misterplex/NOTICE    from the package root
+# Runtime files only: docs/, licenses/, LICENSE, NOTICE, README and release notes are not
+# installed on the MiSTer (they stay in the release package and the repo).
 #   misterplex/linux/...                     files that belong in /media/fat/linux. Downloader
 #                                            refuses any path under linux/, so they are staged
 #                                            here and Scripts/misterplex_setup.sh copies them.
@@ -46,8 +47,8 @@ mkdir -p "$OUT/_Utility" "$OUT/misterplex/cores" "$OUT/misterplex/linux" "$OUT/S
 # exFAT has no modes/owners: plain copies (no -a/-p), symlinks resolved (-L).
 cp "$STAGE/cores/MiSTerPlex.rbf" "$OUT/_Utility/MiSTerPlex.rbf"
 cp "$STAGE/cores/MiSTerPlex.rbf.md5" "$OUT/misterplex/cores/MiSTerPlex.rbf.md5"
-# install-misterplex.sh step 2: these package folders go to /media/fat/misterplex/<d>/
-for d in bin scripts docs licenses plexui conf; do
+# install-misterplex.sh step 2 (runtime folders only): /media/fat/misterplex/<d>/
+for d in bin scripts plexui conf; do
   [[ -d "$STAGE/$d" ]] && { mkdir -p "$OUT/misterplex/$d"; cp -RL "$STAGE/$d/." "$OUT/misterplex/$d/"; }
 done
 # ... and these root-level / scripts/ helpers are also copied into bin/
@@ -67,7 +68,6 @@ for h in airplay gcast; do
     (cd "$OUT/misterplex/linux/$h" && md5sum -c --quiet MD5SUMS) || die "linux/$h MD5SUMS check failed"
   fi
 done
-for f in LICENSE NOTICE; do [[ -f "$STAGE/$f" ]] && cp "$STAGE/$f" "$OUT/misterplex/$f"; done
 cp "$HERE/misterplex_setup.sh" "$OUT/Scripts/misterplex_setup.sh"
 # External files: host upstream when the bytes match, else host the release copy here.
 python3 - "$HERE/external_files.csv" "$OUT" <<'PY'

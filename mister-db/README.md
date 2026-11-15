@@ -28,20 +28,23 @@ Then:
 If you use Downloader download filters, keep MisterPlex in them, for example `filter = [mister] misterplex misterplexsetup`
 in the `[flynnsbit/misterplex]` section.
 
-## What it installs (same paths as `scripts/install-misterplex.sh`)
+## What it installs
+
+Only runtime files from the **newest published GitHub release** of flynnsbit/misterplex-cast
+(the release package `misterplex-<tag>.tar.gz`, checked against the release `SHA256SUMS`).
+The paths are the same ones `scripts/install-misterplex.sh` writes. Docs, licences, LICENSE/NOTICE
+and release notes are not put on the MiSTer; they stay in the release package and the repo.
+`RELEASE` in this folder names the release the current db was built from.
 
 | On the card (`/media/fat/...`) | What |
 |---|---|
-| `_Utility/MiSTerPlex.rbf` | the core, exactly one copy |
-| `misterplex/bin/misterplexd`, `misterplex/bin/misterplexd-spelunkr` | the daemon and its Spelunkr build |
-| `misterplex/bin/*.sh` | boot hook `misterplexd-boot-rc3.sh`, supervisor, mode switch, configure, uninstall, update_ytdlp, ... |
-| `misterplex/bin/yt-dlp_linux_armv7l.zip` | yt-dlp 2026.08.19 armv7l, fetched straight from the yt-dlp GitHub release (`external_files.csv`) |
-| `misterplex/scripts/`, `misterplex/docs/`, `misterplex/licenses/`, `misterplex/plexui/` | the same folders the release package installs |
-| `misterplex/conf/misterplex.conf.example` | default settings (copied to `linux/misterplex.conf` only when that file does not exist) |
+| `_Utility/MiSTerPlex.rbf` | the core from the release, exactly one copy |
+| `misterplex/bin/` | `misterplexd`, `misterplexd-spelunkr`, the boot hook `misterplexd-boot-rc3.sh` and the other package `bin/` scripts |
+| `misterplex/bin/yt-dlp_linux_armv7l.zip` | yt-dlp, fetched from the upstream yt-dlp release when the bytes match (`external_files.csv`) |
+| `misterplex/scripts/`, `misterplex/plexui/`, `misterplex/conf/misterplex.conf.example` | package scripts, Plex UI fonts, default settings |
 | `misterplex/yt_warm_helper.py` | casting warm helper |
-| `misterplex/cores/MiSTerPlex.rbf.md5` | md5 of the core; the boot hook checks it before it retires `PlexOB.rbf` |
+| `misterplex/cores/MiSTerPlex.rbf.md5` | the release md5 slot; the boot hook checks it before it retires `PlexOB.rbf` |
 | `misterplex/linux/...` | CA bundle and the AirPlay / Cast helpers, staged for `misterplex_setup.sh` |
-| `misterplex/LICENSE`, `misterplex/NOTICE`, `misterplex/DB-INFO.txt` | licence, notice, and which builds this db ships |
 | `Scripts/misterplex_setup.sh` | the post-install step |
 
 ## What the db cannot do (done by `Scripts/misterplex_setup.sh`)
@@ -63,26 +66,24 @@ The player name (`FRIENDLY_NAME`) is set by the boot hook on first boot, as with
 
 ## Hosting
 
-Downloader cannot authenticate, so every URL must be publicly fetchable. The payload is committed in `payload/`
+Downloader cannot authenticate, so every URL must be publicly fetchable. Downloader archives only
+accept ZIP, and the release package is a `.tar.gz`, so the release files are unpacked into `payload/`
 on this branch. File URLs are pinned to the payload commit:
 `base_files_url = https://raw.githubusercontent.com/<repo>/<payload-commit>/mister-db/payload/`.
-A later push never changes what an older db points at. The large yt-dlp zip is an external file
-that points at the upstream release. Everything is templated in `build_db.sh`
+A later push never changes what an older db points at. Everything is templated in `build_db.sh`
 (`MPX_DB_REPO`, `MPX_DB_BRANCH`, `MPX_DB_DIR`, `MPX_DB_ID`).
 
 ## Rebuild
 
+`.github/workflows/mister-db-release.yml` does this on every published release (and on
+workflow_dispatch). It uses only the built-in `GITHUB_TOKEN`, makes normal commits and does a normal push.
+GitHub only fires those triggers for a workflow file on the default branch.
+By hand, on this branch:
+
 ```sh
-# 1. release stage (same tree install-misterplex.sh installs from), daemon from a pushed commit
-PACKAGE_REUSE_ARM_BIN=1 ARM_PLEXD_BIN=... ARM_PLEXD_SPELUNKR_BIN=... OUT_DIR=... scripts/package_release.sh
-# 2. payload (core from a pushed commit; md5, BUILD_ID, RTL commit and seed are checked and recorded)
-mister-db/build_payload.sh --stage <OUT_DIR>/stage-misterplex --rbf MiSTerPlex.rbf --rbf-md5 <md5> \
-  --rbf-build-id <ID> --rbf-rtl <40-hex> --rbf-seed <n> --daemon-rev <40-hex>
-git add mister-db/payload && git commit
-# 3. db (pins the payload commit), validate, offline install test, commit
-mister-db/build_db.sh
+mister-db/regen_from_release.sh [TAG]      # newest published release when TAG is empty
 mister-db/test_offline_install.sh <Downloader_MiSTer checkout> [yt-dlp zip]
-git add mister-db/db.json.zip mister-db/downloader_*.ini && git commit
+git push origin HEAD:refs/heads/castor/update-all-db
 ```
 
 `validate_db.py DB [PAYLOAD] [--remote N]` checks a db, local or by URL, against the payload and,
