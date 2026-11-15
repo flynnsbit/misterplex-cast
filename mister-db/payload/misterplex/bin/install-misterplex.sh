@@ -190,17 +190,14 @@ fi
 run mkdir -p "$MPX" "$FAT/_Utility" "$LNX"
 LEGACY_WARM="$FAT/_Utilities/misterplex"
 if [ -d "$LEGACY_WARM" ]; then
-  for entry in "$LEGACY_WARM"/yt-cache "$LEGACY_WARM"/yt_warm_helper.py \
-               "$LEGACY_WARM"/yt_warm_helper.py.bak "$LEGACY_WARM"/yt_warm_helper.py.bak.* \
-               "$LEGACY_WARM"/yt-warm.sock "$LEGACY_WARM"/yt-warm.sock.lock "$LEGACY_WARM"/yt-warm.sock.log; do
+  for entry in "$LEGACY_WARM"/* "$LEGACY_WARM"/.[!.]* "$LEGACY_WARM"/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     dst="$MPX/${entry##*/}"
     if [ -e "$dst" ] || [ -L "$dst" ]; then
-      say "removing disposable $entry: $dst already exists"
-      run rm -rf -- "$entry" || warn "could not remove $entry; left in place"
+      warn "kept $entry: $dst already exists"
     else
       say "moving $entry -> $dst"
-      run mv "$entry" "$dst" || warn "could not move $entry -> $dst; left in place"
+      run mv "$entry" "$dst"
     fi
   done
   run rmdir "$LEGACY_WARM" "$FAT/_Utilities" 2>/dev/null || true
@@ -235,13 +232,13 @@ fi
 want=$(cut -d" " -f1 "$PKG/cores/MiSTerPlex.rbf.md5" | tr 'A-F' 'a-f')
 got=$(md5sum "$PKG/cores/MiSTerPlex.rbf" | cut -d" " -f1)
 [ -n "$want" ] && [ "$want" = "$got" ] || die "cores/MiSTerPlex.rbf checksum does not match cores/MiSTerPlex.rbf.md5"
-# Pin list: the release core 96eb13d2 (BUILD_ID 0x0B1101C5, RTL 5588134, seed 10;
+# Pin list: the release core 76cde669 (BUILD_ID 0x0B1101C5, RTL c7e929f4, seed 10;
 # scripts/plexob_pin_identity.sh). A host test under a fake ROOT may set
 # MPX_TEST_RBF_PIN. Honor it only when the operator sets both ROOT (a fake
 # card) and MPX_TEST_RBF_PIN, the pin is a lowercase 32-digit hex md5, and
 # the target FAT is not the live /media/fat (ROOT=/ would install there).
 # Ignored when ROOT is unset.
-RBF_PINS="96eb13d2cfc966fa56528703d0b542cf"
+RBF_PINS="76cde669ad5ab2b42091e8adfc267455"
 rbf_test_pin_ok() {
   [ -n "${ROOT:-}" ] && [ -n "${MPX_TEST_RBF_PIN:-}" ] || return 1
   case "$ROOT" in /|"") return 1 ;; esac
@@ -258,7 +255,7 @@ if rbf_test_pin_ok; then
 fi
 case " $RBF_PINS " in
   *" $got "*) ;;
-  *) die "cores/MiSTerPlex.rbf md5 $got is not on the pin list (release 96eb13d2)" ;;
+  *) die "cores/MiSTerPlex.rbf md5 $got is not on the pin list (release 76cde669)" ;;
 esac
 # Exactly one copy, in _Utility. The menu lists a root copy as a second core,
 # so no root MiSTerPlex.rbf is written and an old one is removed below.
@@ -328,16 +325,7 @@ done
 # 5. Casting helpers and the CA bundle.
 if [ -f "$PKG/linux/misterplex/yt_warm_helper.py" ]; then
   # Like the core and CA bundle, uninstall removes this explicitly, not via the backup ledger.
-  # A pre-existing directory at the helper path makes cp fail with "cannot overwrite directory".
-  if [ -d "$MPX/yt_warm_helper.py" ]; then
-    say "removing unexpected directory $MPX/yt_warm_helper.py so the helper can be installed"
-    run rm -rf -- "$MPX/yt_warm_helper.py" || warn "could not remove $MPX/yt_warm_helper.py; left in place"
-  fi
-  if [ "$DRY" != 1 ] && [ -d "$MPX/yt_warm_helper.py" ]; then
-    warn "skipped helper install: $MPX/yt_warm_helper.py is a directory"
-  else
-    run cp "$PKG/linux/misterplex/yt_warm_helper.py" "$MPX/"
-  fi
+  run cp "$PKG/linux/misterplex/yt_warm_helper.py" "$MPX/"
 fi
 if [ -f "$PKG/linux/misterplex-cacert.pem" ]; then
   backup "$LNX/misterplex-cacert.pem"

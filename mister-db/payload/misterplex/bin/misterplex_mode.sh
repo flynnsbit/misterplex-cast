@@ -65,31 +65,12 @@ if [ "$osd_switch" = 1 ]; then
   trap switch_exit EXIT
 fi
 
-# Speed: no fork per /proc entry. `read` is a shell builtin; cat/readlink/tr/grep
-# per process made every scan cost seconds on the MiSTer ARM, and this script
-# scans a dozen times. A process whose comm names another program is skipped;
-# one with no readable comm still gets the exe check as before.
-# Measured per-phase timing for the switch (read by glass): one line per phase on
-# the switch log, stamped with /proc/uptime (builtin read, no fork).
-phase() {
-  up=
-  { read -r up _ < /proc/uptime; } 2>/dev/null || up='?'
-  echo "mode.sh phase $1 uptime=$up"
-}
-
-proc_comm() {
-  comm=
-  { read -r comm < "$1/comm"; } 2>/dev/null || comm=
-}
-
 daemon_pids() {
   for proc in /proc/[0-9]*; do
-    proc_comm "$proc"
-    case "$comm" in
-      misterplexd) echo "${proc##*/}"; continue ;;
-      misterplexd*|'') ;;
-      *) continue ;;
-    esac
+    if [ "$(cat "$proc/comm" 2>/dev/null)" = misterplexd ]; then
+      echo "${proc##*/}"
+      continue
+    fi
     case "$(readlink "$proc/exe" 2>/dev/null)" in
       /media/fat/misterplex/bin/misterplexd|/media/fat/misterplex/bin/misterplexd-spelunkr|\
       "/media/fat/misterplex/bin/misterplexd (deleted)"|\
@@ -102,11 +83,6 @@ daemon_pids() {
 
 supervisor_pids() {
   for proc in /proc/[0-9]*; do
-    proc_comm "$proc"
-    case "$comm" in
-      sh|ash|bash|busybox|misterplexd_*|'') ;;
-      *) continue ;;
-    esac
     [ -r "$proc/cmdline" ] || continue
     if tr '\000' '\n' < "$proc/cmdline" 2>/dev/null |
        grep -q -E '(^|/)misterplexd_supervise\.sh$'; then
@@ -148,7 +124,6 @@ if [ "$osd_switch" = 1 ]; then
     fail "Plex CFG service restore preparation failed"
   fi
 fi
-phase begin
 echo "Switching misterplexd to $mode mode"
 
 signal_pids() {
@@ -163,53 +138,38 @@ signal_pids() {
   done
 }
 
-# Speed: poll every 0.2 s (fractional sleep is already used below for the Menu
-# bounce); the TERM and KILL budgets stay 10 s each.
-poll_tick=0.2
-poll_max=50
 stop_all() {
   finder=$1
   pids=$("$finder")
   [ -n "$pids" ] || return 0
   signal_pids TERM $pids
   attempt=0
-  while [ "$attempt" -lt "$poll_max" ]; do
+  while [ "$attempt" -lt 10 ]; do
     pids=$("$finder")
     [ -n "$pids" ] || return 0
-    sleep "$poll_tick"
+    sleep 1
     attempt=$((attempt + 1))
   done
   signal_pids KILL $pids
   attempt=0
-  while [ "$attempt" -lt "$poll_max" ]; do
+  while [ "$attempt" -lt 10 ]; do
     pids=$("$finder")
     [ -n "$pids" ] || return 0
-    sleep "$poll_tick"
+    sleep 1
     attempt=$((attempt + 1))
   done
   fail "$finder still running: $pids"
 }
 
-# An OSD service switch keeps the AirPlay transcode helper running: it is the
-# same helper for both services, and stopping/copying/restarting it cost
-# seconds of the switch (boot script honours BOOT_KEEP_HELPER).
-if [ "$osd_switch" = 1 ]; then
-  export BOOT_KEEP_HELPER=1
-fi
-phase boot-stop-begin
 sh "$boot" stop 9>&- || fail "startup script stop failed"
-phase boot-stop-done
 stop_all supervisor_pids
-phase supervisor-stopped
 stop_all daemon_pids
-phase daemon-stopped
 # P2-a: helper runs in its own pgroup; kill -9 of misterplexd leaves it.
 pkill -f "[y]t_warm_helper\.py" 2>/dev/null || true
-sleep 0.3
+sleep 1
 [ -z "$(supervisor_pids)" ] || fail "supervisor respawned during stop"
 [ -z "$(daemon_pids)" ] || fail "daemon respawned during stop"
 echo "Verified no misterplexd remains; starting $mode mode"
-phase verified
 if [ "$mode" = Plex ]; then
   recovery=$cfg.spelunkr-save
   if [ -e "$recovery" ]; then
@@ -249,22 +209,9 @@ if [ "$mode" = Plex ] && [ "$was_spelunkr" = 1 ] && [ "$MPX_CORE_MANUAL_ONLY" !=
   done
   echo "Restored saved Plex video settings through one Menu bounce"
 fi
-phase boot-start-begin
 sh "$boot" start 9>&- || fail "startup script start failed"
-phase boot-start-done
-# Ready wait: 60 s wall clock, as before. The 0.25 s poll alone would let a slow
-# curl stretch the old 60-iteration bound four-fold, so also bound by uptime.
-wait_start=
-{ read -r wait_start _ < /proc/uptime; } 2>/dev/null || wait_start=
-wait_start=${wait_start%%.*}
 attempt=0
-while [ "$attempt" -lt 240 ]; do
-  if [ -n "$wait_start" ]; then
-    wait_now=
-    { read -r wait_now _ < /proc/uptime; } 2>/dev/null || wait_now=
-    wait_now=${wait_now%%.*}
-    [ -z "$wait_now" ] || [ "$wait_now" -lt $((wait_start + 60)) ] || break
-  fi
+while [ "$attempt" -lt 60 ]; do
   pids=$(daemon_pids)
   set -- $pids
   if [ "$#" -eq 1 ] &&
@@ -299,12 +246,11 @@ while [ "$attempt" -lt 240 ]; do
       if [ "$osd_switch" = 1 ]; then
         printf 'ready %s\n' "$mode" > "$state.new" && mv "$state.new" "$state"
       fi
-      phase ready
       echo "misterplexd mode: $mode; one daemon pid=$pid; /resources and mode ready"
       exit 0
     fi
   fi
-  sleep 0.25
+  sleep 1
   attempt=$((attempt + 1))
 done
 fail "$mode startup did not become ready with exactly one daemon; see /tmp/misterplexd-boot-rc3.log"

@@ -144,8 +144,7 @@ helper_files "$LNX/airplay"; helper_files "$LNX/gcast"
 # Shipped worker plus the warm-helper runtime dir (cache, abstract marker, lock, log).
 LEGACY_WARM="$FAT/_Utilities/misterplex"
 for warm in "$MPX" "$LEGACY_WARM"; do
-  gone "$warm/yt_warm_helper.py" "$warm/yt_warm_helper.py.bak" "$warm"/yt_warm_helper.py.bak.* \
-       "$warm/yt-warm.sock" \
+  gone "$warm/yt_warm_helper.py" "$warm/yt-warm.sock" \
        "$warm/yt-warm.sock.lock" "$warm/yt-warm.sock.log" "$warm/yt-cache"
 done
 if [ "$DRY" = 0 ]; then

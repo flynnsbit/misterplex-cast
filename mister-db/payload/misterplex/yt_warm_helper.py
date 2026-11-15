@@ -28,78 +28,7 @@ def https_url(value):
     return parsed.scheme == "https" and bool(parsed.hostname)
 
 
-def _format_choice(url, audio_url, fmt, adaptive):
-    height = int(fmt.get("height", 0) or 0)
-    itag = int(fmt.get("itag", 0) or 0)
-    capped = height < 720 and _android_sabr_capped(height, adaptive)
-    return {
-        "url": url,
-        "audioUrl": audio_url or "",
-        "height": height,
-        "itag": itag,
-        "capped": capped,
-    }
-
-
-def _android_sabr_capped(chosen_height, adaptive):
-    for fmt in adaptive:
-        mime = fmt.get("mimeType", "")
-        if not (mime.startswith("video/mp4") and "avc1" in mime):
-            continue
-        h = fmt.get("height", 0)
-        fps = fmt.get("fps", 0)
-        if h > chosen_height and 0 < h <= 720 and 0 < fps <= 30 and not https_url(fmt.get("url")):
-            return True
-    return False
-
-
 def select_formats(player):
-    if os.environ.get("MUT_YT_WARM_PROGRESSIVE_FIRST") == "1":
-        return _select_formats_progressive_first(player)
-    status = player.get("playabilityStatus", {})
-    if status.get("status") != "OK":
-        raise ValueError("Android player unavailable: " + str(status.get("status", "missing status")))
-    if player.get("videoDetails", {}).get("isLiveContent"):
-        raise ValueError("live content requires one-shot resolver")
-    streams = player.get("streamingData", {})
-    adaptive = streams.get("adaptiveFormats", [])
-
-    def avc_video(fmt):
-        mime = fmt.get("mimeType", "")
-        return (mime.startswith("video/mp4") and "avc1" in mime
-                and 0 < fmt.get("height", 0) <= 720
-                and 0 < fmt.get("fps", 0) <= 30
-                and https_url(fmt.get("url")))
-
-    def avc_progressive(fmt):
-        mime = fmt.get("mimeType", "")
-        return avc_video(fmt) and "mp4a" in mime
-
-    def rank(fmt):
-        return fmt.get("height", 0), fmt.get("bitrate", 0)
-
-    progressive = [f for f in streams.get("formats", []) if avc_progressive(f)]
-    videos = [f for f in adaptive if avc_video(f)]
-    audio = [f for f in adaptive
-             if f.get("mimeType", "").startswith("audio/mp4")
-             and "mp4a" in f.get("mimeType", "") and https_url(f.get("url"))]
-    best_prog = max(progressive, key=rank) if progressive else None
-    if videos and audio:
-        best_vid = max(videos, key=rank)
-        best_aud = max(audio, key=lambda f: f.get("bitrate", 0))
-        if not best_prog or best_vid.get("height", 0) > best_prog.get("height", 0):
-            return _format_choice(best_vid["url"], best_aud["url"], best_vid, adaptive)
-    if best_prog:
-        return _format_choice(best_prog["url"], "", best_prog, adaptive)
-    if not videos or not audio:
-        raise ValueError("Android player has no direct AVC/AAC <=720p30 HTTPS formats")
-    best_vid = max(videos, key=rank)
-    best_aud = max(audio, key=lambda f: f.get("bitrate", 0))
-    return _format_choice(best_vid["url"], best_aud["url"], best_vid, adaptive)
-
-
-def _select_formats_progressive_first(player):
-    """Test mutant: old progressive-before-adaptive ordering."""
     status = player.get("playabilityStatus", {})
     if status.get("status") != "OK":
         raise ValueError("Android player unavailable: " + str(status.get("status", "missing status")))
@@ -120,8 +49,7 @@ def _select_formats_progressive_first(player):
     progressive = [f for f in streams.get("formats", [])
                    if avc(f) and "mp4a" in f.get("mimeType", "")]
     if progressive:
-        best = max(progressive, key=rank)
-        return _format_choice(best["url"], "", best, streams.get("adaptiveFormats", []))
+        return max(progressive, key=rank)["url"], ""
     adaptive = streams.get("adaptiveFormats", [])
     videos = [f for f in adaptive if avc(f)]
     audio = [f for f in adaptive
@@ -129,9 +57,8 @@ def _select_formats_progressive_first(player):
              and "mp4a" in f.get("mimeType", "") and https_url(f.get("url"))]
     if not videos or not audio:
         raise ValueError("Android player has no direct AVC/AAC <=720p30 HTTPS formats")
-    best_vid = max(videos, key=rank)
-    best_aud = max(audio, key=lambda f: f.get("bitrate", 0))
-    return _format_choice(best_vid["url"], best_aud["url"], best_vid, adaptive)
+    return (max(videos, key=rank)["url"],
+            max(audio, key=lambda f: f.get("bitrate", 0))["url"])
 
 
 class Worker:
@@ -176,16 +103,9 @@ class Worker:
                 if len(raw) > 2 * 1024 * 1024:
                     raise ValueError("Android player response too large")
         player = json.loads(raw)
-        choice = select_formats(player)
-        return {
-            "ok": True,
-            "url": choice["url"],
-            "audioUrl": choice["audioUrl"],
-            "height": choice["height"],
-            "itag": choice["itag"],
-            "capped": choice["capped"],
-            "title": player.get("videoDetails", {}).get("title", ""),
-        }
+        url, audio = select_formats(player)
+        return {"ok": True, "url": url, "audioUrl": audio,
+                "title": player.get("videoDetails", {}).get("title", "")}
 
 
 def bind_socket(server, path):

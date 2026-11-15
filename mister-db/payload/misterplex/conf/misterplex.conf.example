@@ -101,7 +101,6 @@ YT_CAST_TITLE=1
 # Worker runs nice 10, capped at 96 MiB RSS, with 1-60s crash respawn backoff.
 # MPX_YT_WARM / MPX_YT_WARM_SOCK / MPX_YT_WARM_SCRIPT env override these keys.
 # YT_WARM=0
-# YT_HD_RETRY=1
 # YT_WARM_SOCK=/media/fat/misterplex/yt-warm.sock
 # YT_WARM_SCRIPT=/media/fat/misterplex/yt_warm_helper.py
 # Socket/endpoint marker, .lock and .log stay on SD. vfat uses an abstract
@@ -584,7 +583,3 @@ SOFT_SUBS=1
 # Sender-device test: python3 tools/airplay/lan_auth_sender.py --host <mister-ip>
 # Never put a real secret in a shared or STAGE conf. Env MPX_LAN_AUTH wins.
 # LAN_AUTH=0
-
-# SPELUNKR_BACKWHEN=0  (or Off/false/no) disables the Back When guide section.
-# Default on whenever SPELUNKR=1. The section is fetched in the background.
-# SPELUNKR_BACKWHEN=0
