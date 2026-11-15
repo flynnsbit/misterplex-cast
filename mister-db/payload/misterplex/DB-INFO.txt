@@ -1,0 +1,5 @@
+MisterPlex update_all / Downloader payload
+core       _Utility/MiSTerPlex.rbf md5 3ed684ceb7d60fbbd0c498380cfaa870 BUILD_ID 0x0B111401 seed 12 RTL 2b6570a89d1d6f28560287fb978e18fe5c09b4ef
+daemon     misterplex/bin/misterplexd md5 2aa5c95bd4cfc0f40bedea79b281daed rev d111f42b984c5a52941c0c6ce03dc1d5c200684d
+spelunkr   misterplex/bin/misterplexd-spelunkr md5 faa30a022cd845019ba6e3741fd0dfa4 rev d111f42b984c5a52941c0c6ce03dc1d5c200684d
+After update_all, run Scripts > misterplex_setup once (and again after an update).

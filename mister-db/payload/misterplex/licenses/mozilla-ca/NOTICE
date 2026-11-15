@@ -1,0 +1,9 @@
+# Mozilla CA certificate bundle
+
+File: linux/misterplex-cacert.pem (installed as /media/fat/linux/misterplex-cacert.pem).
+Source: https://curl.se/ca/cacert.pem extracted from Mozilla's certdata.txt
+(https://raw.githubusercontent.com/mozilla-firefox/firefox/refs/heads/release/security/nss/lib/ckfw/builtins/certdata.txt).
+The bundle in this package is the curl.se extract dated Fri Sep 25 03:12:01 2026 GMT.
+SHA256: beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb
+
+Mozilla NSS certdata.txt is MPL-2.0. The extract is a bundle of public CA certificates.

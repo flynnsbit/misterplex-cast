@@ -1,0 +1,31 @@
+# MiSTer Downloader / update_all custom database for MisterPlex (adapted from
+# theypsilon/DB-Template_MiSTer .github/workflows/build_db.yml).
+# Differences from the template, on purpose:
+#  - read-only: it never pushes (the template force-pushes an orphan "db" branch).
+#    db.json.zip is generated with mister-db/build_db.sh and committed normally.
+#  - it validates the committed db against the committed payload and installs it
+#    into a throwaway fake SD card with the real Downloader (no network to devices).
+name: MiSTer db (update_all)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'mister-db/**'
+      - '.github/workflows/mister-db.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate db.json.zip against payload/
+        run: python3 mister-db/validate_db.py mister-db/db.json.zip mister-db/payload --db-id flynnsbit/misterplex
+      - name: Offline install with the real Downloader
+        run: |
+          git clone -q https://github.com/MiSTer-devel/Downloader_MiSTer /tmp/Downloader_MiSTer
+          git -C /tmp/Downloader_MiSTer checkout -q 5d0771359ae396aaea64453e6791ac87781d78f4
+          bash mister-db/test_offline_install.sh /tmp/Downloader_MiSTer

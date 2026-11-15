@@ -1,0 +1,5 @@
+Vendored at host/libmisterplex/plexui/third_party/qoi.h and linked into bin/misterplexd.
+The header states:
+
+Copyright (c) 2021, Dominic Szablewski - https://phoboslab.org
+SPDX-License-Identifier: MIT

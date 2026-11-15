@@ -1,0 +1,281 @@
+MiSTerPlex release package
+version: rc7
+
+License
+-------
+  bin/misterplexd is a combined work distributed under the GNU General Public License version 3
+  (licenses/uxplay/LICENSE). It statically links
+  UxPlay lib/crypto.c (from RPiPlay, GPL-3.0-or-later) and lib/playfair
+  (GPL-3.0). The other linked libraries keep their own licences, all
+  compatible with GPLv3: FFmpeg 8.1.2 libav, libplist, glibc and mdnsd
+  (LGPL-2.1-or-later), OpenSSL 3.0.15 (Apache-2.0), csrp, llhttp and
+  owenb-h264ring (MIT), and the GCC runtime (GPL-3.0 with the runtime
+  exception). See licenses/README.md.
+  MiSTerPlex.rbf is built from a fork of MiSTer_h264_decoder (eac1064) under
+  GPL-3.0-or-later (upstream's licence). It is the only FPGA core shipped.
+  FFmpeg is statically linked libav (LGPL-2.1-or-later):
+  libavformat, libavcodec, libavutil, and libswresample from FFmpeg 8.1.2.
+  licenses/ffmpeg/ has the LGPL-2.1 text, the source URL, and the configure
+  line (--enable-openssl, no --enable-gpl).
+  The corresponding source for the PlexOB bitstream is the PlexOB source tarball shipped inside this release package (source/); NOTICE gives its file name and sha256.
+
+Contents
+--------
+  LICENSE
+  MiSTerPlex.rbf
+  NOTICE
+  README.md
+  README.txt
+  RELEASE-NOTES.md
+  SHA256SUMS
+  _Utility/MiSTerPlex.rbf
+  bin/configure-misterplex.sh
+  bin/install-misterplex.sh
+  bin/misterplex_cast_ready.sh
+  bin/misterplex_core_watch.sh
+  bin/misterplex_mode.sh
+  bin/misterplex_named_rbf.sh
+  bin/misterplex_pair_conf.sh
+  bin/misterplex_plex.sh
+  bin/misterplex_restart_manual.sh
+  bin/misterplex_spelunkr.sh
+  bin/misterplexd
+  bin/misterplexd-boot-rc3.sh
+  bin/misterplexd-spelunkr
+  bin/misterplexd_supervise.sh
+  bin/misterplexd_update_watch.sh
+  bin/uninstall-misterplex.sh
+  bin/update_ytdlp.sh
+  bin/yt-dlp_linux_armv7l.zip
+  conf/misterplex.conf.example
+  cores/MiSTerPlex.rbf
+  cores/MiSTerPlex.rbf.md5
+  docs/INSTALL.txt
+  docs/VERIFY.md
+  docs/architecture.md
+  docs/match-source-hz.md
+  docs/misterplex-architecture.png
+  docs/misterplex-architecture.svg
+  docs/release-notes-v0.3.0.md
+  docs/release-notes-v0.4.0.md
+  docs/release-notes-v0.9.0-pre.md
+  docs/release.md
+  docs/subtitles-burnin.md
+  install-misterplex.sh
+  kmod/mplex_ddr/Makefile
+  kmod/mplex_ddr/mplex_ddr.c
+  licenses/README.md
+  licenses/csrp/LICENSE
+  licenses/csrp/PROVENANCE.md
+  licenses/ffmpeg/COPYING.LGPLv2.1
+  licenses/ffmpeg/PROVENANCE.md
+  licenses/gcast-ffmpeg/Apache-2.0.txt
+  licenses/gcast-ffmpeg/NOTICE
+  licenses/gcast-ffmpeg/SOURCE.SHA256SUMS
+  licenses/gcc/PROVENANCE.md
+  licenses/gcc/copyright
+  licenses/glibc/COPYING.LGPLv2.1
+  licenses/glibc/PROVENANCE.md
+  licenses/libplist/COPYING.LESSER
+  licenses/libplist/PROVENANCE.md
+  licenses/llhttp/LICENSE-MIT
+  licenses/llhttp/PROVENANCE.md
+  licenses/mdnsd/COPYING.LGPLv2.1
+  licenses/mdnsd/PROVENANCE.md
+  licenses/mozilla-ca/NOTICE
+  licenses/openssl/LICENSE.txt
+  licenses/openssl/PROVENANCE.md
+  licenses/owenb-h264ring/LICENSE
+  licenses/owenb-h264ring/PROVENANCE.md
+  licenses/playfair/LICENSE.md
+  licenses/playfair/PROVENANCE.md
+  licenses/qoi/NOTICE
+  licenses/qoi/PROVENANCE.md
+  licenses/rbf/GPL-2
+  licenses/rbf/LICENSE
+  licenses/rbf/PROVENANCE.md
+  licenses/rbf/README.md
+  licenses/spleen/LICENSE
+  licenses/stb/NOTICE
+  licenses/stb/PROVENANCE.md
+  licenses/uxplay/COPYING.LGPLv2.1
+  licenses/uxplay/LICENSE
+  licenses/uxplay/PROVENANCE.md
+  licenses/x264/COPYING
+  licenses/x264/README.md
+  licenses/ytdlp/NOTICE
+  linux/SHA2-256SUMS
+  linux/airplay/MD5SUMS
+  linux/airplay/airplay_xcode.py
+  linux/airplay/ffmpeg
+  linux/airplay/ffprobe
+  linux/airplay/run-airplay-xcode.sh
+  linux/gcast/MD5SUMS
+  linux/gcast/ffmpeg
+  linux/gcast/ffprobe
+  linux/gcast/gcast_xcode.py
+  linux/gcast/run-gcast-xcode.sh
+  linux/misterplex-cacert.pem
+  linux/misterplex/plexui/LICENSE-Roboto.txt
+  linux/misterplex/plexui/Roboto-Bold.ttf
+  linux/misterplex/plexui/Roboto-Regular.ttf
+  linux/misterplex/yt_warm_helper.py
+  linux/yt-dlp_linux_armv7l.zip
+  linux/yt-dlp_linux_armv7l.zip.sha256
+  plexui/LICENSE-Roboto.txt
+  plexui/Roboto-Bold.ttf
+  plexui/Roboto-Regular.ttf
+  scripts/configure-misterplex.sh
+  scripts/install-misterplex.sh
+  scripts/misterplex_cast_ready.sh
+  scripts/misterplex_core_watch.sh
+  scripts/misterplex_mode.sh
+  scripts/misterplex_named_rbf.sh
+  scripts/misterplex_pair_conf.sh
+  scripts/misterplex_plex.sh
+  scripts/misterplex_restart_manual.sh
+  scripts/misterplex_spelunkr.sh
+  scripts/misterplexd-boot-rc3.sh
+  scripts/misterplexd_supervise.sh
+  scripts/misterplexd_update_watch.sh
+  scripts/plex_browse.sh
+  scripts/plex_menu.sh
+  scripts/pms_720p_proxy.py
+  scripts/stage_plexob_yc_rbf.sh
+  scripts/uninstall-misterplex.sh
+  scripts/update_ytdlp.sh
+  source/gcast-ffmpeg/MD5SUMS
+  source/gcast-ffmpeg/PINS.SHA256SUMS
+  source/gcast-ffmpeg/SHA256SUMS
+  source/gcast-ffmpeg/build_arm_airplay.sh
+  source/gcast-ffmpeg/build_gcast_ffmpeg.sh
+  source/gcast-ffmpeg/ffmpeg-8.1.2.tar.xz
+  source/gcast-ffmpeg/ffmpeg-8.1.2.tar.xz.asc
+  source/gcast-ffmpeg/openssl-3.0.15.tar.gz
+  source/gcast-ffmpeg/x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.bz2
+  source/misterplex-plexob-src-v1.0.0.tar.xz
+
+Quick install from this extracted directory
+-------------------------------------------
+  ssh root@<mister-ip> /media/fat/misterplex/bin/misterplexd-boot-rc3.sh stop
+  ssh root@<mister-ip> "mkdir -p /media/fat/misterplex /media/fat/_Utility /media/fat/linux"
+  scp -r bin scripts docs licenses plexui root@<mister-ip>:/media/fat/misterplex/
+  # Replace-and-verify the boot hook. scp above overwrites the old hook, but a stale hook on the card is what
+  # a glass run once tested (old md5 7cca970e), so compare the two sums. They must be equal (the packaged hook md5 is d3188085973e006967a66d26721c8f54).
+  md5sum bin/misterplexd-boot-rc3.sh
+  ssh root@<mister-ip> md5sum /media/fat/misterplex/bin/misterplexd-boot-rc3.sh
+  ssh root@<mister-ip> 'test -f /media/fat/linux/misterplex.conf' || scp conf/misterplex.conf.example root@<mister-ip>:/media/fat/linux/misterplex.conf
+  # The hook starts misterplexd with --conf /media/fat/linux/misterplex.conf
+  # when that file exists. /media/fat/misterplex/misterplex.conf is only the
+  # fallback when the linux file is missing. A bare daemon with no --conf
+  # still defaults to the misterplex/ path; the boot path does not.
+  # PlexOB Y/C (RTL 2b6570a8, SEED 12, BUILD_ID 0x0B111401). Word 88
+  # expects 4D505842/0B111401. Gate-open must not show "OB input region DEAD".
+  # Gate 5 pad/key is proven. OSD Send Home returns to the Plex home
+  # screen. CEA 1080p was not measured on this rig.
+  # This package bundles exactly one RBF. Back up whatever is
+  # already on the card, then install only when the bitstream md5 matches
+  # the pinned slot cores/MiSTerPlex.rbf.md5 (same bytes as cores/PlexOB.rbf.md5).
+  # Prod load_core tries /media/fat/MiSTerPlex.rbf, then
+  # /media/fat/_Utility/MiSTerPlex.rbf (and, only if an earlier install left
+  # one, /media/fat/_Utility/Plex.rbf, which this package does not ship).
+  # MiSTerPlex.rbf md5: 3ed684ceb7d60fbbd0c498380cfaa870
+  ssh root@<mister-ip> 'set -eu
+    stamp=$(date +%Y%m%d%H%M%S)
+    for f in /media/fat/PlexOB.rbf /media/fat/_Utility/PlexOB.rbf; do
+      if [ -f "$f" ]; then cp -a "$f" "$f.bak.$stamp"; fi
+    done
+    mkdir -p /media/fat/_Utility /tmp'
+  scp cores/MiSTerPlex.rbf root@<mister-ip>:/tmp/MiSTerPlex.rbf.mpx-tmp
+  ssh root@<mister-ip> 'set -eu
+    want=3ed684ceb7d60fbbd0c498380cfaa870
+    got=$(md5sum /tmp/MiSTerPlex.rbf.mpx-tmp | cut -d" " -f1)
+    if [ "$got" != "$want" ]; then
+      echo "refusing MiSTerPlex.rbf md5 $got (want $want)" >&2
+      rm -f /tmp/MiSTerPlex.rbf.mpx-tmp
+      exit 1
+    fi
+    for dest in /media/fat/MiSTerPlex.rbf /media/fat/_Utility/MiSTerPlex.rbf; do
+      cp /tmp/MiSTerPlex.rbf.mpx-tmp "$dest.mpx-tmp"
+      sync
+      mv -f "$dest.mpx-tmp" "$dest"
+      got=$(md5sum "$dest" | cut -d" " -f1)
+      test "$got" = "$want"
+    done
+    for old in /media/fat/PlexOB.rbf /media/fat/_Utility/PlexOB.rbf /media/fat/_Console/PlexOB.rbf /media/fat/cores/PlexOB.rbf; do
+      if [ -f "$old" ]; then rm -f "$old"; fi
+    done
+    rm -f /tmp/MiSTerPlex.rbf.mpx-tmp'
+  scp linux/misterplex-cacert.pem root@<mister-ip>:/media/fat/linux/misterplex-cacert.pem
+  scp -r linux/gcast root@<mister-ip>:/media/fat/linux/
+  # The destination is linux/ (scp creates gcast/). Do not append gcast/ to it. The boot hook also
+  # accepts linux/gcast/gcast/. Check the card: cd /media/fat/linux/gcast && md5sum -c MD5SUMS
+
+Boot (rc7) — chevron after reboot, no manual core load
+-------------------------------------------------------
+  misterplexd-boot.sh is the old cand launcher. It does not load a core, so a
+  reboot sits on the menu core (colorbars). Use misterplexd-boot-rc3.sh instead.
+  It load_core's /media/fat/MiSTerPlex.rbf when that file is present, else
+  /media/fat/_Utility/MiSTerPlex.rbf, else an older PlexOB.rbf if one is still
+  on the card, else, only if an earlier install left one,
+  /media/fat/_Utility/Plex.rbf (not shipped here; FPGA pin
+  prefix 999800cf), waits until CORENAME is Plex or PlexOB, then starts
+  bin/misterplexd with MPX_LEGACY_CORE_PREFIX=999800cf.
+
+  Comment out any misterplexd-boot.sh line, then append (the "$1" is
+  required; S99user calls user-startup.sh stop):
+    /media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &
+  to /media/fat/linux/user-startup.sh and, if that file already exists,
+  /media/fat/linux/_user-startup.sh. The same edit, including a rewrite of
+  a no-arg line and a user-startup.sh.bak.<stamp> backup, is:
+    /media/fat/misterplex/bin/misterplexd-boot-rc3.sh install
+
+  Boot starts misterplexd with GAIRPLAY=1 GYT=1 and
+  --conf /media/fat/linux/misterplex.conf. The hook waits up to 60 seconds
+  for a default route and a non-169.254 IPv4 on that route before it
+  launches, even when the name is already known. A FRIENDLY_NAME and
+  PLAYER_ID already in the conf are kept. Otherwise the hook uses
+  FRIENDLY_NAME and MPX_ID in the environment, then --name and --id on a
+  misterplexd-boot.sh or misterplexd_supervise.sh line in user-startup.sh
+  (a commented-out line still counts), then a persisted identity file.
+  NAME= / ID= in the legacy misterplexd-boot.sh is not a source. With none
+  of those, the hook picks a non-169.254 IPv4 (the default-route source
+  when the wait found one, otherwise any non-link-local) and writes
+  FRIENDLY_NAME and PLAYER_ID once as the same string misterplex-<last
+  three octets> (192.0.2.229 is misterplex-0.2.229). A later boot does
+  not rewrite a saved name. With no usable IPv4 the hook uses MiSTerPlex /
+  misterplex-1 for this boot only and does not write it. S99user runs
+  user-startup.sh stop at shutdown. With "$1" the hook SIGINT/SIGKILLs
+  the daemon and exits without saving. A no-arg line still refuses to
+  launch or save when rcK is running or runlevel is 0 or 6.
+
+  YouTube without airplay-xcode needs the PyInstaller onedir
+  yt-dlp_linux_armv7l.zip (stock python3 is 3.9, too old for the zipapp).
+  linux/yt-dlp_linux_armv7l.zip (verified, about 37 MB) is unpacked to /media/fat/linux/misterplex/yt-dlp/ by misterplexd-boot-rc3.sh so a fresh card works offline.
+  A later refresh (once a day, after the clock is valid):
+    /media/fat/misterplex/bin/update_ytdlp.sh
+  uses --cacert /media/fat/linux/misterplex-cacert.pem.
+
+  Plex TV UI fonts (Apache-2.0 Roboto, ~1.0 MB) ship as plexui/*.ttf and
+  linux/misterplex/plexui/. Install to /media/fat/misterplex/plexui/.
+  Missing fonts fall back to the built-in Spleen 8x16 bitmap.
+
+AirPlay works on the MiSTer by itself; a helper on a computer is optional
+----------------------------------------------------------------------------
+  AirPlay works on the MiSTer by itself; a helper on a computer is optional.
+  The package includes linux/airplay/ (airplay_xcode.py, run-airplay-xcode.sh,
+  ffmpeg, and ffprobe) and the same helper under the old names in linux/gcast/
+  (gcast_xcode.py, run-gcast-xcode.sh). Copy either tree:
+    scp -r linux/airplay root@<mister-ip>:/media/fat/linux/
+    scp -r linux/gcast root@<mister-ip>:/media/fat/linux/
+    (Destination is linux/, not linux/gcast/. The hook also accepts linux/airplay/airplay/
+    and linux/gcast/gcast/. MD5SUMS sits next to the files.)
+  misterplexd-boot-rc3.sh install turns on start at boot. The hook starts
+  the helper on 127.0.0.1:18781 and stops it on stop and uninstall.
+  The ready screen shows AirPlay only when that helper is up and its
+  /probe self-test passes. AIRPLAY_XCODE overrides the on-card helper.
+  GCAST_XCODE is the old name and still works when AIRPLAY_XCODE is unset.
+  192.0.2.10 is a documentation-range example:
+    AIRPLAY_XCODE=http://192.0.2.10:18780
+  See licenses/gcast-ffmpeg/NOTICE for the helper ffmpeg, ffprobe, x264,
+  and OpenSSL.
