@@ -47,7 +47,7 @@ DeadRunOutcome crossDeadRun(Resolve resolve, Advance advance, Draw draw) {
     }
 }
 
-// GBE #625 P3-4: main.cpp's play-job wiring lives here so the unit test drives the real code.
+// browse-lane #625 P3-4: main.cpp's play-job wiring lives here so the unit test drives the real code.
 // live false -> Cancelled. An Ok verdict without an allowed URL is a dead item (as before #625).
 inline ArchiveResolve deadRunVerdict(ArchiveResolve r, bool live) {
     if (!live) {
@@ -59,7 +59,7 @@ inline ArchiveResolve deadRunVerdict(ArchiveResolve r, bool live) {
     return r;
 }
 
-// GBE #625 P2-1: the reason IS the banner title (showSpelunkrBanner's 3rd arg). Do not fill the
+// browse-lane #625 P2-1: the reason IS the banner title (showSpelunkrBanner's 3rd arg). Do not fill the
 // item title here; the landed item's title is filled at tune, after the reason has been on screen.
 template <class Ui>
 void drawDeadRunBanner(Ui& ui, int dial, const std::string& channelName, const char* why) {
@@ -69,7 +69,7 @@ void drawDeadRunBanner(Ui& ui, int dial, const std::string& channelName, const c
 // One play-job resolve pass as main.cpp runs it. live(): not cancelled and still the current tune.
 // resolveRaw(): resolveArchivePlay for the caller's current item. skip(why): the caller's takeSkip
 // that advances its current item WITHOUT drawing. The banner is drawn under mu (the TV mutex,
-// GBE #625 P3-1) and only while still live, so a zap cannot get a stale CH banner.
+// browse-lane #625 P3-1) and only while still live, so a zap cannot get a stale CH banner.
 template <class Mutex, class Live, class ResolveRaw, class Skip, class Ui, class Np>
 DeadRunOutcome playJobDeadRun(Mutex& mu, Live live, ResolveRaw resolveRaw, Skip skip, Ui& ui, const Np& np) {
     return crossDeadRun(

@@ -2,7 +2,7 @@
 `default_nettype none
 
 module mpx_plexob_core_hook #(
-    parameter logic [31:0] BUILD_ID = 32'h0B1101C5
+    parameter logic [31:0] BUILD_ID = 32'h0B111401
 ) (
     input  wire        clk,
     input  wire        rst_n,

@@ -2,7 +2,7 @@
 # Y/C fit recipe for reviewer/yc-plexob-1019. Quartus is not invoked by `check`.
 # Inputs are the d17b8df2 set (E1-1 emu, A_E2 qsf settings, stock ascal, SEED 10
 # after the re-fit in fit/yc/TIMING-CLOSURE.md) plus the Y/C delta: MISTER_DISABLE_YC unset, BUILD_ID
-# 0x0B1101C5 (rollback c8b34604 = 0x0B59C11A; not the dead 0x0B59C119 stamp), word 87 [3:0], ring_in, and the ring_stat 88-95 walk.
+# 0x0B111401 (PR #374 reviewer N1 analog Progressive = 240p; prior dest pin 0x0B110715; rollback/shipped pin 0x0B1101C5 / 96eb13d2; Y/C rollback c8b34604 = 0x0B59C11A; not the dead 0x0B59C119 stamp), word 87 [3:0], ring_in, and the ring_stat 88-95 walk.
 # sys/ stays the eac1064 pin. This script does not patch the scaler.
 #
 #   launch_yc.sh check     # md5 and source guards, no Quartus
@@ -13,14 +13,15 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$ROOT"
 EACSHA=eac10641c5af0b808d332bb61344ee2dfdba4271
-FIT_NAME=plexob-yc-0b1101c5
+FIT_NAME=plexob-yc-0b111401
 # F2: the qsf is pinned by a NORMALIZED md5 (no '#' comment lines, SEED line replaced by a constant),
 # so the seed sweep and the per-fit ledger lines do not trip the pin. Everything else in the qsf is
 # still pinned. SEED comes from YC_SEED (default 10, integer only); seed 10 is the starting point.
-QSF_NORM=007cc9a1dc3f0a561d8b8c58ce8d0347
+QSF_NORM=59efe4a5443ce4457c48e9db5f985ee8
 SEED_PIN="${YC_SEED:-10}"
 case "$SEED_PIN" in ''|*[!0-9]*) echo "ABORT YC_SEED must be an integer, got '$SEED_PIN'" >&2; exit 1;; esac
-EMU8=f44288d5
+EMU8=d1acf298
+RESOLVE8=6dd64a92
 RING_IN8=e7a9e890
 RING8=1a2d93aa
 
@@ -85,6 +86,7 @@ yc_guard() {
   local WANT_SEED="${2:-$SEED_PIN}"
   pin_qsf_norm "$B/vendor/H264.qsf"
   pin8 "$B/vendor/h264/emu.sv" "$EMU8"
+  pin8 "$B/vendor/h264/video_out_resolve.sv" "$RESOLVE8"
   pin8 "$B/vendor/h264/cdc.sv" 6587ec58
   pin8 "$B/vendor/h264/dec_stub.sv" 5538da65
   pin8 "$B/vendor/h264/disp_reader.sv" cca57e96
@@ -105,11 +107,17 @@ yc_guard() {
   local R="$B/vendor/h264/ring_stat.sv"
   grep -q 'cdc_snap #(.W(26)) ar_xing' "$E" && grep -q 'if (ar_tick && ar_prim)' "$E" || {
     echo "ABORT E1-1 missing" >&2; exit 1; }
+  grep -q 'video_out_resolve video_out_resolve_inst' "$E" || {
+    echo "ABORT video_out_resolve instance missing" >&2; exit 1; }
+  grep -q 'analog_prog15 = analog_want && !vga31_want && (video_out_mode == 2'\''d2)' "$B/vendor/h264/video_out_resolve.sv" || {
+    echo "ABORT analog15 Progressive 240p missing" >&2; exit 1; }
+  grep -q 'p240_eff       = il_pix_sys && (analog_raster_240p || analog_prog15)' "$B/vendor/h264/video_out_resolve.sv" || {
+    echo "ABORT analog Progressive p240 force missing" >&2; exit 1; }
   grep -q "st_sys_ix == 7'd87" "$E" || { echo "ABORT word 87 arm missing" >&2; exit 1; }
   grep -q "st_sys_ix == 7'd88) ? {32'h4D505842" "$E" || { echo "ABORT word 88 MPXB splice missing" >&2; exit 1; }
   grep -q '40..47 -> 88..95' "$R" && grep -q "st_free >= 7'd56" "$R" || {
     echo "ABORT ring_stat 88-95 walk missing" >&2; exit 1; }
-  grep -q "MPX_PLEXOB_BUILD_ID=32'h0B1101C5" "$Q" || { echo "ABORT BUILD_ID" >&2; exit 1; }
+  grep -q "MPX_PLEXOB_BUILD_ID=32'h0B111401" "$Q" || { echo "ABORT BUILD_ID" >&2; exit 1; }
   grep -q 'VERILOG_MACRO "MISTER_DISABLE_YC' "$Q" && { echo "ABORT MISTER_DISABLE_YC is set" >&2; exit 1; }
   grep -q 'MISTER_DISABLE_ADAPTIVE=1' "$Q" || { echo "ABORT adaptive macro missing" >&2; exit 1; }
   grep -q 'FITTER_AGGRESSIVE_ROUTABILITY' "$Q" && { echo "ABORT aggressive routability" >&2; exit 1; }
@@ -219,7 +227,7 @@ grep -q "^new pass=1000 fail=0 of 1000" "$HOME/fleet/logs/e1-1-tb-1017/summary.t
 # sharing a root would destroy each other. The default root and the compile --name carry the seed; an
 # explicit YC_FIT_ROOT that already holds a RESULT.env for ANOTHER seed is refused (use a new root).
 RUN_NAME="${FIT_NAME}-s${SEED_PIN}"
-FIT="${YC_FIT_ROOT:-$HOME/mplex-fits/owenb-yc-0b1101c5-s${SEED_PIN}/PlexOB_480p}"
+FIT="${YC_FIT_ROOT:-$HOME/mplex-fits/owenb-yc-0b111401-s${SEED_PIN}/PlexOB_480p}"
 if [ -f "$FIT/RESULT.env" ]; then
   prev_seed=$(sed -n 's/^SEED=//p' "$FIT/RESULT.env" | tail -1)
   if [ -n "$prev_seed" ] && [ "$prev_seed" != "$SEED_PIN" ]; then
@@ -265,13 +273,13 @@ rm -rf "$FIT/vendor/db" "$FIT/vendor/output_files" "$FIT/vendor/incremental_db"
 while :; do
   n=$(docker ps --format '{{.Names}}' | grep -c '^quartus_' || true)
   h=$(pgrep -c quartus_fit || true)
-  [ "${n:-0}" -lt 5 ] && [ "${h:-0}" -lt 5 ] && break
-  echo "$(date '+%T %Z') WAIT cap 5 (local sweep) (docker=$n host_fit=$h)"
+  [ "${n:-0}" -lt 3 ] && [ "${h:-0}" -lt 3 ] && break
+  echo "$(date '+%T %Z') WAIT cap 3 (docker=$n host_fit=$h)"
   sleep $((50 + RANDOM % 20))
 done
 
 {
-  echo "VARIANT=YC_0B1101C5"
+  echo "VARIANT=YC_0B111401"
   echo "COMMIT=$(git -C "$REPO" rev-parse HEAD)"
   echo "EAC_SHA=$EACSHA"
   echo "SYS_CLEAN=1"
@@ -286,11 +294,11 @@ done
   echo "MD5_RING_IN=$(md5full "$FIT/vendor/h264/ring_in.sv")"
   echo "MD5_RING_STAT=$(md5full "$FIT/vendor/h264/ring_stat.sv")"
   echo "MD5_ASCAL=$(md5full "$FIT/vendor/sys/ascal.vhd")"
-  echo "LAUNCH=$(date '+%F %T %Z') slot=$((n + 1))/7"
+  echo "LAUNCH=$(date '+%F %T %Z') slot=$((n + 1))/3"
 } > "$FIT/RESULT.env"
 
 export NOTIFY_SILENT=1
-echo "FIT compile $RUN_NAME via run_quartus_docker.sh --compile (one fit at a time)"
+echo "FIT compile $RUN_NAME via run_quartus_docker.sh --compile (cap 3 parallel fits)"
 set +o pipefail
 bash "$FIT/run_quartus_docker.sh" --compile --name "$RUN_NAME" | tee "$FIT/fit.log"
 compile_rc=${PIPESTATUS[0]}

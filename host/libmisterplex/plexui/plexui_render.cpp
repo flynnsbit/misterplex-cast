@@ -79,23 +79,20 @@ ImageCacheKey hubThumbKey(const RenderState& st, const PlexItem& it, int w, int 
 }
 
 int hubRowScrollX(const RenderState& st, int hubRow, int focusCol) {
-    const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
-    const int sideW = kSidebarW();
-    const int step = posterW + gap;
-    const int viewW = kScreenW() - sideW;
     if (hubRow < 0 || hubRow >= static_cast<int>(st.hubs.size()))
         return 0;
     const auto& hub = st.hubs[static_cast<std::size_t>(hubRow)];
     if (hub.items.empty())
         return 0;
-    int scrollX = focusCol * step;
-    const int totalW = static_cast<int>(hub.items.size()) * step - gap;
-    const int maxScroll = std::max(0, totalW - viewW + posterW / 2);
-    scrollX = std::min(scrollX, maxScroll);
-    const int focusCenter = focusCol * step + posterW / 2;
-    if (focusCenter - scrollX > viewW - posterW / 2)
-        scrollX = focusCenter - viewW + posterW / 2;
-    return std::max(0, scrollX);
+    return hubRowScrollXForCol(static_cast<int>(hub.items.size()), focusCol);
+}
+
+// Horizontal scroll drawHome uses for hub row `row`: the focused row follows its focused
+// column, every other row (and every row while the sidebar has focus) sits at 0.
+int homeRowScrollXForState(const RenderState& st, int row) {
+    if (st.focus.sidebar != 0 || row != st.focus.row)
+        return 0;
+    return hubRowScrollX(st, row, st.focus.col);
 }
 
 constexpr int kFocusAnimSteps = 3;
@@ -486,17 +483,29 @@ void Renderer::paintBackdrop(const ImageCacheKey& key, bool keyValid, bool detai
 }
 
 void Renderer::drawPlexLogo() {
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin() - P(2),
-                    "MiSTerPlex", PF(20.f), true, 255, 255, 255);
-    const int cx = kSafeMargin() + P(2);
-    const int cy = kSafeMargin() + P(10);
-    for (int dy = -P(6); dy <= P(6); ++dy) {
-        for (int dx = -P(2); dx <= P(8); ++dx) {
+    const float size = PF(20.f);
+    int textX = kLogoTextX();
+    const int textY = kLogoTextY();
+    int capCY = -1;
+    if (fonts_.ready()) {
+        const FontSet::GlyphBox g = fonts_.measureGlyph(static_cast<int>('M'), size, true);
+        textX = kLogoTextX(g.xoff);
+        if (g.h > 0)
+            capCY = logoCapCenterY(g.yoff, g.h, size);
+    }
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), textX, textY,
+                    "MiSTerPlex", size, true, 255, 255, 255);
+    const int cx = kLogoMarkX();
+    const int cy = kLogoMarkCY(capCY);
+    const int halfH = kLogoMarkHalfH();
+    const int markW = kLogoMarkW();
+    for (int dy = -halfH; dy <= halfH; ++dy) {
+        for (int dx = 0; dx < markW; ++dx) {
             const int px = cx + dx;
             const int py = cy + dy;
             if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
                 continue;
-            if (dx >= 0 && dx < P(7) && std::abs(dy) <= P(6) - dx)
+            if (std::abs(dy) <= halfH - dx)
                 blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4,
                         kAccentR, kAccentG, kAccentB, 230);
         }
@@ -849,156 +858,6 @@ void Renderer::drawPosterScaled(int x, int y, int w, int h, const DecodedImage& 
     stampWatchedBadge(pxBase, kScreenW(), kScreenH(), viewCount, viewOffsetMs, ox, oy, sw, sh);
 }
 
-namespace {
-
-void strokeRoundedRectOutline(std::uint8_t* rgba, int stride, int screenW, int screenH, int x, int y,
-                              int w, int h, int radius, std::uint8_t r, std::uint8_t g,
-                              std::uint8_t b, int thickness = 2) {
-    for (int row = 0; row < h; ++row) {
-        for (int col = 0; col < w; ++col) {
-            const bool inside = !roundedCornerSkip(col, row, w, h, radius);
-            if (!inside)
-                continue;
-            const bool nearEdge = col < thickness || col >= w - thickness || row < thickness ||
-                                  row >= h - thickness;
-            if (!nearEdge)
-                continue;
-            const int px = x + col;
-            const int py = y + row;
-            if (px < 0 || py < 0 || px >= screenW || py >= screenH)
-                continue;
-            blendPx(rgba + (static_cast<std::size_t>(py) * screenW + px) * 4, r, g, b, 255);
-        }
-    }
-}
-
-} // namespace
-
-void Renderer::drawHouseIcon(int x, int y, bool focused) {
-    const std::uint8_t r = focused ? kAccentR : 0x9a;
-    const std::uint8_t g = focused ? kAccentG : 0x9a;
-    const std::uint8_t b = focused ? kAccentB : 0x9a;
-    const int sz = kSidebarIconSize();
-    strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), x, y, sz, sz, P(4), r, g, b,
-                             std::max(1, P(1)));
-    const int cx = x + sz / 2;
-    const int roofY = y + P(5);
-    for (int dy = 0; dy < P(8); ++dy) {
-        const int halfW = P(7) - dy;
-        for (int dx = -halfW; dx <= halfW; ++dx) {
-            const int px = cx + dx;
-            const int py = roofY + dy;
-            if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
-                        255);
-        }
-    }
-    const int bodyY = y + P(12);
-    strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), x + P(5), bodyY, sz - P(10),
-                             sz - P(14), P(3), r, g, b, P(2));
-}
-
-void Renderer::drawSidebarIcon(int x, int y, const std::string& sectionType, bool focused) {
-    const std::uint8_t r = focused ? kAccentR : 0x9a;
-    const std::uint8_t g = focused ? kAccentG : 0x9a;
-    const std::uint8_t b = focused ? kAccentB : 0x9a;
-    const int sz = kSidebarIconSize();
-    if (sectionType == "server" || sectionType == "servers") {
-        strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                                 x + P(3), y + P(4), sz - P(6), sz - P(8), P(3), r, g, b, P(2));
-        const int cx = x + sz / 2;
-        const int py = y + sz / 2 - P(1);
-        for (int i = -P(2); i <= P(2); ++i) {
-            const int px = cx + i;
-            if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
-                        220);
-        }
-        return;
-    }
-    if (sectionType == "signin") {
-        const int cx = x + sz / 2;
-        const int cy = y + sz / 2 - P(2);
-        const int rad = P(4);
-        for (int row = -rad; row <= rad; ++row) {
-            for (int col = -rad; col <= rad; ++col) {
-                if (col * col + row * row > rad * rad || col * col + row * row < (rad - P(2)) * (rad - P(2)))
-                    continue;
-                const int px = cx + col;
-                const int py = cy + row;
-                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b, 220);
-            }
-        }
-        for (int i = 0; i < P(8); ++i) {
-            const int px = cx + rad + i;
-            const int py = cy;
-            if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b, 220);
-        }
-        return;
-    }
-    if (sectionType == "homeuser") {
-        const int cx = x + sz / 2;
-        const int cy = y + P(8);
-        const int rad = P(4);
-        for (int row = -rad; row <= rad; ++row) {
-            for (int col = -rad; col <= rad; ++col) {
-                if (col * col + row * row > rad * rad)
-                    continue;
-                const int px = cx + col;
-                const int py = cy + row;
-                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
-                            220);
-            }
-        }
-        const int bodyW = P(12);
-        const int bodyH = P(6);
-        const int bx = cx - bodyW / 2;
-        const int by = y + sz - bodyH - P(2);
-        for (int row = 0; row < bodyH; ++row) {
-            for (int col = 0; col < bodyW; ++col) {
-                const int px = bx + col;
-                const int py = by + row;
-                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g, b,
-                            200);
-            }
-        }
-        return;
-    }
-    const bool movie = sectionType == "movie";
-    strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), x, y, sz, sz, P(5), r, g,
-                             b, P(2));
-    if (movie) {
-        for (int i = 0; i < 4; ++i) {
-            const int px = x + P(6) + P(i * 3);
-            const int py0 = y + P(5);
-            const int py1 = y + sz - P(6);
-            for (int py = py0; py <= py1; ++py)
-                if (px >= 0 && py >= 0 && px < kScreenW() && py < kScreenH())
-                    blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, r, g,
-                            b, 200);
-        }
-    } else {
-        const int mx = x + P(5);
-        const int my = y + P(7);
-        const int mw = sz - P(10);
-        const int mh = sz - P(12);
-        strokeRoundedRectOutline(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), mx, my, mw, mh, P(3),
-                                 r, g, b, P(2));
-        const int standW = P(8);
-        const int standX = x + (sz - standW) / 2;
-        const int standY = y + sz - P(5);
-        for (int col = 0; col < standW; ++col)
-            if (standX + col >= 0 && standY >= 0 && standX + col < kScreenW() && standY < kScreenH())
-                blendPx(rgba_.data() + (static_cast<std::size_t>(standY) * kScreenW() + standX + col) *
-                                           4,
-                        r, g, b, 255);
-    }
-}
-
 void Renderer::drawServerList(const RenderState& st) {
     drawPlexLogo();
     const int cardW = std::min(P(420), kScreenW() - 2 * kSafeMargin());
@@ -1069,22 +928,21 @@ void Renderer::drawSidebar(const RenderState& st) {
             blendPx(rgba_.data() + (static_cast<std::size_t>(y) * kScreenW() + x) * 4, 0, 0, 0, 153);
     }
     drawPlexLogo();
-    const int listTop = P(64);
+    const int listTop = sidebarListTop();
     const int listBottom = kScreenH() - kSafeBottomInset();
-    const int iconX = P(12) + kSidebarShiftX();
-    const int textX = P(40) + kSidebarShiftX();
+    const int textX = kSidebarTextX();
     const int rowH = kSidebarRowH();
     int rowIndex = 0;
     const int homeRowY = listTop - st.sidebarScrollY;
     if (homeRowY + rowH > listTop - P(8) && homeRowY < listBottom) {
-        const bool homeSel = st.focus.sidebar <= 0; // content focus or kSidebarHomeFocus
-        if (homeSel)
+        const bool homeBar = sidebarHomeShowsFocusBar(st.focus.sidebar);
+        const bool homeCue = sidebarHomeShowsPageCue(st.focus.sidebar);
+        if (homeBar)
             paintSidebarFocus(rgba_.data(), sideW, homeRowY, rowH);
-        drawHouseIcon(iconX, homeRowY + P(10), homeSel);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(textX),
-                        static_cast<float>(homeRowY + P(12)), "Home", PF(16.f), homeSel,
-                        homeSel ? kAccentR : 220, homeSel ? kAccentG : 220,
-                        homeSel ? kAccentB : 220);
+                        static_cast<float>(homeRowY + P(12)), "Home", PF(16.f), homeCue,
+                        homeCue ? kAccentR : 220, homeCue ? kAccentG : 220,
+                        homeCue ? kAccentB : 220);
     }
     ++rowIndex;
     for (size_t i = 0; i < st.sidebarEntries.size(); ++i) {
@@ -1107,7 +965,6 @@ void Renderer::drawSidebar(const RenderState& st) {
         const int indent = (grouped && !serverRow) ? P(12) : 0;
         if (sel)
             paintSidebarFocus(rgba_.data(), sideW, rowY, rowH);
-        drawSidebarIcon(iconX + indent, rowY + P(10), ent.type, sel);
         const float maxW = static_cast<float>(sideW - textX - indent - P(6));
         const std::string line =
             fonts_.ellipsize(stripMisterPlexPrefix(ent.title), PF(16.f), sel || serverRow, maxW);
@@ -1152,8 +1009,12 @@ void Renderer::paintUnfocusedHubPoster(const RenderState& st, int row, int col) 
     const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
     const int sideW = kSidebarW();
     const int step = posterW + gap;
-    const int scrollX = hubRowScrollX(st, row, col);
-    const int px = sideW + kSafeMargin() - scrollX + col * step;
+    const int scrollX = homeRowScrollXForState(st, row);
+    if (!hubTileVisible(col, scrollX))
+        return;
+    const int px = hubTileX(col, scrollX);
+    (void)sideW;
+    (void)step;
     if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), row))
         return; // scrolled above the hub band
     const int py = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), row) + kHubPosterOffY();
@@ -1175,9 +1036,7 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
 
     const int posterW = kHubPosterW();
     const int posterH = kHubPosterH();
-    const int gap = kHubGap();
     const int sideW = kSidebarW();
-    const int step = posterW + gap;
 
     int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
     for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
@@ -1187,20 +1046,20 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
             continue;
         }
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(sideW + kSafeMargin()), static_cast<float>(rowY),
+                        static_cast<float>(hubRowTitleX()), static_cast<float>(rowY),
                         stripMisterPlexPrefix(hub.title), PF(18.f), true, 255, 255, 255);
         const int py = rowY + kHubPosterOffY();
         const bool rowFocus = static_cast<int>(ri) == st.focus.row && st.focus.sidebar == 0;
         const int scrollX =
             rowFocus ? hubRowScrollX(st, static_cast<int>(ri), st.focus.col) : 0;
-        int px = sideW + kSafeMargin() - scrollX;
+        // Whole tiles only: never over the sidebar, never past the safe right edge, never
+        // overlapping (Shawn 11-15: 3 tiles instead of 4 when that is what fits).
         for (size_t ci = 0; ci < hub.items.size(); ++ci) {
-            if (px > kScreenW())
-                break;
-            if (px < sideW + kSafeMargin() - gap) {  // scrolled out to the left: never over the sidebar
-                px += step;
+            const int px = hubTileX(static_cast<int>(ci), scrollX);
+            if (px < kHubContentLeft())
                 continue;
-            }
+            if (!hubTileVisible(static_cast<int>(ci), scrollX))
+                break;
             const bool foc =
                 !omitFocusedPoster && rowFocus && static_cast<int>(ci) == st.focus.col;
             ImageCacheKey imgKey{};
@@ -1214,7 +1073,6 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
             }
             drawHubItemPoster(px, py, posterW, posterH, imgKey, url, hub.items[ci], foc,
                               st.focusAnim);
-            px += step;
         }
         if (!omitFocusedPoster && rowFocus && st.focus.col >= 0 &&
             st.focus.col < static_cast<int>(hub.items.size())) {
@@ -1899,8 +1757,14 @@ void Renderer::patchStaticPoster(const RenderState& st, int row, int col, bool f
         const auto& hub = st.hubs[static_cast<std::size_t>(row)];
         if (col < 0 || col >= static_cast<int>(hub.items.size()))
             return;
-        const int scrollX = hubRowScrollX(st, row, col);
-        const int px = sideW + kSafeMargin() - scrollX + col * step;
+        // The row's scroll follows the focused column (rows without focus sit at 0), the
+        // same as drawHome; only whole tiles inside the band are painted.
+        const int scrollX = homeRowScrollXForState(st, row);
+        if (!hubTileVisible(col, scrollX))
+            return;
+        const int px = hubTileX(col, scrollX);
+        (void)sideW;
+        (void)step;
         if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), row))
             return; // scrolled above the hub band
         const int py = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), row) + kHubPosterOffY();
@@ -1968,16 +1832,20 @@ void Renderer::shiftStaticGridRows(const RenderState& st, int deltaRows) {
 void Renderer::shiftStaticHomeColumns(const RenderState& st, int hubRow, int deltaPx) {
     if (deltaPx == 0 || hubRow < 0 || hubRow >= static_cast<int>(st.hubs.size()))
         return;
-    const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
+    const int posterH = kHubPosterH(), gap = kHubGap();
     if (!homeRowDrawable(st.focus.row, static_cast<int>(st.hubs.size()), hubRow))
         return; // scrolled above the hub band
     const int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), hubRow);
     int y0 = rowY + kHubPosterOffY() - P(8);
-    int y1 = rowY + kHubPosterOffY() + posterH + P(40);
+    // Stop above the next hub row title: the shift must never drag that title sideways.
+    int y1 = std::min(rowY + kHubPosterOffY() + posterH + P(40), rowY + kHubRowAdvance());
     clampRowSpanToScreen(y0, y1, kScreenH());
     if (y1 <= y0)
         return;
-    const int x0 = kSidebarW() + kSafeMargin() - gap;
+    // deltaPx = newScrollX - oldScrollX (whole tile steps): positive scrolls the row left.
+    // The band is [x0, x1): sidebar edge to the screen edge. Only whole tiles live in it.
+    const int x0 = kSidebarW() + kSafeMargin() - kHubBaseGap();
+    (void)gap;
     const int x1 = kScreenW();
     const int w = x1 - x0;
     if (w <= 0 || std::abs(deltaPx) >= w)
@@ -1986,21 +1854,31 @@ void Renderer::shiftStaticHomeColumns(const RenderState& st, int hubRow, int del
     auto shiftBuf = [&](std::uint8_t* buf) {
         for (int y = y0; y < y1; ++y) {
             std::uint8_t* row = buf + static_cast<std::size_t>(y) * rowBytes;
-            if (deltaPx > 0)
-                std::memmove(row + static_cast<std::size_t>(x0 + deltaPx) * 4,
-                             row + static_cast<std::size_t>(x0) * 4,
-                             static_cast<std::size_t>(w - deltaPx) * 4);
-            else
+            if (deltaPx > 0)   // content moves left
                 std::memmove(row + static_cast<std::size_t>(x0) * 4,
-                             row + static_cast<std::size_t>(x0 - deltaPx) * 4,
+                             row + static_cast<std::size_t>(x0 + deltaPx) * 4,
+                             static_cast<std::size_t>(w - deltaPx) * 4);
+            else               // content moves right
+                std::memmove(row + static_cast<std::size_t>(x0 - deltaPx) * 4,
+                             row + static_cast<std::size_t>(x0) * 4,
                              static_cast<std::size_t>(w + deltaPx) * 4);
         }
     };
     shiftBuf(staticRgba_.data());
     shiftBuf(rgba_.data());
-    const int restoreX0 = deltaPx > 0 ? x0 : x1 + deltaPx;
-    const int restoreX1 = deltaPx > 0 ? x0 + deltaPx : x1;
-    restoreBackdropRect(restoreX0, y0, restoreX1, y1);
+    // Clear everything outside the whole-tile slots so a shifted tile can never sit half
+    // over the sidebar or past the safe right edge; the caller repaints the revealed column.
+    const int n = hubVisibleTileCount();
+    const int leftClear1 = hubTileX(0, 0) - P(6);              // keep nothing left of slot 0's shadow
+    const int rightClear0 = hubTileX(n - 1, 0) + kHubPosterW() + P(10);   // past last shadow
+    if (deltaPx < 0)
+        restoreBackdropRect(x0, y0, std::min(x1, x0 - deltaPx), y1);
+    else if (leftClear1 > x0)
+        restoreBackdropRect(x0, y0, leftClear1, y1);
+    if (rightClear0 < x1)
+        restoreBackdropRect(std::max(x0, rightClear0), y0, x1, y1);
+    if (deltaPx > 0)
+        restoreBackdropRect(std::max(x0, x1 - deltaPx), y0, x1, y1);
     rgba_.assign(staticRgba_.begin(), staticRgba_.end());
 }
 
@@ -2072,15 +1950,43 @@ void Renderer::syncStaticAfterFocusMove(const RenderState& st, int prevRow, int 
             st.hubs.empty() ? 0 : hubRowScrollX(st, st.focus.row, st.focus.col);
         if (prevRow == st.focus.row && prevHubScrollX != hubScrollX) {
             shiftStaticHomeColumns(st, st.focus.row, hubScrollX - prevHubScrollX);
-            const int step = kHubPosterW() + kHubGap();
-            const int sideW = kSidebarW();
-            const int px = sideW + kSafeMargin() - hubScrollX + st.focus.col * step;
+            const int step = kHubTileStep();
             const int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), st.focus.row);
             const int py = rowY + kHubPosterOffY();
-            const int newCol = hubScrollX > prevHubScrollX ? st.focus.col + 1 : st.focus.col - 1;
-            if (newCol >= 0)
-                patchStaticPoster(st, st.focus.row, newCol, false);
-            restoreBackdropRect(px - P(4), py - P(4), px + kHubPosterW() + P(4), py + kHubPosterH() + P(4));
+            const int count = static_cast<int>(st.hubs[static_cast<std::size_t>(st.focus.row)].items.size());
+            // HOME-UX r3: the shift reveals |delta| / step whole slots -- on the RIGHT when the row
+            // scrolls left (RIGHT key) and on the LEFT when it scrolls right (LEFT key: focus rides
+            // the right edge, so the revealed slot is NOT the focused one). r2 only handled the
+            // first case and left slot 0 blank / stale after a LEFT scroll. Paint every revealed
+            // column; the focused column is a hole in the static layer (focus pass paints it).
+            const int first = hubScrollX / step;
+            const int n = hubVisibleTileCount();
+            const int last = std::min(count, first + n) - 1;
+            const int k = std::min(n, std::abs(hubScrollX - prevHubScrollX) / step);
+            auto hole = [&](int col) {
+                const int px = hubTileX(col, hubScrollX);
+                restoreBackdropRect(px - P(4), py - P(4), px + kHubPosterW() + P(4), py + kHubPosterH() + P(4));
+            };
+#ifndef MUT_HUX_SHIFT_RIGHT_REVEAL_ONLY
+            const int rev0 = hubScrollX > prevHubScrollX ? last - k + 1 : first;
+            const int rev1 = hubScrollX > prevHubScrollX ? last : first + k - 1;
+#else
+            const int rev0 = last, rev1 = last;
+            (void)k;
+#endif
+            for (int col = std::max(first, rev0); col <= std::min(last, rev1); ++col) {
+                if (col == st.focus.col)
+                    hole(col);
+                else
+                    patchStaticPoster(st, st.focus.row, col, false);
+            }
+            // The previously focused column was a hole too: paint it unfocused in its new slot.
+            if (prevCol >= 0 && prevCol != st.focus.col && hubTileVisible(prevCol, hubScrollX) &&
+                (prevCol < rev0 || prevCol > rev1))
+                patchStaticPoster(st, st.focus.row, prevCol, false);
+            // The focused column may have been drawn (unfocused) before the shift: make it the hole.
+            if (hubTileVisible(st.focus.col, hubScrollX))
+                hole(st.focus.col);
             rgba_.assign(staticRgba_.begin(), staticRgba_.end());
             return;
         }
@@ -2092,7 +1998,8 @@ void Renderer::syncStaticAfterFocusMove(const RenderState& st, int prevRow, int 
         const int gap = kHubGap();
         const int step = posterW + gap;
         const int scrollX = hubRowScrollX(st, st.focus.row, st.focus.col);
-        const int px = sideW + kSafeMargin() - scrollX + st.focus.col * step;
+        const int px = hubTileX(st.focus.col, scrollX);
+        (void)sideW; (void)step;
         restoreBackdropRect(px - P(4), py - P(4), px + posterW + P(4), py + posterH + P(4));
         rgba_.assign(staticRgba_.begin(), staticRgba_.end());
     }
@@ -2320,22 +2227,16 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
         if (st.view == ViewId::Home || st.view == ViewId::LibraryGrid) {
             int nx0 = 0, ny0 = 0, nx1 = 0, ny1 = 0;
             if (st.view == ViewId::Home) {
-                const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
-                const int sideW = kSidebarW();
-                const int step = posterW + gap;
+                const int posterW = kHubPosterW(), posterH = kHubPosterH();
                 int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
                 for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
                     if (static_cast<int>(ri) != st.focus.row || st.focus.sidebar != 0) {
                         rowY += kHubRowAdvance();
                         continue;
                     }
-                    const auto& hub = st.hubs[ri];
-                    int scrollX = st.focus.col * step;
-                    const int viewW = kScreenW() - sideW;
-                    const int totalW = static_cast<int>(hub.items.size()) * step - gap;
-                    const int maxScroll = std::max(0, totalW - viewW + posterW / 2);
-                    scrollX = std::min(scrollX, maxScroll);
-                    const int px = sideW + kSafeMargin() - scrollX + st.focus.col * step;
+                    const int scrollX =
+                        hubRowScrollX(st, static_cast<int>(ri), st.focus.col);
+                    const int px = hubTileX(st.focus.col, scrollX);
                     const int py = rowY + kHubPosterOffY();
                     posterDirtyRect(px, py, posterW, posterH, nx0, ny0, nx1, ny1);
                     break;
@@ -2356,21 +2257,16 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                 (prevRow != st.focus.row || prevCol != st.focus.col)) {
                 int ox0 = 0, oy0 = 0, ox1 = 0, oy1 = 0;
                 if (st.view == ViewId::Home) {
-                    const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
-                    const int sideW = kSidebarW();
-                    const int step = posterW + gap;
+                    const int posterW = kHubPosterW(), posterH = kHubPosterH();
                     int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
                     for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
                         if (static_cast<int>(ri) != prevRow) {
                             rowY += kHubRowAdvance();
                             continue;
                         }
-                        const auto& hub = st.hubs[ri];
-                        int scrollX = prevCol * step;
-                        const int viewW = kScreenW() - sideW;
-                        const int totalW = static_cast<int>(hub.items.size()) * step - gap;
-                        scrollX = std::min(scrollX, std::max(0, totalW - viewW + posterW / 2));
-                        const int px = sideW + kSafeMargin() - scrollX + prevCol * step;
+                        const int scrollX = hubRowScrollXForCol(
+                            static_cast<int>(st.hubs[ri].items.size()), prevCol);
+                        const int px = hubTileX(prevCol, scrollX);
                         const int py = rowY + kHubPosterOffY();
                         posterDirtyRect(px, py, posterW, posterH, ox0, oy0, ox1, oy1);
                         break;
@@ -2459,12 +2355,12 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
                 continue;
             }
             const int scrollX = hubRowScrollX(st, static_cast<int>(ri), st.focus.col);
-            int px = sideW + kSafeMargin() - scrollX;
+            int px = hubTileX(0, scrollX);
             const int py = rowY + kHubPosterOffY();
             for (size_t ci = 0; ci < hub.items.size(); ++ci) {
                 if (px > kScreenW())
                     break;
-                if (px < sideW + kSafeMargin() - gap) {
+                if (px < sideW + kSafeMargin() - gap) {   // left of the band (scrolled out)
                     px += step;
                     continue;
                 }

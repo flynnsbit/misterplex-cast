@@ -76,6 +76,24 @@ enum class PictureMode : int {
 
 inline constexpr int kPictureModeCount = 5;
 
+// Live TV (Spelunkr) uses one show-wide row when trackShowKey_ is empty.
+inline constexpr const char* kRememberPictureLiveTvKey = "livetv";
+
+// Play arm value for cfg229 4:3/Fit (Analog Aspect Fit + Aspect Ratio 4:3). No PictureMode enum
+// entry: menu cycles the five named modes; Live TV with no row uses this spec directly.
+inline constexpr int kPictureArmLiveTvDefault = -2;
+
+inline std::string rememberPictureStoreKey(const std::string& showKey, bool liveTv) {
+    if (!showKey.empty())
+        return showKey;
+    if (liveTv) {
+#ifndef MUT_REMEMBER_PICTURE_DROP_LIVETV
+        return kRememberPictureLiveTvKey;
+#endif
+    }
+    return {};
+}
+
 inline bool pictureModeOk(PictureMode mode) {
     const int n = static_cast<int>(mode);
     return n >= 0 && n < kPictureModeCount;
@@ -127,6 +145,14 @@ struct PictureSpec {
     unsigned aspectRatio = 0;
     bool crop149 = false;
 };
+
+inline PictureSpec pictureLiveTvDefaultSpec() {
+    PictureSpec s;
+    s.analogAspect = 1;
+    s.setAspectRatio = true;
+    s.aspectRatio = 1;
+    return s;
+}
 
 inline PictureSpec pictureSpec(PictureMode mode) {
     PictureSpec s;
@@ -203,6 +229,8 @@ inline std::optional<PictureSpec> pictureToApply(const std::optional<RememberedP
 }
 
 inline std::optional<PictureSpec> pictureSpecForArm(int mode) {
+    if (mode == kPictureArmLiveTvDefault)
+        return pictureLiveTvDefaultSpec();
     if (mode < 0 || mode >= kPictureModeCount)
         return std::nullopt;
     RememberedPicture row;

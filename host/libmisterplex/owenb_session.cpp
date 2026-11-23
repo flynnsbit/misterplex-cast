@@ -1255,6 +1255,7 @@ bool OwenbPlaySession::readOne() {
 }
 
 OwenbPlaySession::Push OwenbPlaySession::pushWithBackoff(const std::function<PushResult()>& f) {
+    const int64_t fullT0 = nowMs();
     for (;;) {
         const PushResult r = f();
         if (r == PushResult::Ok)
@@ -1263,6 +1264,16 @@ OwenbPlaySession::Push OwenbPlaySession::pushWithBackoff(const std::function<Pus
             { std::lock_guard<std::mutex> g(statsMu_); ++stats_.fullWaits; }
             if (interruptPending())
                 return Push::Interrupted;
+#ifndef MUT_LIVE_NO_FULL_GIVEUP
+            const bool live = src_ && src_->liveRemux();
+            if (live && cfg_.liveFullGiveUpMs > 0 &&
+                nowMs() - fullT0 >= static_cast<int64_t>(cfg_.liveFullGiveUpMs)) {
+                logLine("live remux ring full for " + std::to_string(cfg_.liveFullGiveUpMs) +
+                        " ms: ending so a zap can retune");
+                endWith(EndReason::RingError, "live remux ring full (decoder stall after disc rebase)");
+                return Push::Fatal;
+            }
+#endif
             sleep(cfg_.backoffUs);
             updatePosition();
             if (end_ != EndReason::None)
@@ -1295,6 +1306,7 @@ OwenbPlaySession::Push OwenbPlaySession::pushVideo(const MediaPacket& p, bool eo
     au.annexb = p.data.data();
     au.len = p.data.size();
     au.pts90k = p.pts90k;
+    au.discontinuity = p.discontinuity;
 #ifndef MUT_OWENB_SESS_NO_EOS
     au.end_of_stream = eos;
 #else

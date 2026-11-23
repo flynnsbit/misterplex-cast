@@ -105,25 +105,185 @@ inline int kGridTitleX(bool drawerOpen) {
     return kSafeMargin() + (drawerOpen ? kSidebarW() : 0);
 }
 inline int kSidebarRowH() { return P(44); }
-inline int kSidebarIconSize() { return P(22); }
 inline int kTextRightInset() { return P(8); }
+// MiSTerPlex logo (drawPlexLogo): orange chevron of width P(7) sits at kSafeMargin(),
+// fully left of the "MiSTerPlex" text with a P(4) gap. The mark is vertically centred
+// on the text's cap height (M). Text at kSafeMargin()+P(7)+P(4), y = kSafeMargin()-P(2).
+inline int kLogoTextY() { return kSafeMargin() - P(2); }
+inline int kLogoMarkW() { return P(7); }
+inline int kLogoMarkHalfH() { return P(6); }
+inline int kLogoMarkGap() { return P(4); }
+inline int kLogoMarkX() { return kSafeMargin(); }
+// firstGlyphXoff is the M's xoff from measureGlyph; a negative bearing shifts the text right
+// so the ink still clears the mark by kLogoMarkGap().
+inline int kLogoTextX(int firstGlyphXoff = 0) {
+    return kLogoMarkX() + kLogoMarkW() + kLogoMarkGap() + std::max(-firstGlyphXoff, 0);
+}
+inline int kLogoMarkCYFallback() { return kSafeMargin() + P(10); }
+inline int kLogoMarkCY(int capCenterY = -1) {
+    return capCenterY >= 0 ? capCenterY : kLogoMarkCYFallback();
+}
+inline int logoCapCenterY(int glyphYoff, int glyphH, float pixelHeight) {
+    const float baseline = static_cast<float>(kLogoTextY()) + pixelHeight * 0.8f;
+    return static_cast<int>(std::lround(baseline + static_cast<float>(glyphYoff) +
+                                        static_cast<float>(glyphH) * 0.5f));
+}
+// Half-open pixel box of the painted chevron [x0, x1) x [y0, y1).
+inline void logoMarkPixelBox(int& x0, int& y0, int& x1, int& y1, int capCenterY = -1) {
+    const int cy = kLogoMarkCY(capCenterY);
+    x0 = kLogoMarkX();
+    x1 = x0 + kLogoMarkW();
+    y0 = cy - kLogoMarkHalfH();
+    y1 = cy + kLogoMarkHalfH() + 1;
+}
+inline int sidebarLogoBottom(int capCenterY = -1) {
+    const int markBottom = kLogoMarkCY(capCenterY) + kLogoMarkHalfH();
+    const int textBottom = kLogoTextY() + P(22);
+    return std::max(markBottom, textBottom);
+}
+inline int sidebarListTop() { return std::max(P(64), sidebarLogoBottom() + P(8)); }
+inline int kSidebarTextX() { return kSidebarFocusX() + P(4); }
+inline bool sidebarHomeShowsFocusBar(int sidebarFocus) {
+    return sidebarFocus == kSidebarHomeFocus;
+}
+inline bool sidebarHomeShowsPageCue(int sidebarFocus) { return sidebarFocus <= 0; }
 inline int kTextMaxX() { return kScreenW() - kSafeRight() - kTextRightInset(); }
 inline int kGridChipRowH() { return P(30); }
 inline float kGridChipPadX() { return PF(10.f); }
 inline float kGridChipH() { return PF(22.f); }
 inline float kGridChipGap() { return PF(8.f); }
 // Home hub rows (one place for the 96 / 144 / 12 / 64 / 52 / 26 render and controller repeated).
-inline int kHubPosterW() { return P(96); }
-inline int kHubPosterH() { return P(144); }
-inline int kHubGap() { return P(12); }
+// HOME-UX r3: the poster is no longer a fixed P(96) x P(144). It is the largest 2:3 poster
+// that keeps the same number of whole hub rows on screen as the P(96) x P(144) base did
+// (so Home never drops to one row), capped at 1.5x the base and at the content width. The
+// tile count is then however many of those whole posters fit side by side (hubVisibleTileCount):
+// device HDMI Native canvas 960x480 + overscan 11/11/12/12 -> 3 x 106x159 (was 4 x 96x144),
+// 480p 720x480 + ov11 -> 2 x 106x159 (the poster also keeps the last row above the hint bar).
+// The leftover width is then spread as wider equal gaps + equal side margins (hubSpreadPart):
+// 960x480 ov11 gap 38, margins 26/27; 720x480 ov11 gap 32, margins 20/21. Every input is the canvas, UI_SIZE, UI_SAFE_MARGIN and
+// overscan, so any output-size or safe-area change recomputes it.
+inline int kHubPosterBaseW() { return P(96); }
+inline int kHubPosterBaseH() { return P(144); }
+inline int kHubBaseGap() { return P(12); }   // minimum gap; the fit count uses it
+// The legacy-core R1 path (exactly 640x480, normal, default 5%, no overscan) is the golden
+// path of test_plexui_geom: fixed 96 x 144 posters, P(12) gaps, row flush left.
+inline bool hubIsR1Golden() {
+    const UiSafePrefs pr = uiSafePrefs();
+    return isR1Geom() && pr.size == UiSize::Normal && pr.marginPct == kUiSafeMarginDefaultPct &&
+           !overscanEdges().any();
+}
 inline int kHubTop() {
     const int legacy = P(64);
     if (overscanEdges().top < 0)
         return legacy;
     return std::max(legacy, overscanInsetPx(kScreenH(), overscanEdges().top));
 }
-inline int kHubRowAdvance() { return kHubPosterH() + P(52); }
 inline int kHubPosterOffY() { return P(26); }
+inline int kHubRowExtraH() { return P(52); }   // row title + caption gap below the poster
+inline int kHubBottomReserve() { return P(20); }   // browse hint bar band
+// Whole hub rows that fit for a poster of height posterH (same rule as homeVisibleHubRows).
+inline int hubRowsForPosterH(int posterH) {
+    int n = 0;
+    while (kHubTop() + n * (posterH + kHubRowExtraH()) + kHubPosterOffY() + posterH <= kScreenH())
+        ++n;
+    return std::max(1, n);
+}
+// Home hub rows: whole tiles only, inside [kHubContentLeft, kHubContentRight].
+// kHubFocusPad keeps the focused poster's 8% grow + ring inside the safe area.
+inline int kHubFocusPad() { return P(6); }
+inline int kHubContentLeft() { return kSidebarW() + kSafeMargin(); }
+inline int kHubContentRight() { return kScreenW() - kSafeRight() - kHubFocusPad(); }
+inline int kHubContentWidth() { return std::max(0, kHubContentRight() - kHubContentLeft()); }
+inline int kHubPosterW() {
+    const int baseW = kHubPosterBaseW(), baseH = kHubPosterBaseH();
+    // The legacy-core R1 path (exactly 640x480, normal, default 5%, no overscan) is the
+    // byte-identical golden path of test_plexui_geom and keeps its 96 x 144 posters, as
+    // kSidebarFocusX does. PlexOB canvases (960x480 / 720x480 / 1280x720 ...) grow.
+    if (hubIsR1Golden())
+        return baseW;
+    const int rows = hubRowsForPosterH(baseH);
+    // A grown poster also keeps the last row above the browse hint bar (drawBrowseHint:
+    // P(16) line + P(4) pad at the bottom); the base size keeps its historic rows.
+    const int room = kScreenH() - kHubBottomReserve() - kHubTop() - kHubPosterOffY() -
+                     (rows - 1) * kHubRowExtraH();
+    const int maxH = std::max(baseH, room / rows);
+    int w = std::min(maxH * 2 / 3, baseW * 3 / 2);
+    w = std::min(w, kHubContentWidth());
+    return std::max(baseW, w);
+}
+inline int kHubPosterH() {
+    const int w = kHubPosterW();
+    return w == kHubPosterBaseW() ? kHubPosterBaseH() : (w * 3) / 2;
+}
+inline int kHubRowAdvance() { return kHubPosterH() + kHubRowExtraH(); }
+// How many whole posters fit side by side (with the minimum gap) in the content width; at least 1.
+inline int hubVisibleTileCount() {
+    const int fit = (kHubContentWidth() + kHubBaseGap()) / (kHubPosterW() + kHubBaseGap());
+    return std::max(1, fit);
+}
+// HOME-UX r3b (reviewer): the width the n whole tiles leave over is not left on the right. It is
+// split into n + 1 equal parts: each gap grows by one part and the row gets one part of margin
+// on each side, so the row is centred and balanced in [kHubContentLeft, kHubContentRight]
+// (any odd pixels go half to each margin). R1 golden path: no spread.
+inline int hubRowSlack() {
+    const int n = hubVisibleTileCount();
+    return std::max(0, kHubContentWidth() - n * kHubPosterW() - (n - 1) * kHubBaseGap());
+}
+inline int hubSpreadPart() {
+#if defined(MUT_HUX_NO_SPREAD)
+    return 0;
+#endif
+    return hubIsR1Golden() ? 0 : hubRowSlack() / (hubVisibleTileCount() + 1);
+}
+inline int kHubGap() { return kHubBaseGap() + hubSpreadPart(); }
+inline int hubRowMarginL() {
+    if (hubIsR1Golden())
+        return 0;
+    const int n = hubVisibleTileCount();
+    const int rest = hubRowSlack() - hubSpreadPart() * (n + 1);   // 0..n leftover pixels
+    return hubSpreadPart() + rest / 2;
+}
+inline int hubRowMarginR() {
+    const int n = hubVisibleTileCount();
+    return kHubContentWidth() - hubRowMarginL() - n * kHubPosterW() - (n - 1) * kHubGap();
+}
+inline int kHubTileStep() { return kHubPosterW() + kHubGap(); }
+inline int hubTileX(int col, int scrollX) {
+    return kHubContentLeft() + hubRowMarginL() - scrollX + col * kHubTileStep();
+}
+// r3c (reviewer): hub row title starts on the first poster's left edge (the balanced margin);
+// R1 golden has margin 0 so the title stays at the content left there.
+inline int hubRowTitleX() {
+#if defined(MUT_HUX_TITLE_AT_CONTENT_LEFT)
+    return kHubContentLeft();
+#else
+    return hubTileX(0, 0);
+#endif
+}
+// First visible column for a row of itemCount with focus on focusCol: keeps focus on screen,
+// never scrolls past the last tile (stateless: focus rides the right edge once the row scrolls).
+inline int hubFirstVisibleCol(int itemCount, int focusCol) {
+    const int n = hubVisibleTileCount();
+    if (itemCount <= n)
+        return 0;
+    const int f = std::max(0, std::min(focusCol, itemCount - 1));
+    return std::max(0, std::min(f - n + 1, itemCount - n));
+}
+// Tile-aligned horizontal scroll: always a whole multiple of kHubTileStep.
+inline int hubRowScrollXForCol(int itemCount, int focusCol) {
+    if (itemCount <= 0)
+        return 0;
+    return hubFirstVisibleCol(itemCount, focusCol) * kHubTileStep();
+}
+// True when tile col is drawn for this scroll (whole tile inside the content band).
+// Degenerate band (extreme overscan: not even one whole poster fits): still show exactly one
+// tile, the focused one, at the band's left edge rather than an empty row.
+inline bool hubTileVisible(int col, int scrollX) {
+    const int x = hubTileX(col, scrollX);
+    if (kHubContentWidth() < kHubPosterW())
+        return x == kHubContentLeft();
+    return x >= kHubContentLeft() && x + kHubPosterW() <= kHubContentRight();
+}
 // #206 glass: Home had no vertical scroll. Rows past the screen (row 2+ on  lab) were never drawn,
 // so focus moved off screen. The first drawn hub row keeps the focused row fully on screen.
 inline int homeVisibleHubRows() {
@@ -361,8 +521,6 @@ private:
     void drawCategoryChip(float x, float y, const std::string& text, bool focused, bool selected);
     void drawPlayPill(int x, int y, int w, int h, const std::string& label, bool focused);
     void drawServerList(const RenderState& st);
-    void drawSidebarIcon(int x, int y, const std::string& sectionType, bool focused);
-    void drawHouseIcon(int x, int y, bool focused);
     void drawSidebar(const RenderState& st);
     void patchSidebar(const RenderState& st);
     void patchChipRow(const RenderState& st);

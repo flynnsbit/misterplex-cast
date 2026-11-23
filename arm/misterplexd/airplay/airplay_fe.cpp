@@ -116,14 +116,17 @@ int videoSetCodec(void* cls, video_codec_t c) {
 int onPlay(void* cls, const char* loc, const float start) {
     const std::string url = loc ? loc : "";
     std::fprintf(stderr, "airplay: /play %.200s start=%.3f\n", misterplex::logUrl(url).c_str(), start);
-    // Admit finishes before /play is answered. A refuse is 415 (or 400 if the
-    // helper did not answer) and a notice. It does not start playback.
+    // Admit finishes before /play is answered. A format/resolution/framerate
+    // refuse is 415; a helper that does not answer in time is 504 with a
+    // timeout notice (not "format not supported"). It does not start playback.
     const AirplayAdmit admit = admitAirplayVideo(url);
     if (!admit.play) {
         std::fprintf(stderr, "airplay: /play refused status=%d notice=%s\n", admit.status, admit.notice.c_str());
         if (!self(cls)->queue().push(noticeEvent(admit)))
             std::fprintf(stderr, "airplay: notice dropped (queue)\n");
-        return admit.status == 400 ? 400 : 415;
+        if (admit.status == 504 || admit.status == 400)
+            return admit.status;
+        return 415;
     }
     self(cls)->urlSession(true);
     self(cls)->snapshot().loading(start);

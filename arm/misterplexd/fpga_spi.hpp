@@ -303,8 +303,10 @@ public:
     bool lastBeginWedged() const;
     // R5f (FPGA Bug 01:19/01:25): withdraw any outstanding audio command, i.e. the control
     // commit word at +0x128 := 0 (classifyAudioLane's withdraw), so the DDR control page never
-    // carries a valid command into a reload. Gated like every DDR write: with another core loaded
-    // (closed gate) it writes nothing and returns false with the reason in why.
+    // carries a valid command into a reload. If the bitstream map is already held, the commit
+    // word is zeroed even when the core gate is closing (PlexOB: open() stays false). If the
+    // map is not held, skip: return true with why set so the caller logs a skip, not a false
+    // "withdraw failed" via ensureBitstreamDdrMap. Return false only on a real write failure.
     bool withdrawAudioCommand(std::string& why);
     // The MrAudio lane as fresh, unfiltered MAST shows it after a command of this session
     // got no bound ACK (see classifyAudioLane).

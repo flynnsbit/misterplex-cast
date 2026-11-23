@@ -63,6 +63,9 @@ struct Options {
 
 struct Result {
     std::string url, audioUrl, title;
+    int height = 0;
+    int itag = 0;
+    bool capped = false;
 };
 
 class Supervisor {
@@ -126,8 +129,12 @@ class Supervisor {
         const Json* url = response.get("url");
         const Json* audio = response.get("audioUrl");
         const Json* title = response.get("title");
+        const Json* height = response.get("height");
+        const Json* itag = response.get("itag");
+        const Json* capped = response.get("capped");
         if (!url || url->type != Json::Str || (audio && audio->type != Json::Str) ||
-            (title && title->type != Json::Str)) {
+            (title && title->type != Json::Str) || (height && height->type != Json::Num) ||
+            (itag && itag->type != Json::Num) || (capped && capped->type != Json::Bool)) {
             std::fprintf(stderr, "misterplexd: yt-warm invalid response; using one-shot\n");
             return {};
         }
@@ -136,6 +143,12 @@ class Supervisor {
             r.audioUrl = audio->str;
         if (title)
             r.title = title->str;
+        if (height)
+            r.height = static_cast<int>(height->num);
+        if (itag)
+            r.itag = static_cast<int>(itag->num);
+        if (capped)
+            r.capped = capped->b;
         return r;
     }
 

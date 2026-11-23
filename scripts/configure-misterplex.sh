@@ -131,6 +131,12 @@ fi
 say "starting from $BASE"
 
 cur() { conf_get "$1" "$BASE"; }
+# Print the current value, or $2 when conf_get prints nothing (an unset key
+# is zero lines, so `value | sed 's/^$/default/'` never runs).
+cur_or() { v=$(cur "$1"); if [ -n "$v" ]; then printf '%s\n' "$v"; else printf '%s\n' "$2"; fi; }
+# Tests can force the question/form path with MPX_SETTINGS_ASK=1 (stdin need not be a tty).
+[ "${MPX_SETTINGS_ASK:-0}" = 1 ] && ASK=1
+
 ask() { # ask VAR "question" current
   if [ "$ASK" = 1 ] && eval "[ -z \"\${$1}\" ]"; then
     printf '%s [%s]: ' "$2" "$3"
@@ -140,16 +146,156 @@ ask() { # ask VAR "question" current
   fi
 }
 
-ask SERVER "Plex server address (blank = find it on the network or via plex.tv)" "$(cur PLEX_SERVERS)"
-ask LINK "Sign in on the TV with a plex.tv/link code? on/off" "$( [ "$(cur PLEXTV_LINK)" = 0 ] && echo off || echo on)"
-ask RASTER "Analog output: 480i, 240p, auto, or default (core's F12 setting)" "$(cur ANALOG_RASTER | sed 's/^$/default/')"
-ask SUBS "Text subtitles on? on/off" "$( case "$(cur SUBTITLE_LANG)" in ''|off) echo off ;; *) echo on ;; esac)"
-if [ "$SUBS" = on ] || { [ -z "$SUBS" ] && [ -n "$(cur SUBTITLE_LANG)" ] && [ "$(cur SUBTITLE_LANG)" != off ]; }; then
-  ask SUBLANG "Subtitle language (en, de, fr, ...)" "$(cur SUBTITLE_LANG | sed 's/^off$/en/;s/^$/en/')"
+settings_use_dialog() {
+  if type use_dialog >/dev/null 2>&1; then
+    use_dialog
+    return
+  fi
+  case "${MPX_MENU_UI:-}" in
+    text) return 1 ;;
+    dialog) return 0 ;;
+  esac
+  command -v dialog >/dev/null 2>&1 && [ -t 0 ] && [ -t 1 ]
+}
+
+# Fill empty answer vars from the current file (or the shown default) so Save
+# and a cancelled field keep what the form displayed.
+settings_load_shown() {
+  [ -n "$SERVER" ] || SERVER=$(cur PLEX_SERVERS)
+  if [ -z "$LINK" ]; then
+    if [ "$(cur PLEXTV_LINK)" = 0 ]; then LINK=off; else LINK=on; fi
+  fi
+  [ -n "$RASTER" ] || RASTER=$(cur_or ANALOG_RASTER default)
+  if [ -z "$SUBS" ]; then
+    case "$(cur SUBTITLE_LANG)" in ''|off) SUBS=off ;; *) SUBS=on ;; esac
+  fi
+  [ -n "$SUBLANG" ] || SUBLANG=$(cur_or SUBTITLE_LANG en)
+  [ "$SUBLANG" = off ] && SUBLANG=en
+  [ -n "$UISIZE" ] || UISIZE=$(cur_or UI_SIZE normal)
+  [ -n "$MARGIN" ] || MARGIN=$(cur_or UI_SAFE_MARGIN 5)
+  [ -n "$NAME" ] || NAME=$(cur FRIENDLY_NAME)
+}
+
+# Blue dialog form: a menu of items, each opens an inputbox or radiolist.
+# Cancel returns 75 (no write). Save leaves the answer vars set and returns 0.
+settings_form() {
+  settings_load_shown
+  while :; do
+    sl_lab=$SUBLANG
+    [ "$SUBS" = off ] && sl_lab="(off)"
+    if type use_dialog >/dev/null 2>&1 && use_dialog; then
+      # dlg (menu head) draws on the terminal and returns the pick on stdout, so this
+      # capture keeps the blue dialog (the old 3>&1 1>&2 2>&3 form needed a tty stdout).
+      _ch=$(dlg --title "Settings" --no-tags --cancel-label "Cancel" \
+        --menu "Choose a setting, then Save." 20 72 12 \
+        server "Plex server [$SERVER]" \
+        link "plex.tv link [$LINK]" \
+        raster "Analog output [$RASTER]" \
+        subs "Text subtitles [$SUBS]" \
+        sublang "Subtitle language [$sl_lab]" \
+        uisize "Menu size [$UISIZE]" \
+        margin "Safe margin [$MARGIN]" \
+        name "Player name [$NAME]" \
+        save "Save") || return 75
+    else
+      printf '\nSettings\n\n' >&2
+      printf '  1) Plex server [%s]\n' "$SERVER" >&2
+      printf '  2) plex.tv link [%s]\n' "$LINK" >&2
+      printf '  3) Analog output [%s]\n' "$RASTER" >&2
+      printf '  4) Text subtitles [%s]\n' "$SUBS" >&2
+      printf '  5) Subtitle language [%s]\n' "$sl_lab" >&2
+      printf '  6) Menu size [%s]\n' "$UISIZE" >&2
+      printf '  7) Safe margin [%s]\n' "$MARGIN" >&2
+      printf '  8) Player name [%s]\n' "$NAME" >&2
+      printf '  9) Save\n  0) Cancel\n\nChoose 0-9: ' >&2
+      read -r _n || return 75
+      case "$_n" in
+        1) _ch="server" ;; 2) _ch="link" ;; 3) _ch="raster" ;; 4) _ch="subs" ;;
+        5) _ch="sublang" ;; 6) _ch="uisize" ;; 7) _ch="margin" ;; 8) _ch="name" ;;
+        9) _ch="save" ;; *) return 75 ;;
+      esac
+    fi
+    case "$_ch" in
+      server)
+        if type menu_inputbox >/dev/null 2>&1; then
+          _v=$(menu_inputbox "Plex server address (blank = find it on the network or via plex.tv)" "$SERVER") && SERVER=$_v
+        else
+          printf 'Plex server address [%s]: ' "$SERVER" >&2; read -r _v || _v=$SERVER; SERVER=$_v
+        fi ;;
+      link)
+        _on=off; _off=on; [ "$LINK" = on ] && _on=on && _off=off
+        if type menu_radiolist >/dev/null 2>&1; then
+          _v=$(menu_radiolist "Sign in on the TV with a plex.tv/link code?" on "on" "$_on" off "off" "$_off") && LINK=$_v
+        else
+          printf 'plex.tv link on/off [%s]: ' "$LINK" >&2; read -r _v || _v=$LINK; [ -n "$_v" ] && LINK=$_v
+        fi ;;
+      raster)
+        _d=off _480=off _240=off _a=off
+        case "$RASTER" in default) _d=on ;; 480i) _480=on ;; 240p) _240=on ;; auto) _a=on ;; *) _d=on ;; esac
+        if type menu_radiolist >/dev/null 2>&1; then
+          _v=$(menu_radiolist "Analog output (default = the core's F12 setting)" \
+            default "default" "$_d" 480i "480i" "$_480" 240p "240p" "$_240" auto "auto" "$_a") && RASTER=$_v
+        else
+          printf 'Analog output 480i/240p/auto/default [%s]: ' "$RASTER" >&2; read -r _v || _v=$RASTER; [ -n "$_v" ] && RASTER=$_v
+        fi ;;
+      subs)
+        _on=off; _off=on; [ "$SUBS" = on ] && _on=on && _off=off
+        if type menu_radiolist >/dev/null 2>&1; then
+          _v=$(menu_radiolist "Text subtitles?" on "on" "$_on" off "off" "$_off") && SUBS=$_v
+        else
+          printf 'Text subtitles on/off [%s]: ' "$SUBS" >&2; read -r _v || _v=$SUBS; [ -n "$_v" ] && SUBS=$_v
+        fi ;;
+      sublang)
+        if type menu_inputbox >/dev/null 2>&1; then
+          _v=$(menu_inputbox "Subtitle language (en, de, fr, ...)" "$SUBLANG") && SUBLANG=$_v
+        else
+          printf 'Subtitle language [%s]: ' "$SUBLANG" >&2; read -r _v || _v=$SUBLANG; [ -n "$_v" ] && SUBLANG=$_v
+        fi ;;
+      uisize)
+        _n=off; _l=off
+        case "$UISIZE" in large) _l=on ;; *) _n=on ;; esac
+        if type menu_radiolist >/dev/null 2>&1; then
+          _v=$(menu_radiolist "Menu size" normal "normal" "$_n" large "large" "$_l") && UISIZE=$_v
+        else
+          printf 'Menu size normal/large [%s]: ' "$UISIZE" >&2; read -r _v || _v=$UISIZE; [ -n "$_v" ] && UISIZE=$_v
+        fi ;;
+      margin)
+        if type menu_inputbox >/dev/null 2>&1; then
+          _v=$(menu_inputbox "Safe margin percent (CRT: 5-10, HDMI: 0-5)" "$MARGIN") && MARGIN=$_v
+        else
+          printf 'Safe margin percent [%s]: ' "$MARGIN" >&2; read -r _v || _v=$MARGIN; [ -n "$_v" ] && MARGIN=$_v
+        fi ;;
+      name)
+        if type menu_inputbox >/dev/null 2>&1; then
+          _v=$(menu_inputbox "Player name in the cast list (blank = automatic)" "$NAME") && NAME=$_v
+        else
+          printf 'Player name [%s]: ' "$NAME" >&2; read -r _v || _v=$NAME; NAME=$_v
+        fi ;;
+      save) break ;;
+      *) return 75 ;;
+    esac
+  done
+}
+
+if [ "$ASK" = 1 ] && settings_use_dialog; then
+  # Cancel: exit 0 when run by itself; the Scripts menu passes MPX_SETTINGS_CANCEL_RC=75 so
+  # it goes straight back to the main menu with no Done box.
+  settings_form || { say "settings cancelled"; exit "${MPX_SETTINGS_CANCEL_RC:-0}"; }
+elif [ "$ASK" = 1 ]; then
+  # Text questions (no dialog): show the same defaults as the form.
+  ask SERVER "Plex server address (blank = find it on the network or via plex.tv)" "$(cur PLEX_SERVERS)"
+  ask LINK "Sign in on the TV with a plex.tv/link code? on/off" "$( [ "$(cur PLEXTV_LINK)" = 0 ] && echo off || echo on)"
+  ask RASTER "Analog output: 480i, 240p, auto, or default (core's F12 setting)" "$(cur_or ANALOG_RASTER default)"
+  ask SUBS "Text subtitles on? on/off" "$( case "$(cur SUBTITLE_LANG)" in ''|off) echo off ;; *) echo on ;; esac)"
+  if [ "$SUBS" = on ] || { [ -z "$SUBS" ] && [ -n "$(cur SUBTITLE_LANG)" ] && [ "$(cur SUBTITLE_LANG)" != off ]; }; then
+    sl=$(cur SUBTITLE_LANG)
+    case "$sl" in ''|off) sl=en ;; esac
+    ask SUBLANG "Subtitle language (en, de, fr, ...)" "$sl"
+  fi
+  ask UISIZE "Menu size: normal or large" "$(cur_or UI_SIZE normal)"
+  ask MARGIN "Safe margin percent (CRT: 5-10, HDMI: 0-5)" "$(cur_or UI_SAFE_MARGIN 5)"
+  ask NAME "Player name in the cast list (blank = automatic)" "$(cur FRIENDLY_NAME)"
 fi
-ask UISIZE "Menu size: normal or large" "$(cur UI_SIZE | sed 's/^$/normal/')"
-ask MARGIN "Safe margin percent (CRT: 5-10, HDMI: 0-5)" "$(cur UI_SAFE_MARGIN | sed 's/^$/5/')"
-ask NAME "Player name in the cast list (blank = automatic)" "$(cur FRIENDLY_NAME)"
 
 # Validate.
 case "$SERVER" in

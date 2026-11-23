@@ -24,7 +24,8 @@ inline char lowerCh(char c) {
     return c;
 }
 
-inline std::string pctDecodeStable(std::string s) {
+// Same cap as ffmpegPctDecodeStable: 8 change rounds, then a stability check.
+inline std::string pctDecodeOnce(const std::string& s) {
     const auto hex = [](char c) -> int {
         c = lowerCh(c);
         if (c >= '0' && c <= '9')
@@ -33,24 +34,33 @@ inline std::string pctDecodeStable(std::string s) {
             return c - 'a' + 10;
         return -1;
     };
-    for (int round = 0; round < 8; ++round) {
-        std::string out;
-        out.reserve(s.size());
-        for (size_t i = 0; i < s.size(); ++i) {
-            if (s[i] == '%' && i + 2 < s.size()) {
-                const int hi = hex(s[i + 1]), lo = hex(s[i + 2]);
-                if (hi >= 0 && lo >= 0) {
-                    out.push_back(static_cast<char>((hi << 4) | lo));
-                    i += 2;
-                    continue;
-                }
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            const int hi = hex(s[i + 1]), lo = hex(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
             }
-            out.push_back(s[i]);
         }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+inline std::string pctDecodeStable(std::string s, bool* stable = nullptr) {
+    if (stable)
+        *stable = false;
+    for (int round = 0; round < 8; ++round) {
+        std::string out = pctDecodeOnce(s);
         if (out == s)
             break;
         s = std::move(out);
     }
+    if (stable)
+        *stable = pctDecodeOnce(s) == s;
     return s;
 }
 
@@ -85,6 +95,7 @@ inline const char* const* secretKeyList() {
     static const char* kKeys[] = {
         "x%2dplex%2dtoken",
         "x-plex-token",
+        "x-mpx-auth",
         "myplexaccesstoken",
         "authenticationtoken",
         "access_token",
@@ -93,10 +104,60 @@ inline const char* const* secretKeyList() {
         "plex_token",
         "plextoken",
         "bearer",
+#ifndef MUT_LOG_REDACT_NO_JWT
+        "jwt",  // Pluto /v2 stitcher session JWT rides in the master/media URL query (never log it)
+#endif
         "token",
+        "sessionid",
+        "deviceid",
+        "clientid",
+        "sid",
         nullptr,
     };
     return kKeys;
+}
+
+// 9 decode levels is at most 3+2*8 = 19 bytes per key character.
+inline constexpr size_t kMaxEncodedBytesPerKeyChar = 19;
+
+// Return the raw key length so decoding never changes the logged key or separators.
+// The slow (decode) path runs only when a '%' sits in the bounded key window.
+// An unstable run is treated as a match so a detected key is also redacted.
+inline size_t secretKeyLength(const std::string& s, size_t pos, const char* key) {
+    if (ciAt(s, pos, key))
+        return std::strlen(key);
+    if (s[pos] != '%' && lowerCh(s[pos]) != key[0])
+        return 0;
+    const size_t klen = std::strlen(key);
+    const size_t windowEnd = std::min(s.size(), pos + klen * kMaxEncodedBytesPerKeyChar);
+    bool hasPct = false;
+    for (size_t i = pos; i < windowEnd; ++i) {
+        if (s[i] == '%') {
+            hasPct = true;
+            break;
+        }
+    }
+    if (!hasPct)
+        return 0;
+    // If the first fully-decoded byte is stable and is not this key's first
+    // letter, a full-window decode cannot match. A short prefix is enough:
+    // 9 levels fit in kMaxEncodedBytesPerKeyChar bytes for one character.
+    bool firstStable = false;
+    const std::string firstDec = pctDecodeStable(
+        s.substr(pos, std::min(windowEnd - pos, kMaxEncodedBytesPerKeyChar)), &firstStable);
+    if (firstStable && (firstDec.empty() || lowerCh(firstDec[0]) != key[0]))
+        return 0;
+    size_t end = pos;
+    while (end < windowEnd && !std::strchr("=: \t\r\n\"'&", s[end]) &&
+           !ciAt(s, end, "%3d") && !ciAt(s, end, "%253d"))
+        ++end;
+    bool stable = false;
+    const std::string decoded = pctDecodeStable(s.substr(pos, end - pos), &stable);
+    if (!stable)
+        return end - pos;
+    if (decoded.size() == klen && ciAt(decoded, 0, key))
+        return end - pos;
+    return 0;
 }
 
 // A write that ends in the middle of a key ("myPlexAcce" / "ssToken=") must be
@@ -164,8 +225,10 @@ inline std::string redactSensitive(std::string s) {
         bool hit = false;
         for (int ki = 0; kKeys[ki]; ++ki) {
             const char* key = kKeys[ki];
-            const size_t klen = std::strlen(key);
-            if (!ciAt(s, i, key) || !keyBoundary(s, i))
+            if (!keyBoundary(s, i))
+                continue;
+            const size_t klen = secretKeyLength(s, i, key);
+            if (!klen)
                 continue;
 #ifdef MUT_334_REDACT_CASE
             // Mutant: key match is case-sensitive.
@@ -315,8 +378,10 @@ inline size_t findPlexTokenKey(const std::string& s, size_t from = 0, size_t* ke
 }
 
 inline bool hasPlexTokenKey(const std::string& s) {
-    return findPlexTokenKey(s) != std::string::npos ||
-           findPlexTokenKey(redact_detail::pctDecodeStable(s)) != std::string::npos;
+    bool stable = false;
+    const std::string decoded = redact_detail::pctDecodeStable(s, &stable);
+    return !stable || findPlexTokenKey(s) != std::string::npos ||
+           findPlexTokenKey(decoded) != std::string::npos;
 }
 
 // True when `pending` ends in a known key plus a separator and the value has not
@@ -334,8 +399,10 @@ inline bool redactHoldPartial(const std::string& s) {
     for (size_t pos = 0; pos < s.size(); ++pos) {
         for (int ki = 0; kKeys[ki]; ++ki) {
             const char* key = kKeys[ki];
-            const size_t klen = std::strlen(key);
-            if (!ciAt(s, pos, key) || !keyBoundary(s, pos))
+            if (!keyBoundary(s, pos))
+                continue;
+            const size_t klen = secretKeyLength(s, pos, key);
+            if (!klen)
                 continue;
             size_t j = pos + klen;
             if (j < s.size() && s[j] == '"')

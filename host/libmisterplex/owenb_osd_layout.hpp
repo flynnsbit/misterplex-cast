@@ -90,11 +90,58 @@ inline Raster fromCore(const struct ::h264ring_raster& r, unsigned videoOut) {
     return o;
 }
 
+// Near-HD tolerance (720p titles): the native raster is picture-WIDE (raster_geom.sv: Rw = Wc, Rh = Rw * dh / dw on a
+// 16:9 display), and PMS fits a 2.40:1 source into the 1280x720 request box as 1276x532 (dimensions a multiple of 4),
+// so the core publishes 1276x718. That is the HD frame to within PMS's width flooring: classify it native-hd, not
+// native-sd. The tolerance is 16 px (1.25%) of width AND the 16:9-derived 711 lines (1264 wide -> 711 high); an OR (or a
+// width-only rule) would make picture-sized / ultrawide rasters such as 1276x532 HD. h >= 720 is unchanged.
+// The window is two-sided in width (review c5e5ba32 N5): 1264..1296 = 1280 +/- 16 px (the same 1.25% tolerance), so a
+// non-16:9 ultra-wide raster such as 1920x715 or 2560x712 is not mistaken for HD (it was in the one-sided rule).
+// Mutants: MUT_NEARHD_OFF (branch removed), MUT_NEARHD_OR (AND -> OR), MUT_NEARHD_W_1263 / MUT_NEARHD_W_1265 and
+// MUT_NEARHD_H_710 / MUT_NEARHD_H_712 (threshold off by one), MUT_NEARHD_NO_WCAP (no upper width bound) and
+// MUT_NEARHD_WCAP_1295 / MUT_NEARHD_WCAP_1297 (upper bound off by one).
+#if defined(MUT_NEARHD_W_1263)
+constexpr unsigned kNearHdMinW = 1263;
+#elif defined(MUT_NEARHD_W_1265)
+constexpr unsigned kNearHdMinW = 1265;
+#else
+constexpr unsigned kNearHdMinW = 1264;
+#endif
+#if defined(MUT_NEARHD_H_710)
+constexpr unsigned kNearHdMinH = 710;
+#elif defined(MUT_NEARHD_H_712)
+constexpr unsigned kNearHdMinH = 712;
+#else
+constexpr unsigned kNearHdMinH = 711;
+#endif
+#if defined(MUT_NEARHD_NO_WCAP)
+constexpr unsigned kNearHdMaxW = 0xffffffffu;
+#elif defined(MUT_NEARHD_WCAP_1295)
+constexpr unsigned kNearHdMaxW = 1295;
+#elif defined(MUT_NEARHD_WCAP_1297)
+constexpr unsigned kNearHdMaxW = 1297;
+#else
+constexpr unsigned kNearHdMaxW = 1296;   // 1280 + 16
+#endif
+
+inline bool isNativeHdRaster(unsigned w, unsigned h) {
+    if (h >= 720)
+        return true;
+#if defined(MUT_NEARHD_OFF)
+    (void)w;
+    return false;
+#elif defined(MUT_NEARHD_OR)
+    return w >= kNearHdMinW || h >= kNearHdMinH;   // (no upper bound: the mutant is the pre-N5 widening too)
+#else
+    return w >= kNearHdMinW && w <= kNearHdMaxW && h >= kNearHdMinH;
+#endif
+}
+
 inline OutMode modeOf(const Raster& r) {
     if (r.interlaced)
         return OutMode::Interlaced;
     if (r.videoOut == H264RING_VOUT_NATIVE)
-        return r.h >= 720 ? OutMode::NativeHd : OutMode::NativeSd;
+        return isNativeHdRaster(r.w, r.h) ? OutMode::NativeHd : OutMode::NativeSd;
     return OutMode::Progressive;
 }
 

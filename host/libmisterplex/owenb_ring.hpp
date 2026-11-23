@@ -115,6 +115,8 @@ public:
     int overlayShow(const struct ::h264ring_overlay& o);
     int overlayHide();
     OverlayCoreStatus overlayStatus() const;
+    // Live PlexOB OSD menu (word 27 echoes); authoritative when Main has not flushed CFG.
+    bool liveOsdMenuOptions(unsigned out[H264RING_OPT_COUNT]) const;
     // T6: the core's OSD settings (interface 0.4). request: the sequence (1..255) or -errno.
     int requestSettings(unsigned mask, const unsigned values[H264RING_OPT_COUNT]);
     int clearSettings();

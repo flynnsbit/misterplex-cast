@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libmisterplex/browse_controller.hpp"
+#include "libmisterplex/browse_shell_controller.hpp"
 #include "libmisterplex/mark_watched.hpp"
 #include "libmisterplex/play_queue_write.hpp"
 #include "plexui_data.hpp"
@@ -12,6 +13,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,6 +46,9 @@ public:
         // Writes PLEX_HOME_ID / PLEX_HOME_TITLE / PLEX_HOME_TOKEN only.
         // Empty token clears them. Must not write PLEXTV_TOKEN or PLEX_TOKEN.
         std::function<bool(const HomeSession&)> persistHomeSession;
+        // Library Browse redesign (reviewer 1121). MediaPlayer sets this from
+        // browseShellEnabled() (default on). Unit tests leave it false.
+        bool shellMode = false;
     };
     struct Hooks {
         HttpGetFn get;
@@ -70,6 +75,10 @@ public:
     void post(BrowseOp op);
     void postIngress(BrowseOp op, const char* src, int64_t recvMs);
     void postHorizontal(int delta, const char* src = "http", int64_t recvMs = 0);
+    void postSearch();
+    void postText(char ch);
+    bool usingShell() const { return shell_ != nullptr; }
+    bool shellSearchOpen() const;
     void onPlayStarted(uint64_t generation);
 
     bool visible() const;
@@ -98,11 +107,17 @@ public:
 
     // The frame in the current render target's format at its geometry (default: R1 640x480 RGB24).
     bool copyFrame(std::vector<std::uint8_t>& frame);
+    const misterplex::FrameDamage& lastFrameDamage() const {
+        if (shell_)
+            return shell_->lastFrameDamage();
+        static const misterplex::FrameDamage kFull{};
+        return kFull;
+    }
 
     // OB port: draw for another target (the OB overlay canvas, BGRA8888). Re-lays out (grid
     // columns, sidebar / chip scroll, art sizes) and keeps the focused item. True when it changed;
     // the caller repaints (never from inside paintIdle). Thread-safe.
-    bool setRenderTarget(int w, int h, PixelFormat fmt);
+    bool setRenderTarget(int w, int h, PixelFormat fmt, bool interlaced = false);
     PixelFormat renderFormat() const;
     // Apply conf / toggle. Relays out browse geometry. Thread-safe.
     void applyUiSafeLayout(int marginPct, UiSize size);
@@ -112,11 +127,11 @@ public:
     void onR1FlipAck(int64_t plxhMs = 0, int64_t plxoMs = 0);
 
     // Manual next (+1) / previous (-1) while this UI owns a play queue.
-    void postQueueStep(int delta);
+    bool postQueueStep(int delta);
     // Browse: Add to queue (append / create) or Play next (insert, or play if idle).
-    void postQueueMark(QueueMark mark);
+    bool postQueueMark(QueueMark mark);
     // MARK_WATCHED on: mark the focused movie/episode. Off: the worker no-ops.
-    void postMark(MarkWatchedOp op);
+    bool postMark(MarkWatchedOp op);
     bool queueHasNext() const;
     // End of an episode this UI started. True when an Up next card is showing
     // and the caller should not auto-advance on its own. endedRatingKey is the
@@ -262,6 +277,7 @@ private:
     Hooks hooks_;
     Renderer renderer_;
     ImageCache images_;
+    std::unique_ptr<BrowseShellController> shell_;
 
     mutable std::mutex mu_;
     // Owns upNextThread_. stop() and armUpNext() both join it; never touch it unlocked.
@@ -279,6 +295,23 @@ private:
     std::atomic<bool> dirty_{false};
 
     PixelFormat fmt_ = PixelFormat::RGB24;
+    // HOME-UX r3: every input of the Home hub / sidebar layout (canvas, poster, safe area).
+    // syncLayoutLocked() compares it on each frame, on Open and on a render-target change, and
+    // re-plans (image geometry, scrolls, static layer) whenever any part moved, in either
+    // direction (e.g. HDMI Native 960x480 -> 480p 720x480 -> back), including a live
+    // overscan / UI_SIZE change made while the UI was closed.
+    struct LayoutSig {
+        int w = 0, h = 0, posterW = 0, posterH = 0, left = 0, right = 0, top = 0, sideW = 0;
+        int tiles = 0, gridCols = 0;
+        bool operator==(const LayoutSig& o) const {
+            return w == o.w && h == o.h && posterW == o.posterW && posterH == o.posterH &&
+                   left == o.left && right == o.right && top == o.top && sideW == o.sideW &&
+                   tiles == o.tiles && gridCols == o.gridCols;
+        }
+    };
+    LayoutSig layoutSig_{};
+    static LayoutSig currentLayoutSig();
+    bool syncLayoutLocked(int oldGridCols);
     bool visible_ = false;
     bool ownsSession_ = false;
     bool reopen_ = false;
@@ -467,6 +500,10 @@ public:
     void testSetServers(std::vector<PlexServer> servers);
     void testSetEpisodes(PlexServer server, std::vector<PlexItem> episodes);
     int testSidebarFocus() const;
+    // HOME-UX r3: the layout signature last applied (re-plan check in tests).
+    int testLayoutPosterW() const;
+    int testLayoutTiles() const;
+    int testLayoutW() const;
     int testSidebarEntryCount() const;
     void testSeedTvStack();
     std::string testViewName() const;

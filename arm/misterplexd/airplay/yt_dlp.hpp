@@ -313,6 +313,9 @@ struct ResolveResult {
     int exitCode = -1;
     int clientAttempts = 0;     // player_client ladder steps actually spawned
     std::string playerClient;   // "default", "mweb,web_safari", or "tv,web_embedded"
+    int height = 0;             // stream height when known (warm helper or itag hint)
+    int itag = 0;
+    bool capped = false;        // warm-android SABR cap: better formats exist but lack URLs
 };
 
 struct ResolveOptions {
@@ -363,22 +366,29 @@ inline constexpr YtClientSpec kYtPlayerClientRetry[] = {
 inline constexpr int kYtPlayerClientRetryCount =
     static_cast<int>(sizeof(kYtPlayerClientRetry) / sizeof(kYtPlayerClientRetry[0]));
 
-// Standalone -f (empty extraArgs). Progressive H.264/AAC <=720p is one URL.
-// YouTube often has no progressive mux at that height; the tail is an AVC
-// video plus AAC audio, capped at 30 fps (OB is real time at 720p30, not
-// 720p60; 60 fps uploads offer 720p60 AVC first). Every selector, including
-// each progressive b[...] option and each side of a DASH pair, requires
-// protocol=https so yt-dlp cannot pick HLS (m3u8), which this player cannot
-// demux (ARM libav has mpegts, not the hls demuxer). -g then prints one or
-// two URLs. The player opens each one (yt-av playable). Nothing is remuxed
-// onto the card. YT_LIVE (yt_live.hpp) appends m3u8 fallbacks; those URLs are
-// remuxed to MPEG-TS and are not opened directly.
+// Standalone -f (empty extraArgs). Adaptive AVC+AAC <=720p30 first (two URLs
+// when mux is unavailable), then progressive H.264/AAC <=720p as one URL.
+// Every selector, including each progressive b[...] option and each side of a
+// DASH pair, requires protocol=https so yt-dlp cannot pick HLS (m3u8), which
+// this player cannot demux (ARM libav has mpegts, not the hls demuxer). -g then
+// prints one or two URLs. The player opens each one (yt-av playable). Nothing
+// is remuxed onto the card. YT_LIVE (yt_live.hpp) appends m3u8 fallbacks;
+// those URLs are remuxed to MPEG-TS and are not opened directly.
+#ifdef MUT_YT_PROGRESSIVE_FIRST
 inline constexpr char kResolveFormat[] =
     "b[height<=720][vcodec^=avc][acodec^=mp4a][fps<=30][protocol=https]"
     "/b[height<=720][ext=mp4][fps<=30][protocol=https]"
     "/b[height<=720][fps<=30][protocol=https]"
     "/bv*[height<=720][vcodec^=avc][fps<=30][protocol=https]+ba[acodec^=mp4a][protocol=https]"
     "/bv*[height<=720][vcodec^=avc][fps<=30][protocol=https]+ba[ext=m4a][protocol=https]";
+#else
+inline constexpr char kResolveFormat[] =
+    "bv*[height<=720][vcodec^=avc][fps<=30][protocol=https]+ba[acodec^=mp4a][protocol=https]"
+    "/bv*[height<=720][vcodec^=avc][fps<=30][protocol=https]+ba[ext=m4a][protocol=https]"
+    "/b[height<=720][vcodec^=avc][acodec^=mp4a][fps<=30][protocol=https]"
+    "/b[height<=720][ext=mp4][fps<=30][protocol=https]"
+    "/b[height<=720][fps<=30][protocol=https]";
+#endif
 
 // YT_CAST_TITLE (misterplex.conf) / MPX_YT_CAST_TITLE (env wins). Default off.
 // On: the same yt-dlp child that prints the media URL also prints the extract
@@ -399,6 +409,35 @@ inline bool ytCastTitleEnvOn(const char* e) {
     buf[n] = 0;
     return std::strcmp(buf, "1") == 0 || std::strcmp(buf, "true") == 0 || std::strcmp(buf, "yes") == 0 ||
            std::strcmp(buf, "on") == 0;
+}
+
+// YT_HD_RETRY (misterplex.conf) / MPX_YT_HD_RETRY (env wins). Default on: when
+// warm-android returns capped (SABR), spend one yt-dlp child on the default
+// client before keeping the warm progressive URL.
+inline bool ytHdRetryEnvOn(const char* e) {
+    if (!e || !e[0])
+        return false;
+    char buf[16];
+    std::size_t n = 0;
+    for (; e[n] && n + 1 < sizeof buf; ++n) {
+        const unsigned char c = static_cast<unsigned char>(e[n]);
+        buf[n] = static_cast<char>(std::tolower(c));
+    }
+    buf[n] = 0;
+    return std::strcmp(buf, "1") == 0 || std::strcmp(buf, "true") == 0 || std::strcmp(buf, "yes") == 0 ||
+           std::strcmp(buf, "on") == 0;
+}
+
+inline bool ytHdRetryEnabled() {
+#ifdef MUT_YT_HD_RETRY_OFF
+    return false;
+#else
+    if (const char* e = std::getenv("MPX_YT_HD_RETRY"); e && e[0])
+        return ytHdRetryEnvOn(e);
+    if (const char* e = std::getenv("YT_HD_RETRY"); e && e[0])
+        return ytHdRetryEnvOn(e);
+    return true;
+#endif
 }
 
 inline bool ytCastTitleEnabled() {
@@ -797,6 +836,45 @@ inline ResolveResult runResolveChild(const ResolveOptions& opt) {
 
 inline bool cacheableUrl(const std::string& u);
 
+inline int itagFromUrl(const std::string& url) {
+    const char* key = "itag=";
+    size_t p = url.find(key);
+    while (p != std::string::npos) {
+        if (p == 0 || url[p - 1] == '?' || url[p - 1] == '&') {
+            const size_t q = p + std::strlen(key);
+            int v = 0;
+            size_t nd = 0;
+            for (size_t i = q; i < url.size() && url[i] >= '0' && url[i] <= '9' && nd < 8; ++i, ++nd)
+                v = v * 10 + (url[i] - '0');
+            if (nd > 0)
+                return v;
+        }
+        p = url.find(key, p + 1);
+    }
+    return 0;
+}
+
+inline int heightForItag(int itag) {
+    switch (itag) {
+    case 18:
+        return 360;
+    case 135:
+        return 480;
+    case 136:
+    case 298:
+        return 720;
+    default:
+        return 0;
+    }
+}
+
+inline int resolveMeasuredHeight(const ResolveResult& r) {
+    if (r.height > 0)
+        return r.height;
+    const int tag = r.itag > 0 ? r.itag : itagFromUrl(r.url);
+    return heightForItag(tag);
+}
+
 inline std::optional<ResolveResult> resolveViaWarm(const ResolveOptions& opt) {
     // Custom/live selectors and caption/test argv keep the existing extractor contract.
     // skipWarm: 403 refresh must not re-mint another android URL (P2-c).
@@ -815,6 +893,9 @@ inline std::optional<ResolveResult> resolveViaWarm(const ResolveOptions& opt) {
     r.audioUrl = std::move(warm->audioUrl);
     if (ytCastTitleEnabled())
         r.title = std::move(warm->title);
+    r.height = warm->height;
+    r.itag = warm->itag;
+    r.capped = warm->capped;
     r.exitCode = 0;
     r.playerClient = "warm-android";
     r.clientAttempts = 1;
@@ -829,8 +910,41 @@ inline ResolveResult resolveVideo(const ResolveOptions& opt) {
     playResolveWaiters().fetch_add(1);
     std::unique_lock<std::mutex> lk(resolveMu());
     playResolveWaiters().fetch_sub(1);
-    if (auto warm = resolveViaWarm(opt))
-        return *warm;
+    std::optional<ResolveResult> warmFallback;
+    if (auto warm = resolveViaWarm(opt)) {
+        if (warm->capped && ytHdRetryEnabled() && !opt.skipWarm && opt.extraArgs.empty() && opt.format.empty())
+            warmFallback = std::move(warm);
+        else
+            return *warm;
+    }
+    if (warmFallback) {
+        ResolveOptions retry = opt;
+        retry.skipAndroid = true;
+        if (opt.timeoutMs > 0) {
+            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            if (spent >= opt.timeoutMs) {
+                ResolveResult timed;
+                timed.ok = false;
+                timed.timedOut = true;
+                timed.error = "yt-dlp timed out";
+                return timed;
+            }
+            retry.timeoutMs = opt.timeoutMs - static_cast<int>(spent);
+        }
+        const YtClientSpec& spec = kYtPlayerClientRetry[1];
+        retry.extraArgs = localResolveArgs(opt.videoId, spec.extractorArgs, resolveFormatOf(opt));
+        ResolveResult ladder = runResolveChild(retry);
+        if (!ladder.itag)
+            ladder.itag = itagFromUrl(ladder.url);
+        if (!ladder.height)
+            ladder.height = resolveMeasuredHeight(ladder);
+        ladder.clientAttempts = warmFallback->clientAttempts + 1;
+        ladder.playerClient = spec.name ? spec.name : "default";
+        if (ladder.ok && resolveMeasuredHeight(ladder) >= warmFallback->height)
+            return ladder;
+        return *warmFallback;
+    }
     if (!opt.extraArgs.empty() || opt.bin.empty() || opt.videoId.empty())
         return runResolveChild(opt);
 #ifdef MUT_YT_NO_CLIENT_RETRY
@@ -1015,6 +1129,9 @@ struct CachedResolve {
     std::string audioUrl;
     std::time_t validUntil = 0;   // epoch seconds
     std::string title;            // empty when the resolve did not print one
+    int height = 0;
+    int itag = 0;
+    bool capped = false;
 };
 
 // Plain http(s), no space or control byte (same shape rule as media_source_policy.hpp).
@@ -1063,6 +1180,9 @@ public:
         out.url = it->second.url;
         out.audioUrl = it->second.audioUrl;
         out.title = it->second.title;
+        out.height = it->second.height;
+        out.itag = it->second.itag;
+        out.capped = it->second.capped;
         return true;
     }
     // Stores only a successful result whose URLs are plain http(s). Returns whether it was stored.
@@ -1075,7 +1195,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         if (map_.size() >= kCacheMaxEntries && !map_.count(id))
             map_.erase(map_.begin());
-        map_[id] = CachedResolve{r.url, r.audioUrl, until, r.title};
+        map_[id] = CachedResolve{r.url, r.audioUrl, until, r.title, r.height, r.itag, r.capped};
         return true;
     }
     void invalidate(const std::string& id) {
@@ -1120,6 +1240,12 @@ inline std::string resolveLogLine(const ResolveResult& r, bool cacheHit) {
             }
         }
         s += " attempts=" + std::to_string(r.clientAttempts) + " client=" + client;
+    }
+    if (r.ok) {
+        const int tag = r.itag > 0 ? r.itag : itagFromUrl(r.url);
+        const int h = resolveMeasuredHeight(r);
+        s += " itag=" + std::to_string(tag) + " h=" + std::to_string(h) +
+             " pair=" + (r.audioUrl.empty() ? "0" : "1") + " capped=" + (r.capped ? "1" : "0");
     }
     if (!r.ok)
         s += " " + misterplex::redactUrlTokens(stripUrls(r.error));

@@ -104,7 +104,7 @@ These are **off by default**. Turn one on by adding a line such as `CHAPTERS=1` 
 | | `BURN_SUBS_FIX` | Ask **your own** server to burn in picture subtitles |
 | YouTube | `YT_CAPTIONS`, `YT_CAST_TITLE`, `YT_VOLUME`, `YT_NEXT_PREV`, `YT_LIVE` | Captions, title, volume, next/previous, livestreams |
 | Display | `CRT_LOOK` | Scanline looks for menus over HDMI |
-| | `REMEMBER_PICTURE` | Remember the picture mode per show |
+| | `REMEMBER_PICTURE` | Remember the picture mode per show. The Program menu Picture row (letterbox / 14:9 / zoom / stretch / fit-crop) applies on the shared scaler for AirPlay, mirroring, Plex, YouTube, and Spelunkr |
 | Other | `ZAPAROO` | Play a Plex title from a Zaparoo card |
 | | `REPORT_CODE` | Save a log bundle (private details removed) for bug reports |
 | | `IDLE_MENU_KEY` | Keyboard P opens the program menu |
@@ -116,7 +116,17 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Source and license
 
-This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored hps/ client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE) and [NOTICE](NOTICE). MiSTerPlex.rbf is built from the PlexOB core. The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast. Source revision: 6c3679ae9708210f46902a04305a9c956e2701b1. The casting helper's licence and checksums are in packaging/licenses/gcast-ffmpeg; its source is not in this repository. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
+This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored hps/ client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE) and [NOTICE](NOTICE). MiSTerPlex.rbf is built from the PlexOB core. The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast. Source revision: eb6e7dbc542251db8e4dca01946d8439aa15f0b0. The casting helper's licence and checksums are in packaging/licenses/gcast-ffmpeg; its source is not in this repository. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
+
+### Source code
+
+Each release page carries, next to the install package, the complete corresponding source for that build:
+
+- `misterplex-source-<revision>.tar.gz`: this repository's source export for the release (single commit), buildable with `scripts/repro_arm_build.sh`.
+- The exact upstream source archives that are compiled into or statically linked with `misterplexd`: UxPlay at 4e95a9ec (our patches are in `tools/airplay/uxplay-patches/`), FFmpeg 8.1.2, OpenSSL 3.0.15, libplist 2.6.0, and the Arm GNU Toolchain 13.2.Rel1 source snapshot (glibc and the GCC runtime libraries).
+- `SHA256SUMS` lists the checksum of every source archive.
+
+Releases: https://github.com/flynnsbit/misterplex-cast/releases
 
 ## Thanks
 

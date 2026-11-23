@@ -718,6 +718,21 @@ inline ObRoute obRoute(ObNav n, const ObMenuState& s) {
       if (n == ObNav::Menu || n == ObNav::Home || n == ObNav::Info ||
           n == ObNav::Back)
         return cmd(PlaybackCommand::GuideToggle);
+#ifndef MUT_SPELUNKR_GUIDE_LR_OFF
+      if (s.spelunkrGuideOpen) {
+#ifndef MUT_SPELUNKR_GUIDE_LR_SWAP
+        if (n == ObNav::Left)
+            return cmd(PlaybackCommand::PageUp);
+        if (n == ObNav::Right)
+            return cmd(PlaybackCommand::PageDown);
+#else
+        if (n == ObNav::Left)
+            return cmd(PlaybackCommand::PageDown);
+        if (n == ObNav::Right)
+            return cmd(PlaybackCommand::PageUp);
+#endif
+      }
+#endif
       if (n == ObNav::Up || n == ObNav::PageUp)
         return cmd(PlaybackCommand::ChannelUp);
       if (n == ObNav::Down || n == ObNav::PageDown)

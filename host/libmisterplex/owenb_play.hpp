@@ -154,6 +154,8 @@ public:
     // Any mode/raster/core event (display raster apply, core load adopted, recovery): re-arm the idle card on the
     // keeper's next tick even when the raster dimensions did not change. No-op without an idle session.
     void requestIdleRearm() { idleRearmReq_.store(true); }
+    // GH#649: leave the last overlay page up across process teardown.
+    void holdOverlayOnShutdown() { holdOverlayOnShutdown_.store(true); }
 
     // AirPlay screen-mirror: reuse this player's OwenbRing (the same handle idle and Plex play use).
     // Does not start OwenbPlaySession. Plex start()/stop() stay on their existing path.
@@ -175,7 +177,8 @@ public:
     // 0006: the Letterbox default and the restore of the user's value (lives across plays).
     void setAspect(AspectConfig cfg);
     // REMEMBER_PICTURE. -1 is the tip path. armPicture is read once at start.
-    // requestPicture applies on the play thread (the next iteration).
+    // requestPicture applies on the play thread (the next iteration) and on
+    // pumpPicture (the input loop: AirPlay mirror has no play thread).
     void armPicture(int mode);
     void requestPicture(int mode);
     // A live Spelunkr menu pick (including -1 Auto) wins over per-show memory.
@@ -183,11 +186,23 @@ public:
     // SPELUNKR=1: OSD Aspect Ratio 4:3 (1) or 16:9 (2), Analog Aspect Letterbox.
     // -1 clears. Applied after newSession so it is not wiped.
     void armSpelunkrAspect(int ar);
+    // Live TV channel zap: skip endSession restore between stop and the next play's arm.
+    void setRetainAspectOnStop(bool v) { retainAspectOnStop_.store(v); }
+    bool retainAspectOnStop() const { return retainAspectOnStop_.load(); }
+    // Unit test: arm REMEMBER_PICTURE and the saved-user state that stop() would restore.
+    void unitTestPrimeAspectRestore();
+    // Unit test: models OwenbPlayer::stop()/play-thread end without joining the worker.
+    void unitTestSimulatePlayEndAspect(bool retain);
     // Unit-test hook: same aspect arm as start() after newSession, without opening the ring.
     // spelunkrAr: -1 Plex, 1/2 Spelunkr. armedPictureMode: -1 none, else REMEMBER_PICTURE mode.
     void unitTestArmPlayAspect(int spelunkrAr, int armedPictureMode = -1);
     owenb_osd::AspectGuard& unitTestAspect() { return aspect_; }
     int syncService(bool spelunkr, const unsigned* plexSettings = nullptr);
+    // Live PlexOB menu via h264ring status (word 27 echoes); used for service snapshot.
+    bool overlayMenuOptions(unsigned out[H264RING_OPT_COUNT]) const;
+    // Shared scaler path: Analog Aspect / Aspect Ratio on the ring. Safe from
+    // the input thread. No-op when the ring is idle.
+    void pumpPicture();
     // Boot hand-over (PR #30 follow-up 10-23): called, with the player's lock held, immediately BEFORE the DDR window
     // factory opens the ring -- the one moment another ring holder (the "daemon not running" painter) has to let go.
     // The daemon sets it so the painter stays on screen until the daemon can paint its own card, not from main().
@@ -223,6 +238,7 @@ private:
     std::atomic<int> spelunkrPicture_{-2};  // -2 no menu pick, -1 Auto, otherwise PictureMode
     std::atomic<bool> pictureDirty_{false};
     std::atomic<int> spelunkrAspect_{-1};  // -1 off, 1=4:3, 2=16:9
+    std::atomic<bool> retainAspectOnStop_{false};
     void applyArmedPicture(int mode);
     void applySpelunkrAspectLocked();
     void armAspectAfterNewSessionLocked(int armedPictureMode);
@@ -237,6 +253,7 @@ private:
     bool idleRasterValid_ = false;
     std::atomic<unsigned> idleRearms_{0};
     std::atomic<bool> idleRearmReq_{false};   // requestIdleRearm()
+    std::atomic<bool> holdOverlayOnShutdown_{false};
     std::atomic<unsigned> idleStarts_{0};
     std::atomic<bool> keeperStop_{false};
     std::thread keeper_;

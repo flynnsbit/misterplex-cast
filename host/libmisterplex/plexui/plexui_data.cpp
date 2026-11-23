@@ -169,6 +169,7 @@ std::vector<PlexServer> parsePlexResources(const std::string& xml) {
                 s.machineIdentifier = s.clientIdentifier;   // /api/resources: clientIdentifier only
             s.accessToken = el.get("accessToken");
             s.owned = el.get("owned") == "1";
+            s.publicAddressMatches = el.get("publicAddressMatches") == "1";
             servers.push_back(std::move(s));
             cur = &servers.back();
             continue;
@@ -193,6 +194,19 @@ void pickServerConnections(std::vector<PlexServer>& servers) {
     for (auto& s : servers) {
         if (s.connections.empty())
             continue;
+        // Remote shared servers: plex.tv still lists owner LAN as local=1; skip those
+        // unless we own the resource or publicAddressMatches says we are on that LAN.
+        if (!s.owned && !s.publicAddressMatches) {
+            std::vector<PlexConnection> filtered;
+            filtered.reserve(s.connections.size());
+            for (const auto& c : s.connections) {
+                if (c.local)
+                    continue;
+                filtered.push_back(c);
+            }
+            if (!filtered.empty())
+                s.connections = std::move(filtered);
+        }
         const bool tlsBundle = !plexUiCaBundlePath().empty();
         std::stable_sort(s.connections.begin(), s.connections.end(),
                          [tlsBundle](const PlexConnection& a, const PlexConnection& b) {
@@ -546,6 +560,37 @@ void resolveServerBases(HttpGetFn get, std::vector<PlexServer>& servers,
         }
     }
     collapseServersByIdentity(servers);
+}
+
+std::vector<std::string> rankedConnectionBases(const PlexServer& server) {
+    const bool tlsVerify = !plexUiCaBundlePath().empty();
+    PlexServer s = server;
+    std::stable_sort(s.connections.begin(), s.connections.end(),
+                     [tlsVerify](const PlexConnection& a, const PlexConnection& b) {
+                         return connectionRank(a, tlsVerify) < connectionRank(b, tlsVerify);
+                     });
+    std::vector<std::string> bases;
+    for (const auto& c : s.connections)
+        for (const std::string& b : connectionProbeCandidates(c, tlsVerify))
+            pushUniqueBase(bases, b);
+#if !defined(MUT_PLEXUI_NO_PLEXDIRECT_FIRST)
+    std::stable_partition(bases.begin(), bases.end(), [](const std::string& b) {
+        return b.rfind("https://", 0) == 0 && b.find(".plex.direct") != std::string::npos;
+    });
+#endif
+    return bases;
+}
+
+void rememberServerBase(const std::string& machineId, const std::string& baseUrl) {
+    if (machineId.empty() || baseUrl.empty() || isSyntheticLocalServerId(machineId))
+        return;
+    serverBaseCache()[machineId] = baseUrl;
+}
+
+bool isLibrarySectionsTransportError(const std::string& err) {
+    // fetchLibrarySections uses "sections http=<n>" when plexAuthErrorText is empty.
+    // status 0 / curl timeout / connect failures land here; 401/403 use auth text instead.
+    return err.rfind("sections http=0", 0) == 0 || err == "sections http=0";
 }
 
 std::vector<PlexSection> parseLibrarySections(const std::string& xml) {
@@ -941,7 +986,11 @@ static std::vector<PlexHubRow> parseHubsHomeXml(const std::string& xml) {
         if (!row)
             continue;
         if (el.name == "Video" || el.name == "Directory" || el.name == "Episode" ||
-            el.name == "Movie" || el.name == "Season" || el.name == "Show") {
+            el.name == "Movie" || el.name == "Season" || el.name == "Show"
+#ifndef MUT_BROWSE_NO_SEARCH_METADATA
+            || el.name == "Metadata"
+#endif
+        ) {
             PlexItem it = itemFromElement(el);
             if (!it.title.empty() || !it.ratingKey.empty())
                 row->items.push_back(std::move(it));
@@ -1011,9 +1060,15 @@ std::vector<PlexItem> parseLibraryAll(const std::string& xml) {
     std::vector<PlexItem> items;
     for (const auto& el : parseXmlStartTags(xml)) {
         if (el.name == "Video" || el.name == "Movie" || el.name == "Episode" ||
-            el.name == "Show" || el.name == "Season")
-            items.push_back(itemFromElement(el));
-        else if (el.name == "Directory") {
+            el.name == "Show" || el.name == "Season"
+#ifndef MUT_BROWSE_NO_SEARCH_METADATA
+            || el.name == "Metadata"
+#endif
+        ) {
+            if (el.name != "Metadata" || el.get("type") == "movie" || el.get("type") == "show" ||
+                el.get("type") == "episode" || el.get("type") == "season")
+                items.push_back(itemFromElement(el));
+        } else if (el.name == "Directory") {
             // TV/music sections return <Directory type="show|season|artist|album">.
             const std::string t = el.get("type");
             if (t == "show" || t == "season" || t == "artist" || t == "album")

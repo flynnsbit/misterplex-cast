@@ -5,9 +5,9 @@
 # Runs ON the MiSTer from an unpacked release package, or from a PC with
 # --remote <mister-ip> (copies the package over scp, then runs itself there
 # over ssh). It only writes MiSTerPlex paths:
-#   /media/fat/misterplex/                 program, scripts, docs, fonts
+#   /media/fat/misterplex/                 program, boot scripts, fonts, conf example
 #   /media/fat/linux/misterplex.conf       settings (created only if missing)
-#   /media/fat/linux/misterplex-cacert.pem, /media/fat/linux/airplay, gcast
+#   /media/fat/linux/misterplex-cacert.pem, /media/fat/linux/airplay (an old linux/gcast copy is removed)
 #   /media/fat/_Utility/MiSTerPlex.rbf     the core, exactly one copy
 #   (a /media/fat/MiSTerPlex.rbf root copy or an old PlexOB.rbf from an
 #   earlier install is removed once the new core is in place and checked)
@@ -123,7 +123,7 @@ if [ -n "$REMOTE" ]; then
   STAGE=/tmp/misterplex-install
   SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$PROG
   set --
-  for i in bin scripts docs licenses plexui conf cores linux LICENSE NOTICE README.md SHA256SUMS; do
+  for i in bin plexui conf cores linux Scripts SHA256SUMS; do
     [ -e "$PKG/$i" ] && set -- "$@" "$i"
   done
   flags=""
@@ -190,32 +190,63 @@ fi
 run mkdir -p "$MPX" "$FAT/_Utility" "$LNX"
 LEGACY_WARM="$FAT/_Utilities/misterplex"
 if [ -d "$LEGACY_WARM" ]; then
-  for entry in "$LEGACY_WARM"/* "$LEGACY_WARM"/.[!.]* "$LEGACY_WARM"/..?*; do
+  for entry in "$LEGACY_WARM"/yt-cache "$LEGACY_WARM"/yt_warm_helper.py \
+               "$LEGACY_WARM"/yt_warm_helper.py.bak "$LEGACY_WARM"/yt_warm_helper.py.bak.* \
+               "$LEGACY_WARM"/yt-warm.sock "$LEGACY_WARM"/yt-warm.sock.lock "$LEGACY_WARM"/yt-warm.sock.log; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     dst="$MPX/${entry##*/}"
     if [ -e "$dst" ] || [ -L "$dst" ]; then
-      warn "kept $entry: $dst already exists"
+      say "removing disposable $entry: $dst already exists"
+      run rm -rf -- "$entry" || warn "could not remove $entry; left in place"
     else
       say "moving $entry -> $dst"
-      run mv "$entry" "$dst"
+      run mv "$entry" "$dst" || warn "could not move $entry -> $dst; left in place"
     fi
   done
   run rmdir "$LEGACY_WARM" "$FAT/_Utilities" 2>/dev/null || true
 fi
 backup "$MPX/bin"
-for d in bin scripts docs licenses plexui conf; do
+# The runtime package holds only bin, plexui and conf (packaging/runtime-files.txt). Licences, docs,
+# READMEs and source are not copied to the card; they are in the source tarball and the GitHub repo.
+for d in bin plexui conf; do
   if [ -d "$PKG/$d" ]; then
     say "installing $d -> $MPX/$d"
     run mkdir -p "$MPX/$d"
     run cp -RL "$PKG/$d/." "$MPX/$d/"
   fi
 done
-for f in install-misterplex.sh configure-misterplex.sh misterplex_mode.sh misterplex_restart_manual.sh misterplex_plex.sh misterplex_spelunkr.sh; do
-  for src in "$PKG/$f" "$PKG/scripts/$f"; do
-    if [ -f "$src" ]; then run cp "$src" "$MPX/bin/$f"; break; fi
-  done
-done
+# The one hand-run tool: Settings, Restart, Repair, Uninstall (Plex <-> Live TV switching is core-OSD only).
+if [ -f "$PKG/Scripts/configure-misterplex.sh" ]; then
+  say "installing the Scripts menu entry -> $FAT/Scripts/configure-misterplex.sh"
+  run mkdir -p "$FAT/Scripts"
+  run cp "$PKG/Scripts/configure-misterplex.sh" "$FAT/Scripts/configure-misterplex.sh"
+else
+  warn "no Scripts/configure-misterplex.sh in the package; the Scripts menu entry is not installed"
+fi
 run chmod +x "$MPX/bin/"*.sh 2>/dev/null || true
+
+# 2b. Clean up what older packages put on the card and the runtime package no longer ships.
+# Fixed paths only (no globs, nothing outside these lists). Never touches linux/misterplex.conf,
+# OVERSCAN or any other setting, the backup/ folder, keys, caches or logs. A path that is already
+# gone is a no-op, so re-runs are safe.
+for d in "$MPX/licenses" "$MPX/docs" "$MPX/scripts"; do
+  case "$d" in "$MPX/licenses"|"$MPX/docs"|"$MPX/scripts") ;; *) die "refusing unexpected cleanup path: $d" ;; esac
+  [ -d "$d" ] || continue
+  say "removing $d (not needed on the MiSTer)"
+  run rm -rf -- "$d" || warn "could not remove $d; left in place"
+done
+# Same list as mister-db/misterplex_setup.sh (keep the two in step).
+for f in LICENSE NOTICE README.md README.txt RELEASE-NOTES.md \
+         bin/misterplex_core_watch.sh bin/misterplex_pair_conf.sh bin/misterplex_named_rbf.sh \
+         bin/push_frame bin/set_status plexui/LICENSE-Roboto.txt run-gcast-xcode.sh \
+         bin/install-misterplex.sh bin/configure-misterplex.sh bin/uninstall-misterplex.sh \
+         bin/misterplex_plex.sh bin/misterplex_spelunkr.sh bin/misterplex_restart_manual.sh; do
+  [ -f "$MPX/$f" ] || continue
+  # A file the runtime package still ships is never removed.
+  [ -f "$PKG/$f" ] && continue
+  say "removing $MPX/$f (not needed on the MiSTer)"
+  run rm -f -- "$MPX/$f" || warn "could not remove $MPX/$f; left in place"
+done
 
 # 3. Settings: create once, never replace.
 if [ -f "$CONF" ]; then
@@ -232,13 +263,13 @@ fi
 want=$(cut -d" " -f1 "$PKG/cores/MiSTerPlex.rbf.md5" | tr 'A-F' 'a-f')
 got=$(md5sum "$PKG/cores/MiSTerPlex.rbf" | cut -d" " -f1)
 [ -n "$want" ] && [ "$want" = "$got" ] || die "cores/MiSTerPlex.rbf checksum does not match cores/MiSTerPlex.rbf.md5"
-# Pin list: the release core 76cde669 (BUILD_ID 0x0B1101C5, RTL c7e929f4, seed 10;
-# scripts/plexob_pin_identity.sh). A host test under a fake ROOT may set
+# Pin list: the release core 96eb13d2 (BUILD_ID 0x0B1101C5, RTL 5588134, seed 10) and the
+# seed-12 core 3ed684ce (BUILD_ID 0x0B111401, RTL 2b6570a8); scripts/plexob_pin_identity.sh. A host test under a fake ROOT may set
 # MPX_TEST_RBF_PIN. Honor it only when the operator sets both ROOT (a fake
 # card) and MPX_TEST_RBF_PIN, the pin is a lowercase 32-digit hex md5, and
 # the target FAT is not the live /media/fat (ROOT=/ would install there).
 # Ignored when ROOT is unset.
-RBF_PINS="76cde669ad5ab2b42091e8adfc267455"
+RBF_PINS="042f86171b562a61694da46860b89d89"
 rbf_test_pin_ok() {
   [ -n "${ROOT:-}" ] && [ -n "${MPX_TEST_RBF_PIN:-}" ] || return 1
   case "$ROOT" in /|"") return 1 ;; esac
@@ -255,7 +286,7 @@ if rbf_test_pin_ok; then
 fi
 case " $RBF_PINS " in
   *" $got "*) ;;
-  *) die "cores/MiSTerPlex.rbf md5 $got is not on the pin list (release 76cde669)" ;;
+  *) die "cores/MiSTerPlex.rbf md5 $got is not on the pin list (release 042f8617, BUILD_ID 0x0B111401 seed 10)" ;;
 esac
 # Exactly one copy, in _Utility. The menu lists a root copy as a second core,
 # so no root MiSTerPlex.rbf is written and an old one is removed below.
@@ -322,20 +353,38 @@ for old in "$FAT/PlexOB.rbf" "$FAT/_Utility/PlexOB.rbf" \
   fi
 done
 
+# The boot hook reads this md5 slot before it retires an old PlexOB.rbf (misterplexd-boot-rc3.sh:137).
+run mkdir -p "$MPX/cores"
+run cp "$PKG/cores/MiSTerPlex.rbf.md5" "$MPX/cores/MiSTerPlex.rbf.md5"
+
 # 5. Casting helpers and the CA bundle.
 if [ -f "$PKG/linux/misterplex/yt_warm_helper.py" ]; then
   # Like the core and CA bundle, uninstall removes this explicitly, not via the backup ledger.
-  run cp "$PKG/linux/misterplex/yt_warm_helper.py" "$MPX/"
+  # A pre-existing directory at the helper path makes cp fail with "cannot overwrite directory".
+  if [ -d "$MPX/yt_warm_helper.py" ]; then
+    say "removing unexpected directory $MPX/yt_warm_helper.py so the helper can be installed"
+    run rm -rf -- "$MPX/yt_warm_helper.py" || warn "could not remove $MPX/yt_warm_helper.py; left in place"
+  fi
+  if [ "$DRY" != 1 ] && [ -d "$MPX/yt_warm_helper.py" ]; then
+    warn "skipped helper install: $MPX/yt_warm_helper.py is a directory"
+  else
+    run cp "$PKG/linux/misterplex/yt_warm_helper.py" "$MPX/"
+  fi
 fi
 if [ -f "$PKG/linux/misterplex-cacert.pem" ]; then
   backup "$LNX/misterplex-cacert.pem"
+  # Also leave a copy under misterplex/linux/ so Repair can restore linux/
+  # destinations (same staging layout the update_all db uses).
+  run mkdir -p "$MPX/linux"
   run cp "$PKG/linux/misterplex-cacert.pem" "$LNX/"
+  run cp "$PKG/linux/misterplex-cacert.pem" "$MPX/linux/"
 fi
-for h in airplay gcast; do
+for h in airplay gcast; do   # the runtime package ships airplay only; gcast is the old name
   if [ -d "$PKG/linux/$h" ]; then
     say "installing the $h helper -> $LNX/$h"
-    run mkdir -p "$LNX/$h"
+    run mkdir -p "$LNX/$h" "$MPX/linux/$h"
     run cp -RL "$PKG/linux/$h/." "$LNX/$h/"
+    run cp -RL "$PKG/linux/$h/." "$MPX/linux/$h/"
     # Manifest of what this install put here, so uninstall removes only these
     # files (never the whole folder, which may hold the user's own files).
     if [ "$DRY" = 0 ]; then
@@ -349,6 +398,50 @@ for h in airplay gcast; do
     fi
   fi
 done
+# The old separate update_all Scripts entry; its setup is part of Scripts/configure-misterplex.sh now.
+# Same as mister-db/misterplex_setup.sh. Removed even when this upgrade does not run first-run setup.
+if [ -f "$FAT/Scripts/misterplex_setup.sh" ] || [ -L "$FAT/Scripts/misterplex_setup.sh" ]; then
+  say "removing the old $FAT/Scripts/misterplex_setup.sh (Scripts > configure-misterplex replaces it)"
+  run rm -f -- "$FAT/Scripts/misterplex_setup.sh" || warn "could not remove $FAT/Scripts/misterplex_setup.sh"
+fi
+# The boot hook reads linux/airplay first and linux/gcast only as a fallback. When this package has
+# no gcast copy and the airplay helper is in place, remove the old copy in linux/gcast: the files in
+# its .misterplex-files manifest, else the files its MD5SUMS lists, and always the five files every
+# older package put there (MD5SUMS, ffmpeg, ffprobe, gcast_xcode.py, run-gcast-xcode.sh), so an upgrade
+# leaves none of them behind. Other files there are the user's and are kept. Same rules as
+# mister-db/misterplex_setup.sh (keep the two in step).
+GC="$LNX/gcast"
+gc_safe() { case "$1" in ''|/*|.|..|./*|../*|*/./*|*/../*|*/.|*/..) return 1 ;; esac; }
+gc_rm() { # gc_rm REL: remove one old gcast file (unlink a link, never follow it)
+  gc_safe "$1" || return 0
+  { [ -f "$GC/$1" ] || [ -L "$GC/$1" ]; } || return 0
+  run rm -f -- "$GC/$1" || warn "could not remove $GC/$1"
+}
+if [ ! -d "$PKG/linux/gcast" ] && [ -d "$GC" ] && [ ! -L "$GC" ] && [ -f "$LNX/airplay/airplay_xcode.py" ]; then
+  gc_dirs=""
+  if [ -f "$GC/.misterplex-files" ] && [ ! -L "$GC/.misterplex-files" ]; then
+    gc_list=$(sed -n 's/^f //p' "$GC/.misterplex-files")
+    gc_dirs=$(awk '$1 == "d" { print length($0) "\t" substr($0, 3) }' "$GC/.misterplex-files" | sort -rn | cut -f2-)
+  elif [ -f "$GC/MD5SUMS" ] && [ ! -L "$GC/MD5SUMS" ]; then
+    gc_list=$(sed -n 's/^[0-9a-fA-F]\{32\}[ *][ *]*//p' "$GC/MD5SUMS")
+  else
+    gc_list=""
+  fi
+  gc_any=0
+  for f in .misterplex-files MD5SUMS ffmpeg ffprobe gcast_xcode.py run-gcast-xcode.sh; do
+    { [ -f "$GC/$f" ] || [ -L "$GC/$f" ]; } && gc_any=1
+  done
+  [ -n "$gc_list" ] && gc_any=1
+  if [ "$gc_any" = 1 ]; then
+    say "removing the old helper copy $GC (linux/airplay replaces it)"
+    printf '%s\n' "$gc_list" | while IFS= read -r rel; do gc_rm "$rel"; done
+    for f in MD5SUMS ffmpeg ffprobe gcast_xcode.py run-gcast-xcode.sh .misterplex-files; do gc_rm "$f"; done
+    if [ "$DRY" = 0 ]; then
+      printf '%s\n' "$gc_dirs" | while IFS= read -r rel; do gc_safe "$rel" && rmdir -- "$GC/$rel" 2>/dev/null || true; done
+      rmdir -- "$GC" 2>/dev/null || say "kept $GC: it still holds files this installer did not put there"
+    fi
+  fi
+fi
 
 # 6. Player name: misterplex-<last 3 octets>, only when the conf has none.
 conf_get() { # conf_get KEY FILE: last uncommented KEY= value
@@ -381,6 +474,22 @@ else
   esac
 fi
 
+# 6b. yt-dlp (YouTube): replace a missing or older card copy with the shipped zip; a
+# matching or newer copy stays (update_ytdlp.sh YTDLP_IF_OLDER). The boot script only
+# unpacks when none is there, so an old copy used to stay forever. No shipped zip: an
+# online update in the background (log /tmp/misterplex-ytdlp.log).
+YUPD="$MPX/bin/update_ytdlp.sh"; YZIP="$MPX/bin/yt-dlp_linux_armv7l.zip"; YDEST="$LNX/misterplex/yt-dlp"
+if [ -f "$YUPD" ] && [ -f "$YZIP" ]; then
+  say "checking yt-dlp against the shipped copy"
+  run env YTDLP_IF_OLDER=1 YTDLP_LOCAL_ZIP="$YZIP" YTDLP_DEST="$YDEST" MPX_YT_CACHE_DIR="$MPX/yt-cache" sh "$YUPD" \
+    || warn "yt-dlp refresh failed; YouTube may not play until the daily online update"
+elif [ -f "$YUPD" ] && [ "${MPX_YTDLP_ONLINE:-1}" = 1 ] && [ "$DRY" = 0 ]; then
+  say "no shipped yt-dlp; updating it online in the background (log: $ROOT/tmp/misterplex-ytdlp.log)"
+  mkdir -p "$ROOT/tmp" 2>/dev/null || true
+  ( env YTDLP_DEST="$YDEST" MPX_CA_BUNDLE="$LNX/misterplex-cacert.pem" MPX_YT_CACHE_DIR="$MPX/yt-cache" \
+      sh "$YUPD" >> "$ROOT/tmp/misterplex-ytdlp.log" 2>&1 < /dev/null & )
+fi
+
 # 7. Boot hook (adds one line to user-startup.sh; never twice).
 say "enabling start at boot"
 if [ "$DRY" = 0 ] && [ ! -f "$HOOK" ]; then   # run with sh: no x bit needed (exFAT)
@@ -400,7 +509,7 @@ done
 say "done. Load MiSTerPlex from _Utility after the reboot. Settings: $CONF"
 say "then link it: note the code on the Ready screen (plex.tv/link ABCD), go to https://plex.tv/link, sign in and enter it."
 say "until it is linked, Browse Plex on the TV shows FETCH FAILED."
-say "to change settings: sh $MPX/bin/configure-misterplex.sh"
+say "to change settings, repair or uninstall: Scripts > configure-misterplex (or sh $FAT/Scripts/configure-misterplex.sh)"
 if [ "$DO_REBOOT" = 1 ]; then
   say "rebooting"
   run reboot

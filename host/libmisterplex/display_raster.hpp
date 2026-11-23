@@ -98,7 +98,9 @@ inline bool plexObOverlayOwnsIdle(uint32_t loaded) {
     (void)loaded;
     return false;
 #else
-    return loaded == 0x0BFCE8C5u || loaded == 0x0B1101C5u;
+    // 0x0B110715 / 0x0B110724 / 0x0B111401: #374 analog-progressive stamps, emu.sv idle_vis = 1'b0.
+    return loaded == 0x0BFCE8C5u || loaded == 0x0B1101C5u || loaded == 0x0B110715u ||
+           loaded == 0x0B110724u || loaded == 0x0B111401u;
 #endif
 }
 

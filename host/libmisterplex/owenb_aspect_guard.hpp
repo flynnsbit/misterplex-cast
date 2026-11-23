@@ -235,7 +235,7 @@ public:
     void clearPicture() {
         std::lock_guard<std::mutex> g(mu_);
         picture_ = {};
-        // GBE N-7: keep spelunkrMode_ across PICTURE clear; newSession/endSession reset it
+        // browse-lane N-7: keep spelunkrMode_ across PICTURE clear; newSession/endSession reset it
     }
     // A menu change after the once-per-session request. No-op until that request
     // has run, and no-op when no picture override is armed.
@@ -327,7 +327,7 @@ private:
     unsigned reqArVal_ = kAspect43;
     unsigned reqVoVal_ = 0;  // GH#412: unset; never default Progressive
     PictureOverride picture_{};
-    bool spelunkrMode_ = false;  // GBE N-5: Spelunkr Interlaced letterbox
+    bool spelunkrMode_ = false;  // browse-lane N-5: Spelunkr Interlaced letterbox
     StreamAspect stream_;
     int seq_ = 0;
     AspectStats st_;
@@ -343,7 +343,7 @@ inline void AspectGuard::onStatus(IOverlayPort& p, const OvlStatus& s, const Sle
     // a stuck value of ours is not the user's: a saved value wins over the mirror
     const unsigned userAa = pend && sv.aa ? sv.aaVal : s.osdAnalogAspect;
     const unsigned userAr = pend && sv.ar ? sv.arVal : s.osdAspect;
-    // GH#412 / GBE N-5: Spelunkr-only via spelunkrMode_ (survives PICTURE arOnIdle=false).
+    // GH#412 / browse-lane N-5: Spelunkr-only via spelunkrMode_ (survives PICTURE arOnIdle=false).
     // Plex leaves spelunkrMode_ false, so behavior matches main.
     const bool wantAaAuto = allowLetterbox && s.raster.videoOut == H264RING_VOUT_PROGRESSIVE &&
                             userAa == 0 &&

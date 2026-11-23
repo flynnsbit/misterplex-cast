@@ -1,5 +1,5 @@
 #pragma once
-// Empty subtitle seam for Cursor Box's soft-sub renderer.
+// Empty subtitle seam for the soft-sub renderer.
 //
 // Production binds OsdSubtitleSink: sidecar SRT/ASS is fetched and painted on
 // the overlay band. Image and embedded tracks are never passed to

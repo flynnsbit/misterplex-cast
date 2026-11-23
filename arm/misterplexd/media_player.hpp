@@ -3,6 +3,8 @@
 // Transitional ARM decode; FPGA owns scanout (MiSTer_fb) + SPI audio (MrAudio).
 // STREAM=1: annex-B demux → host I-slice recon → F1 + F3; optional RGB skip.
 
+#include "libmisterplex/spelunkr_guide_format.hpp"
+#include "libmisterplex/ad_break_card.hpp"
 #include "libmisterplex/osd_menu.hpp"
 #include "libmisterplex/present_bank.hpp"
 #include "libmisterplex/fabric_direct.hpp"
@@ -300,6 +302,9 @@ struct ObMenuState;   // OWENB-P1B 0010 (owenb_menu.hpp)
 namespace owenb_osd {
 class UiBus;   // OWENB-P1B T6: the OB overlay's UI state (owenb_osd_renderer.hpp)
 struct LibraryPage;   // OWENB-P1B 0010 (owenb_osd_draw.hpp)
+struct FullSurface;   // ping-pong present buffers for dirty-rect copyFrame
+struct LibraryRow;
+struct FormattedGuideRow;
 }
 
 class MediaPlayer {
@@ -446,6 +451,10 @@ public:
     // MARK_WATCHED on: the playing item (separate from /:/timeline). Off: unset.
     void setMarkWatchedFn(std::function<void(MarkWatchedOp)> f) { markWatchedFn_ = std::move(f); }
     void setSpelunkrTv(bool on);
+    // GH#654 P2-1: keep SWITCHING / skip owenbOpened landing while last-channel
+    // resume waits on Back When.
+    void setSpelunkrDeferResume(bool on) { spelunkrDeferResume_.store(on, std::memory_order_release); }
+    bool spelunkrDeferResume() const { return spelunkrDeferResume_.load(std::memory_order_acquire); }
     void showSpelunkrLanding();
     void setSpelunkrGuideOpen(bool on) { spelunkrGuideOpen_.store(on); }
     void setSpelunkrCmd(std::function<void(PlaybackCommand)> f) {
@@ -461,7 +470,19 @@ public:
     void beginSpelunkrTune(uint64_t gen, const std::string &dial, const std::string &name);
     bool spelunkrUiPending();
     void showSpelunkrError(const std::string& detail, bool landing = false);
-    void setSpelunkrGuideOverlay(bool open, int cursor, std::vector<std::string> lines);
+    // N14: Pluto ad-pod stand-by card. ev: 0 = relay silent / respawning, 1 = bytes flow again, 2 = clear
+    // (the relay's LiveGap). The card also clears on the first position advance after "resumed".
+    void adBreakEvent(int ev);
+    // N15: the picture clock the relay watches for a frame stall (media position, ms). -1 while paused / not
+    // playing, so a pause is never an ad pod.
+    int64_t adFramePositionMs() const {
+        return ((playing_.load() || spelunkrHasPicture_.load()) && !paused_.load())
+                   ? adLastPosMs_.load(std::memory_order_acquire)
+                   : -1;
+    }
+    void setSpelunkrGuideOverlay(bool open, int cursor, int viewStart, std::vector<std::string> lines);
+    void setSpelunkrGuideOverlay(bool open, int cursor, int viewStart,
+                                 std::vector<owenb_osd::FormattedGuideRow> rows);
     // E9: Program menu "Safe area" writes OVERSCAN_* . Unset until this runs.
     void setOverscanPersist(std::function<bool(int left, int right, int top, int bottom)> f) {
         overscanPersist_ = std::move(f);
@@ -776,7 +797,10 @@ public:
     std::shared_ptr<owenb::PrefetchedInput> prefetchSpelunkr(
         const std::string& url, int64_t offsetMs, const std::string& headers,
         const std::function<bool()>& cancelled, std::string& err, bool& timedOut,
-        int64_t headerCacheSize = -1, const std::string& headerCacheEtag = {});
+        int64_t headerCacheSize = -1, const std::string& headerCacheEtag = {},
+        uint64_t logGen = 0, int logAttempt = 0, int64_t timeoutMs = -1,
+        std::shared_ptr<std::atomic<int64_t>> zapRestartExtraMs = {},
+        std::function<bool()> extendOnProgress = {});
     bool sourceInterlaced() const { return sourceInterlaced_; }
     uint32_t coreId480i() const { return coreId480i_; }
     uint32_t coreId240p() const { return coreId240p_; }
@@ -796,6 +820,10 @@ public:
     void teardownAfterGateRefuse();
     // When false, do not open ffmpeg pipe:3 (source has no audio stream).
     void setSourceHasAudio(bool v) { sourceHasAudio_ = v; }
+    // Live-relay ffmpeg respawn (video_stall / child-exit path): re-Begin the
+    // MrAudio session and keep fpgaAudioPump attached to the new remux. OwenbRing
+    // PCM is written by the still-running play session; leftover MACT is withdrawn.
+    void rejoinLiveRelayAudio();
     // Resolve served a transcode (ladder proxy or PMS universal), not the Part: the FPGA path then
     // sends the stream's DAR over the metadata (firstAuSourceAspect, FPGA Bug 19:24 L2).
     void setSourceTranscoded(bool v) { sourceTranscoded_.store(v); }
@@ -871,6 +899,8 @@ public:
     // SIGTERM whenever a session had ended on its own (thread finished but never
     // joined, because only stop()/play() join thr_).
     void shutdown();
+    // GH#649 P1-1: arm hold before retirePlayback/stop/stopIdle can hide().
+    void armHoldOverlayIfServicePending();
     void seekMs(int64_t ms, const StartedFn& started = {}, uint64_t generation = 0);
 
     bool playing() const { return playing_.load(); }
@@ -954,7 +984,10 @@ private:
     std::mutex obInputMu_;
     std::atomic<bool> obInputRun_{false};
     std::atomic<bool> spelunkrTv_{false};
+    std::atomic<bool> spelunkrDeferResume_{false};
     std::atomic<bool> spelunkrHasPicture_{false};
+    misterplex::AdBreakGate adGate_;           // N14
+    std::atomic<int64_t> adLastPosMs_{0};      // N14: last position seen (the "resumed" baseline)
     std::atomic<int> spelunkrOsdAspect_{-1};  // -1 off, 1=4:3, 2=16:9
     std::atomic<bool> spelunkrGuideOpen_{false};
     std::mutex spelunkrCmdMu_;
@@ -979,6 +1012,8 @@ private:
     std::mutex obPlexUiMu_;
     bool obPlexUiShown_ = false;              // under obPlexUiMu_
     uint64_t obPlexUiGen_ = 0;                // under obPlexUiMu_
+    std::shared_ptr<owenb_osd::FullSurface> obPlexUiSurf_[2];  // under obPlexUiMu_
+    int obPlexUiSurfIdx_ = 0;                 // under obPlexUiMu_: last published slot
     unsigned obPlexUiCanvasW_ = 0, obPlexUiCanvasH_ = 0;   // under obPlexUiMu_: the canvas last targeted
     std::atomic<uint64_t> obPlexUiSubmitGen_{0};
     std::atomic<int64_t> obPlexUiSubmitMs_{0};
@@ -1189,17 +1224,24 @@ private:
     // reads word 87 through it; it is not opened and closed on every tick.
     OwenbCtrlPageMap ycMap_;
     service::Selection serviceSelection_;
+    service::SyncDeferLog serviceSyncLog_; // 683H N1: rate-limited "sync deferred" log
     OwenbCtrlPageMap serviceMap_;
     service::PlexCfg serviceCfg_;
     service::FailureRecovery serviceFailureRecovery_;
     bool serviceCfgFailed_ = false;
     bool serviceUiReady() const;
+    bool beginServiceSwitch(bool targetSpelunkr, bool fromExternalRequest, bool launchOsdSwitch);
+    void publishExternalReadyIfSameTick();
     std::function<bool(bool)> serviceSwitch_;
     std::string servicePhase_;
     std::string serviceLocalError_;
     bool serviceLaunching_ = false;
     std::optional<bool> serviceRequested_;
+    std::optional<std::string> serviceExternalReadyMode_;
+    int64_t serviceExternalReadyUs_ = 0;
+    bool serviceExternalSnapshotOnly_ = false; // 683G N2: gate-closed cross-mode Begin (ready says snapshot-only)
     int64_t serviceNoticeDeadline_ = 0;
+    int64_t serviceNoticeReadyUs_ = 0;
     // ANALOG_RASTER (conf). Unset/auto: no action. Guarded by ycMu_.
     plexob::RasterWant rasterWant_ = plexob::RasterWant::Unset;
     plexob::RasterState rasterState_;

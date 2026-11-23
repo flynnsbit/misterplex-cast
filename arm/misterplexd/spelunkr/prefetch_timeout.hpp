@@ -1,17 +1,55 @@
 #pragma once
-// P3: prefetchSpelunkr's result -> the play loop's skip-before-fail decision, pulled out as a
-// pure function so the ordering (a dead-air timeout tries the next item first; any other
-// prefetch failure does not) is unit-testable without the play loop's threads/locks/player.
+// PrefetchSpelunkr's result -> the play loop's skip-before-fail decision, pulled out as
+// pure functions so the ordering is unit-testable without the play loop's threads/locks/player.
+// A dead-air timeout or a non-H.264 input tries the next item first; other prefetch
+// failures (network, format) still fail the channel.
+
+#include <algorithm>
+#include <string>
 
 namespace misterplex {
 namespace spelunkr {
 
+enum class AdvanceTimeoutAction {
+    CompleteCutover,
+    SkipItem,
+    LandCachedHeader,
+    Fail,
+};
+
+struct AdvanceTimeoutInput {
+    int tryingItem = -1;
+    int currentItem = -1;
+    bool prefetchReady = false;
+    bool headerCached = false;
+    bool canSkip = false;
+};
+
+inline int bindTryingItem(int tryingItem, int currentItem) {
+    return tryingItem >= 0 ? tryingItem : currentItem;
+}
+
+inline AdvanceTimeoutAction decideAdvanceTimeout(const AdvanceTimeoutInput& in) {
+    if (in.prefetchReady)
+        return AdvanceTimeoutAction::CompleteCutover;
+    if (in.canSkip && bindTryingItem(in.tryingItem, in.currentItem) >= 0)
+        return AdvanceTimeoutAction::SkipItem;
+    if (in.headerCached)
+        return AdvanceTimeoutAction::LandCachedHeader;
+    return AdvanceTimeoutAction::Fail;
+}
+
 // True: attempt takeSkip(skipDead(np), "prefetch timeout") before any fail(), mirroring the
 // existing "unsupported resolution" skip path. A dead-air prefetch timeout (the 15 s cap) must
-// not hard-fail the channel when a next item exists; any other prefetch failure (format,
-// network, caps) is not a "dead item" and fails today's way, unchanged.
+// not hard-fail the channel when a next item exists.
 inline bool shouldSkipOnPrefetchTimeout(bool prefetchTimedOut) {
     return prefetchTimedOut;
+}
+
+// True when prefetch failed because the core only plays H.264. Skip to the next item
+// instead of ending the channel on PREFETCH FAILED.
+inline bool shouldSkipOnNonH264(const std::string& prefetchFail) {
+    return prefetchFail.find("H.264 only") != std::string::npos;
 }
 
 // The skip-attempt cap: a channel whose items are all dead/timing out must terminate instead
@@ -22,6 +60,121 @@ inline bool shouldSkipOnPrefetchTimeout(bool prefetchTimedOut) {
 inline bool skipBudgetExhausted(int skipsAfterIncrement, int itemCount) {
     const int cap = itemCount > 1 ? itemCount : 1;
     return skipsAfterIncrement >= cap;
+}
+
+// browse-lane #647 P2-7 / P3-5: overall zap budget so a 31.6 MB moov cannot sit in
+// PREFETCH TIMEOUT for 15 s. Prefetch is slightly shorter than the job deadline
+// so a timeout can hit storeTuneTimeout before the job cancel path fires.
+inline constexpr int64_t kSpelunkrZapBudgetMs = 8000;
+inline constexpr int64_t kSpelunkrPrefetchTimeoutMs = 7000;
+// Glass pr685-13eca668 / reviewer ADDENDUM 7: Pluto gets split metadata + remux-open caps (~15 s
+// total). Metadata (resolve/probe) and prefetch open are not one shared 7 s pool.
+inline constexpr int64_t kSpelunkrPlutoMetadataBudgetMs = 7000;
+inline constexpr int64_t kSpelunkrPlutoRemuxOpenBudgetMs = 8000;
+inline constexpr int64_t kSpelunkrPlutoZapBudgetMs =
+    kSpelunkrPlutoMetadataBudgetMs + kSpelunkrPlutoRemuxOpenBudgetMs;
+inline constexpr int64_t kSpelunkrPlutoPrefetchTimeoutMs = kSpelunkrPlutoZapBudgetMs;
+
+inline int64_t spelunkrPrefetchTimeoutMsForPlay(bool plutoLiveHlsItem) {
+#ifdef MUT_PLUTO_SHARED_BUDGET
+    (void)plutoLiveHlsItem;
+    return kSpelunkrPrefetchTimeoutMs;
+#else
+    return plutoLiveHlsItem ? kSpelunkrPlutoPrefetchTimeoutMs : kSpelunkrPrefetchTimeoutMs;
+#endif
+}
+
+inline int64_t spelunkrZapBudgetMsForPlay(bool plutoLiveHlsItem) {
+#ifdef MUT_PLUTO_SHARED_BUDGET
+    (void)plutoLiveHlsItem;
+    return kSpelunkrZapBudgetMs;
+#else
+    return plutoLiveHlsItem ? kSpelunkrPlutoZapBudgetMs : kSpelunkrZapBudgetMs;
+#endif
+}
+
+inline int64_t remainingZapBudgetMs(int64_t elapsedMs, int64_t budgetMs = kSpelunkrZapBudgetMs) {
+    if (elapsedMs >= budgetMs)
+        return 0;
+    return budgetMs - elapsedMs;
+}
+
+// Remaining prefetch slice for this zap window. Pluto live HLS uses a dedicated remux-open cap
+// (not the leftover of a single shared prefetch slice).
+inline int64_t spelunkrPrefetchBudgetMs(bool plutoLiveHlsItem, int64_t zapWindowElapsedMs) {
+    if (!plutoLiveHlsItem)
+        return remainingZapBudgetMs(zapWindowElapsedMs, kSpelunkrPrefetchTimeoutMs);
+#ifdef MUT_PLUTO_SHARED_BUDGET
+    return remainingZapBudgetMs(zapWindowElapsedMs, kSpelunkrPrefetchTimeoutMs);
+#else
+    if (zapWindowElapsedMs >= kSpelunkrPlutoZapBudgetMs)
+        return 0;
+    return kSpelunkrPlutoRemuxOpenBudgetMs;
+#endif
+}
+
+// Chan-change regression (lab 1df5f4ae, 19:15-19:19 CT): the 8 s budget was one deadline for the
+// whole job. A first item whose header outran the 7 s prefetch slice (11-22 MB moov at ~3.7 MB/s)
+// left ~1 s for the next item, whose metadata/prefetch was then cancelled by the same job
+// deadline ("advance timeout ... terminal=1"), so every such zap burned two or more 8 s windows
+// (channel 53: gens 10-13, ~34 s) before a picture. An item skipped after a prefetch timeout now
+// gets its own 8 s window (bounded), so a zap needs ~7 s + one normal item, not 8 s + 8 s + ...
+// The per-attempt constants above are unchanged.
+inline constexpr int kSpelunkrMaxZapWindowRestarts = 2;
+
+inline bool mayRestartZapWindow(int restartsSoFar) {
+    return restartsSoFar >= 0 && restartsSoFar < kSpelunkrMaxZapWindowRestarts;
+}
+
+inline int64_t zapWindowElapsedMs(int64_t nowMs, int64_t windowStartMs) {
+    return nowMs > windowStartMs ? nowMs - windowStartMs : 0;
+}
+
+inline bool zapWindowExpired(int64_t nowMs, int64_t windowStartMs, int64_t budgetMs = kSpelunkrZapBudgetMs) {
+    return zapWindowElapsedMs(nowMs, windowStartMs) >= budgetMs;
+}
+
+// Glass 1c230276 Z2: UP onto pluto-vevo-90s right after the previous live relay
+// was SIGKILL'd (ffmpeg rc=-9). playjob/manifest/schedule returned immediately,
+// then metadata resolve (boot/master/probe) was still in flight at 8079 ms and
+// 8187 ms with no prefetch stage. plutoLiveHlsBudget used to flip true only
+// after liveRelay().start(), so cancelled() was still on the generic 8 s budget,
+// decideAdvanceTimeout saw item 0 / no skip / no cached header / prefetch not
+// started, and the first window terminal-failed PREFETCH TIMEOUT. The same dial
+// later landed inside the 15 s Pluto budget (zap05: prefetch 3750 ms,
+// first_picture 8906 ms). Neighbor-header prefetch cannot land this dial
+// (NeighborSkipReason::PlutoLiveHls). MEMSTAT probe_q=64 is the open demuxer's
+// max_probe_packets cap, not a saturated queue — it was 64 on the failures and
+// on that later success. Arm the split budget from the schedule identity, before
+// resolve, so that first window is the 15 s budget. "pluto" matches
+// pluto_live::kPlutoItemId.
+inline bool scheduleItemUsesPlutoZapBudget(bool plutoLiveOn, const std::string& archiveId,
+                                           const std::string& file) {
+#ifdef MUT_Z2_PLUTO_BUDGET_LATE
+    (void)plutoLiveOn;
+    (void)archiveId;
+    (void)file;
+    return false;
+#else
+    return plutoLiveOn && archiveId == "pluto" && !file.empty();
+#endif
+}
+
+// True when a zap-window poll before prefetch has started would OSD
+// PREFETCH TIMEOUT for this schedule item. A Pluto live item is not terminal
+// at the glass 8079/8187 ms marks. It is terminal once the 15 s split budget
+// is exhausted. A non-Pluto item is still terminal at 8 s. canSkip / a warm
+// header take the existing skip or land path instead of this terminal.
+inline bool prefetchNotStartedTerminal(bool plutoLiveOn, const std::string& archiveId, const std::string& file,
+                                       int64_t elapsedMs, bool canSkip, bool headerCached) {
+    const int64_t budget = spelunkrZapBudgetMsForPlay(
+        scheduleItemUsesPlutoZapBudget(plutoLiveOn, archiveId, file));
+    if (!zapWindowExpired(elapsedMs, 0, budget))
+        return false;
+    if (canSkip || headerCached)
+        return false;
+    const AdvanceTimeoutInput in{0, 0, /*prefetchReady=*/false, /*headerCached=*/false, /*canSkip=*/false};
+    return decideAdvanceTimeout(in) == AdvanceTimeoutAction::Fail;
 }
 
 }  // namespace spelunkr

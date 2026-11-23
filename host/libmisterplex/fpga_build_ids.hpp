@@ -388,6 +388,18 @@ inline constexpr PlexObBuildRow kPlexObBuildRows[] = {
      "MiSTerPlex 240p+ss1c",
      "BUILD_ID 0x0B1101C5; installed as MiSTerPlex.rbf; source 5588134126b965c8095eb2fa7cf3655f958579da; "
      "RBF md5 96eb13d2; seed 10; 0x0B2403A7 stays accepted"},
+    {0x0B110715u,
+     "MiSTerPlex analog 15 kHz dest",
+     "BUILD_ID 0x0B110715; PR #374 analog Progressive 15 kHz dest; RBF md5 <pending gated fit>; "
+     "seed 10; rollback/shipped pin is 0x0B1101C5 / 96eb13d2"},
+    {0x0B110724u,
+     "MiSTerPlex analog Progressive 240p",
+     "BUILD_ID 0x0B110724; PR #374 reviewer N1 analog Progressive is true 240p; RBF md5 <pending gated fit>; "
+     "seed 10; 0x0B110715 and shipped 0x0B1101C5 / 96eb13d2 stay accepted"},
+    {0x0B111401u,
+     "MiSTerPlex analog Progressive 240p fleet",
+     "BUILD_ID 0x0B111401; PR #374 combined fit (Progressive 240p + overlay idle); RBF md5 <pending gated fit>; "
+     "seed 10; 0x0B110724 and shipped 0x0B1101C5 / 96eb13d2 stay accepted"},
 };
 
 inline const PlexObBuildRow* recognisedPlexObBuildRow(uint32_t id) {
@@ -467,6 +479,14 @@ inline const char* fpgaStatusLayoutName(const FpgaBuildInfo& b) {
     if (!b.byte15Echoed && !b.byte12Echoed && b.confVersion == 9)
         return "v2";
     return "mixed";
+}
+
+// PlexOB_v1.CFG and other PlexOB builds use CONF_STR v,1 legacy O[] nibbles, not Plex.sv v3.
+inline bool fpgaCfgStatusUsesV3Layout(uint32_t buildId) {
+    if (buildId == 0 || recognisedPlexObBuildRow(buildId))
+        return false;
+    const FpgaBuildInfo* b = recognisedFpgaBuild(buildId);
+    return b && b->byte15Echoed && b->byte12Echoed && b->confVersion == 10;
 }
 
 // True when the build's status_in byte (0-15, byte n = bits [8n+7:8n]) is an

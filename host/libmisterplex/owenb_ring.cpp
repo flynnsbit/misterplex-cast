@@ -325,6 +325,25 @@ int OwenbRing::overlayHide() {
     return h264ring_overlay_hide(ring_);
 }
 
+bool OwenbRing::liveOsdMenuOptions(unsigned out[H264RING_OPT_COUNT]) const {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!ring_)
+        return false;
+    struct ::h264ring_status st;
+    if (h264ring_status(ring_, &st) != 0)
+        return false;
+    if (!h264ring_session_ok(ring_))
+        return false;
+    out[H264RING_OPT_ASPECT] = static_cast<unsigned>(H264RING_ST(&st, OSD_ASPECT));
+    out[H264RING_OPT_DEINTERLACE] = static_cast<unsigned>(H264RING_ST(&st, OSD_DEINT));
+    out[H264RING_OPT_VIDEO_OUTPUT] = static_cast<unsigned>(H264RING_ST(&st, OSD_VIDEO_OUT));
+    out[H264RING_OPT_HDMI_DEINTERLACE] = static_cast<unsigned>(H264RING_ST(&st, OSD_HDMI_DEINT));
+    out[H264RING_OPT_ANALOG_ASPECT] = static_cast<unsigned>(H264RING_ST(&st, OSD_ANALOG_ASPECT));
+    out[H264RING_OPT_REFRESH_RATE] = static_cast<unsigned>(H264RING_ST(&st, OSD_REFRESH));
+    out[H264RING_OPT_ANTI_TWITTER] = static_cast<unsigned>(H264RING_ST(&st, OSD_ANTI_TWITTER));
+    return true;
+}
+
 OverlayCoreStatus OwenbRing::overlayStatus() const {
     std::lock_guard<std::mutex> g(mu_);
     OverlayCoreStatus os;

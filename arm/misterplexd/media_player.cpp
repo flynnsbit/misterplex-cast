@@ -5,10 +5,14 @@
 #include "plex_resolve.hpp"
 #include "spelunkr/aspect.hpp"
 #include "spelunkr/video.hpp"
-#include "spelunkr/fe.hpp"   // midPlayEndSkipsItem (GBE #620 second review P3)
+#include "spelunkr/prefetch_timeout.hpp"
+#include "spelunkr/pluto_live.hpp"
+#include "spelunkr/input_route.hpp"  // spelunkrTvForwardsToFrontend (#655 guide L/R)
+#include "spelunkr/fe.hpp"   // midPlayEndSkipsItem (browse-lane #620 second review P3)
 #include <pthread.h>
 #include <sstream>
 
+#include "libmisterplex/spelunkr_guide_format.hpp"
 #include "libmisterplex/embedded_srt_fallback.hpp"
 #include "libmisterplex/embedded_text_part.hpp"
 #include "libmisterplex/gcast_osd.hpp"
@@ -70,6 +74,7 @@
 #include "libmisterplex/setstreams.hpp"    // SETSTREAMS: Program-menu subtitle / audio picks
 #include "libmisterplex/remember_tracks.hpp"
 #include "libmisterplex/remember_picture.hpp"
+#include "libmisterplex/picture_any_source.hpp"
 #include "libmisterplex/owenb_library.hpp" // OWENB-P1B 0010: the library page
 #if defined(MPX_HAVE_LIBAV)
 #include "owenb_av_source.hpp"
@@ -1948,6 +1953,12 @@ void maybeStartPlexUiNavSelftest(misterplex::plexui::PlexUiController* ui) {
 
 } // namespace
 
+static bool browseShellInterlacedTarget() {
+    const std::string raster = CoreGate::process().pairedRaster();
+    const char* mode = raster.empty() ? std::getenv("MPX_FPGA_MODE") : raster.c_str();
+    return mode && (std::strcmp(mode, "480i") == 0 || std::strcmp(mode, "576i") == 0);
+}
+
 void MediaPlayer::enablePlexUi(plexui::PlexUiController::Config cfg,
                                std::function<uint64_t(const BrowsePlayTicket&)> play) {
     if (plexUi_ || browse_)
@@ -1960,7 +1971,15 @@ void MediaPlayer::enablePlexUi(plexui::PlexUiController::Config cfg,
         (void)stop();
     };
     h.play = std::move(play);
-    h.log = [this](const std::string& line) { log(redactSensitive(line)); };
+    h.log = [this](const std::string& line) {
+        if (line.compare(0, 16, "BROWSE_MS action=") == 0) {
+            if (log_)
+                log_(line);
+            else
+                std::fprintf(stderr, "%s\n", line.c_str());
+        } else
+            log(redactSensitive(line));
+    };
     h.onThemeBytes = [this](std::vector<std::uint8_t> bytes) {
         auto pcm = themeDecodePcm(bytes.data(), bytes.size());
         if (!pcm.empty())
@@ -2052,15 +2071,13 @@ bool MediaPlayer::libraryHandleInputV2(PlaybackCommand command) {
             if (playing_.load())
                 return false;
             if (plexUi_->visible()) {
-                plexUi_->postMark(mark);
-                return true;
+                return plexUi_->postMark(mark);
             }
             return false;
         }
         const int64_t recvMs = misterplex::plexui::perfSteadyMs();
         if (command == PlaybackCommand::QueuePlayNext) {
-            plexUi_->postQueueMark(misterplex::plexui::QueueMark::PlayNext);
-            return true;
+            return plexUi_->postQueueMark(misterplex::plexui::QueueMark::PlayNext);
         }
         if (command == PlaybackCommand::Browse) {
             plexUi_->postIngress(BrowseOp::Open, "plxi", recvMs);
@@ -2099,12 +2116,10 @@ bool MediaPlayer::libraryHandleInputV2(PlaybackCommand command) {
                 return true;
             }
             if (command == PlaybackCommand::PageDown) {
-                plexUi_->postQueueStep(+1);
-                return true;
+                return plexUi_->postQueueStep(+1);
             }
             if (command == PlaybackCommand::PageUp) {
-                plexUi_->postQueueStep(-1);
-                return true;
+                return plexUi_->postQueueStep(-1);
             }
         }
         return false;
@@ -2136,11 +2151,7 @@ bool MediaPlayer::libraryHandleInputV2(PlaybackCommand command) {
 void MediaPlayer::dispatchPlaybackInput(PlaybackCommand command) {
     log(std::string("media: input cmd=") + std::to_string(static_cast<int>(command)));
     if (spelunkrTv_.load() &&
-        (command == PlaybackCommand::ChannelUp || command == PlaybackCommand::ChannelDown ||
-         command == PlaybackCommand::GuideToggle || command == PlaybackCommand::GuideTune ||
-         command == PlaybackCommand::Stop || command == PlaybackCommand::Browse ||
-         command == PlaybackCommand::PlayPause ||
-         command == PlaybackCommand::SkipForward || command == PlaybackCommand::SkipBack)) {
+        misterplex::spelunkr::spelunkrTvForwardsToFrontend(command, spelunkrGuideOpen_.load())) {
       // Swallow even before setSpelunkrCmd (lineup GET). Idle Down/Browse must
       // not open Plex. The overlay's deliberate Stop exits TV through its
       // frontend. SkipBack to 0 looks like CH 8 stuck (GH#411).
@@ -2604,7 +2615,7 @@ void MediaPlayer::onMarkerMedia(int64_t mediaMs, uint32_t stamp, bool paused) {
 }
 
 void MediaPlayer::ycOwenbTick() {
-    // SPELUNKR: still poll Y/C + analog raster follow so user OSD settings stick (GBE P2-3).
+    // SPELUNKR: still poll Y/C + analog raster follow so user OSD settings stick (browse-lane P2-3).
     // Progressive poke remains blocked in applyDisplayRaster (no video_mode under SPELUNKR).
     CoreGate& gate = CoreGate::process();
     OwenbCtrlReader reader;
@@ -2634,7 +2645,80 @@ void MediaPlayer::ycOwenbTick() {
     analogRasterTick(gate, reader);
 }
 
+bool MediaPlayer::beginServiceSwitch(bool targetSpelunkr, bool fromExternalRequest,
+                                     bool launchOsdSwitch) {
+    serviceLocalError_.clear();
+    const unsigned* ringMenu = nullptr;
+    unsigned ringVals[H264RING_OPT_COUNT]{};
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    // External /Scripts --request-* may run with core gate closed (CORENAME=MENU, manual-only).
+    // Snapshot from live CFG on disk; ring menu is optional.
+    const bool ringWanted =
+        targetSpelunkr ||
+        (!fromExternalRequest || CoreGate::process().owenbOpen());
+    const bool needRing = ringWanted && !targetSpelunkr;
+    if (needRing) {
+        std::lock_guard<std::mutex> lock(obMu_);
+        if (ob_ && ob_->overlayMenuOptions(ringVals))
+            ringMenu = ringVals;
+        else if (!targetSpelunkr) {
+            if (fromExternalRequest)
+                log("media: Service Plex ring snapshot unavailable; using live CFG for request");
+            else {
+                log("media: Service Plex OSD snapshot unavailable (live ring status)");
+                serviceLocalError_ = "PLEX CFG SNAPSHOT FAILED";
+                withObUi([&](owenb_osd::UiBus& ui) {
+                    ui.setServiceNotice(serviceLocalError_, true);
+                });
+                serviceSelection_.resync();
+                return false;
+            }
+        }
+    }
+#endif
+    if (!serviceCfg_.save(plexob::plexObCfgPath(), ringMenu) ||
+        !service::writeState({"pending", service::name(targetSpelunkr)})) {
+        log("media: Service switch state write failed");
+        serviceLocalError_ = "SERVICE SWITCH STATE FAILED";
+        withObUi([&](owenb_osd::UiBus& ui) {
+            ui.setServiceNotice(serviceLocalError_, true);
+        });
+        serviceSelection_.resync();
+        return false;
+    }
+    if (launchOsdSwitch) {
+        // OSD Service switch, and (683F B1) an external --request-* while the core gate is open:
+        // show the notice, then serviceTick launches serviceSwitch_ (--osd-*). A snapshot-only
+        // external request (gate closed) must not set this: there is no OSD to launch from.
+        withObUi([&](owenb_osd::UiBus& ui) { ui.setServiceNotice(service::notice(targetSpelunkr)); });
+        serviceRequested_ = targetSpelunkr;
+        const int64_t now = coreGateNowUs();
+        serviceNoticeReadyUs_ = now + service::kServiceNoticeMinHoldUs;
+        serviceNoticeDeadline_ = now + service::kServiceNoticeDeadlineUs;
+    }
+    return true;
+}
+
+void MediaPlayer::publishExternalReadyIfSameTick() {
+    if (!service::kExternalReadySameTick || !serviceExternalReadyMode_)
+        return;
+    const auto mode = *serviceExternalReadyMode_;
+    serviceExternalReadyMode_.reset();
+    if (!service::writeState({"ready", mode, serviceExternalSnapshotOnly_ ? service::kSnapshotOnlyDetail : ""}))
+        log("media: Service switch request ready state write failed");
+}
+
 void MediaPlayer::serviceTick() {
+    if (serviceExternalReadyMode_ &&
+        service::externalReadyDue(coreGateNowUs(), serviceExternalReadyUs_)) {
+        const auto mode = *serviceExternalReadyMode_;
+        serviceExternalReadyMode_.reset();
+        if (service::writeState({"ready", mode, serviceExternalSnapshotOnly_ ? service::kSnapshotOnlyDetail : ""}))
+            log("media: Service switch request accepted (CFG snapshot)");
+        else
+            log("media: Service switch request ready state write failed");
+        serviceSelection_.resync();
+    }
     CoreGate& gate = CoreGate::process();
     OwenbCtrlReader reader;
     if (!gate.owenbOpen()) {
@@ -2662,6 +2746,54 @@ void MediaPlayer::serviceTick() {
             log("media: Service switch recovery state write failed");
         }
     }
+    const bool serviceBusy =
+        state.pending() || serviceLaunching_ || serviceRequested_.has_value();
+    if (const auto request = service::consumeRequest()) {
+        switch (service::ServiceRequestPolicy::classify(request, spelunkrTv_.load(), serviceBusy)) {
+        case service::ServiceRequestPolicy::Action::Noop:
+            // F3/N1 (mode.sh): publish pending now and ready only after kExternalReadyMinHoldUs
+            // (serviceExternalReadyMode_), so the 250 ms poller always observes pending.
+            if (service::writeState({"pending", *request})) {
+                serviceExternalReadyMode_ = *request;
+                serviceExternalReadyUs_ = coreGateNowUs();
+                serviceExternalSnapshotOnly_ = false;
+                publishExternalReadyIfSameTick();
+                log("media: Service switch request no-op (already active)");
+            } else {
+                log("media: Service switch request no-op state write failed");
+            }
+            serviceSelection_.resync();
+            break;
+        case service::ServiceRequestPolicy::Action::RejectBusy:
+            log("media: Service switch request rejected (busy)");
+            if (!service::writeState({"error", *request}))
+                log("media: Service switch request reject state write failed");
+            serviceSelection_.resync();
+            break;
+        case service::ServiceRequestPolicy::Action::Begin: {
+            const auto plan = service::planExternalRequest(
+                service::ServiceRequestPolicy::Action::Begin, gate.owenbOpen());
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+            if (ob_) {
+                std::lock_guard<std::mutex> lock(obMu_);
+                ob_->syncService(*request == "Spelunkr");
+            }
+#endif
+            serviceSelection_.resync();
+            if (beginServiceSwitch(*request == "Spelunkr", true, plan.launchOsdSwitch) &&
+                plan.deferredReady) {
+                serviceExternalReadyMode_ = *request;
+                serviceExternalReadyUs_ = coreGateNowUs();
+                serviceExternalSnapshotOnly_ = true; // deferredReady == gate closed: nothing switches
+                publishExternalReadyIfSameTick();
+            }
+            break;
+        }
+        case service::ServiceRequestPolicy::Action::Ignore:
+            break;
+        }
+        state = service::readState();
+    }
     withObUi([&](owenb_osd::UiBus& ui) {
         const auto current = ui.snapshot();
         const std::string text = serviceLocalError_.empty() ? state.overlay() : serviceLocalError_;
@@ -2676,7 +2808,8 @@ void MediaPlayer::serviceTick() {
         withObUi([&](owenb_osd::UiBus& ui) {
             shown = ui.serviceNoticeShown(service::notice(target));
         });
-        if (shown || coreGateNowUs() >= serviceNoticeDeadline_) {
+        if (service::serviceNoticeLaunchReady(shown, coreGateNowUs(),
+                                             serviceNoticeReadyUs_, serviceNoticeDeadline_)) {
             serviceLaunching_ = shown && gate.owenbOpen() && serviceSwitch_ && serviceSwitch_(target);
             serviceRequested_.reset();
             if (!serviceLaunching_) {
@@ -2684,7 +2817,7 @@ void MediaPlayer::serviceTick() {
                 if (!service::writeState({"error", service::name(target)}))
                     log("media: Service switch failure state write failed");
                 serviceSelection_.resync();
-                serviceLocalError_ = service::name(target) + " SWITCH FAILED";
+                serviceLocalError_ = service::switchFailed(target);
                 withObUi([&](owenb_osd::UiBus& ui) { ui.setServiceNotice(serviceLocalError_, true); });
             }
         }
@@ -2704,32 +2837,20 @@ void MediaPlayer::serviceTick() {
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
             unsigned values[7]{};
             const bool restore = state.pending() && state.target == "Plex" && !spelunkrTv_.load();
-            if (restore && !service::PlexCfg::settings(plexob::plexObCfgPath(), values)) {
+            const uint32_t buildId = CoreGate::process().buildId();
+            if (restore &&
+                !service::PlexCfg::settings(plexob::plexObCfgPath(), values, buildId)) {
                 log("media: Service Plex live-settings recovery failed");
                 return;
             }
             std::lock_guard<std::mutex> lock(obMu_);
             const int rc = ob_ ? ob_->syncService(spelunkrTv_.load(), restore ? values : nullptr) : -ENODEV;
             serviceSelection_.syncSent(rc == 0);
-            if (rc != 0)
-                log("media: Service menu sync deferred rc=" + std::to_string(rc));
+            if (const auto line = serviceSyncLog_.onResult(rc); !line.empty())
+                log(line);
 #endif
         } else if (action == service::Selection::Action::Switch) {
-            const bool target = !spelunkrTv_.load();
-            serviceLocalError_.clear();
-            if ((!spelunkrTv_.load() && !serviceCfg_.save(plexob::plexObCfgPath())) ||
-                !service::writeState({"pending", service::name(target)})) {
-                log("media: Service switch state write failed");
-                serviceLocalError_ = "SERVICE SWITCH STATE FAILED";
-                withObUi([&](owenb_osd::UiBus& ui) {
-                    ui.setServiceNotice(serviceLocalError_, true);
-                });
-                serviceSelection_.resync();
-            } else {
-                withObUi([&](owenb_osd::UiBus& ui) { ui.setServiceNotice(service::notice(target)); });
-                serviceRequested_ = target;
-                serviceNoticeDeadline_ = coreGateNowUs() + 5000000;
-            }
+            beginServiceSwitch(!spelunkrTv_.load(), false, true);
         }
     }
 }
@@ -2864,9 +2985,27 @@ bool MediaPlayer::recoverStrandedMenuCore(bool atStart) {
     return false;
   }
   if (envFlagWanted("MPX_CORE_MANUAL_ONLY")) {
-    if (atStart)
-      log("media: PlexOB recovery skipped: manual core selection only");
-    return false;
+    // Hook defaults MANUAL_ONLY=1 and exports MPX_CORE_MANUAL_DEFAULTED=1 for a
+    // Plex cold boot (BOOTFIX-1023). MENU/empty is the FPGA fallback, not a
+    // user-selected core — recover at process start. Explicit MANUAL_ONLY=1
+    // (mode.sh / configure-misterplex) and SPELUNKR keep the skip.
+    if (atStart && envFlagWanted("MPX_CORE_MANUAL_DEFAULTED") && !spelunkrTv_.load() &&
+        !envFlagWanted("SPELUNKR")) {
+      const std::string early = readCoreNameFile();
+      const bool menuOrEmpty =
+          early.empty() || early == "MENU" || early == "Menu" || early == "menu";
+      if (menuOrEmpty) {
+        log("media: PlexOB recovery: MANUAL_ONLY was defaulted and core is MENU; loading");
+        // fall through — do not return
+      } else {
+        log("media: PlexOB recovery skipped: manual core selection only");
+        return false;
+      }
+    } else {
+      if (atStart)
+        log("media: PlexOB recovery skipped: manual core selection only");
+      return false;
+    }
   }
   const std::string name = readCoreNameFile();
   const bool marker = menuBounceMarkerPresent(kMenuBounceMarkerPath);
@@ -2902,7 +3041,7 @@ bool MediaPlayer::recoverStrandedMenuCore(bool atStart) {
 }
 
 bool MediaPlayer::reloadCoreForYcMode(const char* vgaMode, const char* ntscMode) {
-    // SPELUNKR: allow Y/C / analog-raster core reload so user OSD sticks (GBE P2-3).
+    // SPELUNKR: allow Y/C / analog-raster core reload so user OSD sticks (browse-lane P2-3).
     const bool manualOnly = envFlagWanted("MPX_CORE_MANUAL_ONLY");
     uint64_t expectedStamp = 0;
     if (manualOnly) {
@@ -3005,7 +3144,7 @@ bool MediaPlayer::reloadCoreForYcMode(const char* vgaMode, const char* ntscMode)
         return false;
     }
     clearMenuBounceMarker(kMenuBounceMarkerPath);
-    // Word 88 must come back as MPXB / a Y/C id (0x0B59C11A, 0x0BFCE8C5, 0x0B2403A7, or 0x0B1101C5). A prod RBF with a different
+    // Word 88 must come back as MPXB / a Y/C id (0x0B59C11A, 0x0BFCE8C5, 0x0B2403A7, 0x0B1101C5, 0x0B110715, 0x0B110724, or 0x0B111401). A prod RBF with a different
     // stamp is refused: the marker stays unwritten so the next idle tick can retry.
     uint64_t word88 = 0;
     std::string stampWhy = "word 88 unreadable";
@@ -3025,7 +3164,7 @@ bool MediaPlayer::reloadCoreForYcMode(const char* vgaMode, const char* ntscMode)
                     const uint32_t tag = static_cast<uint32_t>(word88 >> 32);
                     const uint32_t id = static_cast<uint32_t>(word88);
                     if (tag == owenb_id::kMpxBuildIdTag && id != 0) {
-                        stampWhy = "word 88 BUILD_ID is not 0x0B59C11A, 0x0BFCE8C5, 0x0B2403A7, or 0x0B1101C5";
+                        stampWhy = "word 88 BUILD_ID is not 0x0B59C11A, 0x0BFCE8C5, 0x0B2403A7, 0x0B1101C5, 0x0B110715, 0x0B110724, or 0x0B111401";
                         break;
                     }
                 }
@@ -3257,6 +3396,10 @@ void MediaPlayer::coreGateTick() {
         }
         // MAST-WEDGE (FPGA Bug 21:14): once per open, before anything can play.
         probeMastAtGateOpen();
+        // Gate B HDMI audio-floor: FPGA vol_att resets mute until UIO_AUDVOL.
+        // Once per CAPS open (boot/mode), never mid-play.
+        assertMisterFullVolume();
+        log("media: core gate: MiSTer volume unmuted/full (once at gate open)");
     };
     h.repaint = [this] { paintIdle(); };
     h.log = [this](const std::string& line) { log(line); };
@@ -3271,14 +3414,23 @@ void MediaPlayer::coreGateTick() {
             bool keepChrome = false;
             withObUi([&](owenb_osd::UiBus& ui) {
                 const auto m = ui.snapshot();
-                keepChrome = m.pending || m.spelunkrTuning || m.bannerGoneMs > 0;
+                keepChrome = m.pending || m.spelunkrTuning || m.bannerGoneMs > 0 ||
+                             m.presented || m.hadPicture ||
+                             spelunkrDeferResume_.load(std::memory_order_acquire);
             });
             // GH#410/#411: a gate re-verify must not wipe the channel banner or
             // zap static, and must not flash landing over a play (Ready-to-cast/CH 8).
+            // GH#648: also skip once a picture has been shown for this tune.
             if (!keepChrome)
                 showSpelunkrLanding();
+            else
+                log("media: GH#648 owenbOpened skipped landing (chrome or picture)");
         }
         log("media: core gate: PlexOB core verified; OwenbRing backend, no daemon DDR paint");
+        // Gate B HDMI audio-floor: FPGA vol_att resets mute until UIO_AUDVOL.
+        // Once per OwenbRing open (boot/mode), never mid-play / per frame.
+        assertMisterFullVolume();
+        log("media: core gate: MiSTer volume unmuted/full (once at gate open)");
         // Fire7 glass: writing kVideoModeCmd480i after Utility left analog at
         // H=31.47 VGA and dropped Ready to FPGA color bars (MEAN=45.6). Skip.
         // GH#9: no Ready card while idle is not armed. Clear the 5s
@@ -3425,7 +3577,8 @@ void MediaPlayer::paintIdle() {
         return;
     }
     if (plexUi_)   // OB port: back on R1 (or any legacy core) PlexUI renders the 640x480 RGB24 idle FB again
-        (void)plexUi_->setRenderTarget(640, 480, plexui::PixelFormat::RGB24);
+        (void)plexUi_->setRenderTarget(640, 480, plexui::PixelFormat::RGB24,
+                                     browseShellInterlacedTarget());
     // SPS-gate L3: a gate-error clear asked for ONE repaint, even in IDLE_SCREEN=last-frame (painted black there).
     // Read before any painter reads the latch: a clear clears the latch before it sets this flag. Only a paint that
     // can proceed takes the flag; a paint skipped for a closed gate or a live session leaves it for the next one.
@@ -4498,8 +4651,21 @@ void MediaPlayer::killChildren() {
     ::unlink("/tmp/mplex-inproc.pcm");
 }
 
+void MediaPlayer::armHoldOverlayIfServicePending() {
+#if defined(MPX_HAVE_OWENB_RING)
+    if (!service::readState().pending())
+        return;
+    std::lock_guard<std::mutex> lock(obMu_);
+    if (ob_)
+        ob_->holdOverlayOnShutdown();
+    std::fprintf(stderr, "misterplexd: GH#649 hold overlay armed before stop/teardown\n");
+#endif
+}
+
 void MediaPlayer::shutdown() {
     partText_.stop();   // #334
+    // GH#649: keep the SWITCHING card on the plane across this process exit.
+    armHoldOverlayIfServicePending();
     // Order matters: retire the play thread FIRST. threadMain calls startIdle()
     // at session end, so stopping the idle painter before joining thr_ leaves a
     // window where a brand new idle thread is spawned after we joined the old
@@ -4561,14 +4727,20 @@ void MediaPlayer::shutdown() {
     {
         std::lock_guard<std::mutex> present(presentMu_);
         std::string why;
-        if (fpga_.withdrawAudioCommand(why))
-            log("media: exit: audio command withdrawn (control commit +0x128 := 0)");
-        else
+        if (fpga_.withdrawAudioCommand(why)) {
+            if (why.empty())
+                log("media: exit: audio command withdrawn (control commit +0x128 := 0)");
+            else
+                log("media: exit: audio command withdraw skipped (" + why + ")");
+        } else
             log("media: exit: audio command not withdrawn (" + why + ")");
     }
 }
 
 MediaPlayer::StoppedPosition MediaPlayer::stop() {
+    // GH#649 P1-1: SIGINT/exit runs retirePlayback -> stop() -> stopOwenbPlay()
+    // / stopIdle() -> hide(). Arm the hold before any of that can black the plane.
+    armHoldOverlayIfServicePending();
     // Drop the live item before any other stop work so a concurrent setStreams cannot save it.
     partText_.stop();   // #334: cancel a Part text read (before trackMu_: done() takes it)
     uint64_t sinkEpoch = 0;
@@ -4664,7 +4836,7 @@ MediaPlayer::StoppedPosition MediaPlayer::stop() {
     stopOsdPoll();
     stopIdle();
     releaseFabricDirectAlloc(idleFabric_);
-    if (!holdLastFrameAtEnd()) {
+    if (!holdLastFrameAtEnd() && !service::readState().pending()) {
         if (fb_.ok() && CoreGate::process().open())
             fb_.clear();
         // Nothing to heal: SPI transactions hand GPO back to Main exactly as they
@@ -5089,6 +5261,12 @@ static owenb::AspectConfig owenbAspectConfigFromEnv() {
 // 0009: a daemon that died holding fb0 left fbcon detached: attach it at the next start.
 void MediaPlayer::owenbFbconAtStart() {
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    // GH#649: the outgoing daemon left fbcon detached so the SWITCHING card
+    // stays on fb0. Rebinding here would black-flash before our first frame.
+    if (service::readState().pending()) {
+        std::fprintf(stderr, "misterplexd: GH#649 skip fbcon restoreLeftover; holding service-switch overlay\n");
+        return;
+    }
     owenbFbconGuard()->restoreLeftover();
 #endif
 }
@@ -5205,17 +5383,32 @@ void MediaPlayer::owenbIdleTick() {
         return;
     const bool wanted = ob->idleWanted();
     const bool plexUiUp = plexUi_ && plexUi_->visible();
+    const auto idleSnap = ob->ui().snapshot();
+    const bool spelunkrBusy = spelunkrTv_.load() &&
+        (playing_.load() || spelunkrHasPicture_.load() || ob->ui().pending() ||
+         idleSnap.presented || idleSnap.hadPicture);
     if (obIdleRearmReq_.exchange(false) && wanted) {
         // Raster/core events re-arm Ready. After plexui is up that paints the
         // idle card over browse (GH#27 restart HDMI until nav/home).
         if (plexUiUp)
             log("media: OB idle re-arm skipped (plexui visible)");
+        else if (spelunkrBusy)
+            log("media: OB idle re-arm skipped (Spelunkr picture or pending tune)");
         else
             ob->requestIdleRearm();
     }
     if (want && !wanted) {
         if (plexUiUp && ob->osdRunning()) {
             log("media: OB idle start skipped (plexui visible, osd up)");
+            return;
+        }
+        if (spelunkrBusy) {
+            // GH#648: first picture must not be covered by Open the Guide.
+            static bool loggedBusy = false;
+            if (!loggedBusy) {
+                loggedBusy = true;
+                log("media: GH#648 OB idle start skipped (picture or pending tune)");
+            }
             return;
         }
         const int64_t now = coreGateNowUs();
@@ -5382,10 +5575,13 @@ bool MediaPlayer::beginAirplayMirrorSession() {
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
     if (ob) {
         std::string err;
+        const int pic = pictureSessionMode().load();
+        ob->armPicture(pic);
         if (!ob->claimExternalPlay(err)) {
             log("media: airplay mirror idle->play claim failed: " + err);
             return false;
         }
+        ob->requestPicture(pic);
     }
 #endif
     const auto r = airplayMirrorProd_->begin(airplayMirrorSession_);
@@ -5397,6 +5593,10 @@ bool MediaPlayer::beginAirplayMirrorSession() {
 #endif
         return false;
     }
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    if (ob && picturePumpShared())
+        ob->pumpPicture();
+#endif
     airplayMirrorActive_ = true;
     airplayMirrorSeq_ = 0;
     airplayMirrorFirstAu_ = false;
@@ -5430,6 +5630,14 @@ bool MediaPlayer::pushAirplayMirrorAu(const uint8_t* annexb, size_t len, int64_t
     au.seq = airplayMirrorSeq_;
     au.annexb = annexb;
     au.len = len;
+    std::vector<uint8_t> cropped;
+    if (picture149Active() && picture149FittedOutput()) {
+        cropped.assign(annexb, annexb + len);
+        if (maybeApplyPicture149(cropped)) {
+            au.annexb = cropped.data();
+            au.len = cropped.size();
+        }
+    }
     au.pts90k = h264stream::kNoPts90k;
     au.low_latency = true;
     const auto r = airplayMirrorProd_->pushAccessUnit(au);
@@ -5729,14 +5937,14 @@ void MediaPlayer::setSpelunkrTv(bool on) {
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
     std::lock_guard<std::mutex> lock(obMu_);
     if (on) {
-        obIdleName_ = "Spelunkr";
+        obIdleName_ = service::label(true);
         idleReadyLine_ = "Open the Guide";
     }
     if (ob_) {
         ob_->armSpelunkrAspect(ar);
         ob_->ui().setSpelunkrMode(on);
         if (on) {
-            ob_->setIdleName("Spelunkr");
+            ob_->setIdleName(service::label(true));
             ob_->setIdleHint("Open the Guide");  // GH#411: idleCfg_ must not stay Ready to cast
         }
     }
@@ -5744,14 +5952,27 @@ void MediaPlayer::setSpelunkrTv(bool on) {
 }
 
 void MediaPlayer::showSpelunkrLanding() {
-    spelunkrHasPicture_.store(false);
-    withObUi([](owenb_osd::UiBus& ui) { ui.showSpelunkrLanding(); });
+    bool skip = false;
+    withObUi([&](owenb_osd::UiBus& ui) {
+        const auto m = ui.snapshot();
+        if (m.hadPicture || m.presented) {
+            skip = true;
+            return;
+        }
+        spelunkrHasPicture_.store(false);
+        ui.showSpelunkrLanding();
+    });
+    log(skip ? "media: GH#648 showSpelunkrLanding skipped (picture already shown)"
+             : "media: GH#648 showSpelunkrLanding painted");
 }
 
 std::shared_ptr<owenb::PrefetchedInput> MediaPlayer::prefetchSpelunkr(
     const std::string& url, int64_t offsetMs, const std::string& headers,
     const std::function<bool()>& cancelled, std::string& err, bool& timedOut,
-    int64_t headerCacheSize, const std::string& headerCacheEtag) {
+    int64_t headerCacheSize, const std::string& headerCacheEtag,
+    uint64_t logGen, int logAttempt, int64_t timeoutMs,
+    std::shared_ptr<std::atomic<int64_t>> zapRestartExtraMs,
+    std::function<bool()> extendOnProgress) {
     timedOut = false;
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
     if (!spelunkrTv_.load() || sessionBackend() != VideoBackend::OwenbRing) {
@@ -5767,13 +5988,28 @@ std::shared_ptr<owenb::PrefetchedInput> MediaPlayer::prefetchSpelunkr(
     owenb::OpenRequest req;
     req.url = url;
     req.headers = headers;
-    req.startMs = std::max<int64_t>(0, offsetMs);
-    req.containerSeek = req.startMs > 0;
+    req.startMs = misterplex::spelunkr::pluto_live::plutoSpelunkrOpenStartMs(url, offsetMs);
+    req.containerSeek = misterplex::spelunkr::pluto_live::plutoSpelunkrOpenContainerSeek(url, req.startMs);
     // P2 header (moov) cache: opt-in only (Plex plays never set this), keyed on (url, size, etag).
     req.headerCacheSize = headerCacheSize;
     req.headerCacheEtag = headerCacheEtag;
     owenb::PrefetchLimits limits;
     limits.requireCoreCaps = true;
+    limits.logGen = logGen;
+    limits.logAttempt = logAttempt;
+    // browse-lane #647 P2-7: cap Spelunkr prefetch at the 8 s zap budget (or the remaining
+    // slice the caller passed) so a huge moov cannot sit in a 15 s timeout.
+    limits.timeoutMs = timeoutMs > 0 ? timeoutMs : misterplex::spelunkr::kSpelunkrPrefetchTimeoutMs;
+    // browse-lane #663 follow-up: an in-place zap-window restart (main.cpp's cancelled()) bumps this
+    // same atomic so prefetchInput's own (otherwise fixed-at-call-time) deadline extends with
+    // it instead of re-cancelling the same open. nullptr (default) is a no-op extension.
+    limits.extraBudgetMs = zapRestartExtraMs;
+    // browse-lane #663 follow-up (P2-2 dial500): see prefetchInput's own comment -- this call's 7 s
+    // slice deadline is pinned about 1 s inside main.cpp's wider 8 s zap window, so a
+    // productive open could otherwise die on it before cancelled()'s own (later) window-expiry
+    // restart logic ever runs. extendOnProgress lets main.cpp's cancelled() make that same
+    // restart decision from this earlier clock too.
+    limits.extendOnProgress = std::move(extendOnProgress);
     return ob->prefetch(req, cancelled, err, limits, &timedOut);
 #else
     (void)url;
@@ -5782,6 +6018,11 @@ std::shared_ptr<owenb::PrefetchedInput> MediaPlayer::prefetchSpelunkr(
     (void)cancelled;
     (void)headerCacheSize;
     (void)headerCacheEtag;
+    (void)logGen;
+    (void)logAttempt;
+    (void)timeoutMs;
+    (void)zapRestartExtraMs;
+    (void)extendOnProgress;
     err = "Spelunkr prefetch is not built";
     return {};
 #endif
@@ -5803,18 +6044,26 @@ bool MediaPlayer::prepareSpelunkrVideo() {
         coreGateTick();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    if (!CoreGate::process().owenbOpen() || map.open(MPX_DEVMEM_PATH) < 0) {
-        showSpelunkrError("VIDEO CORE UNAVAILABLE");
-        return false;
+    const bool gateOpen = CoreGate::process().owenbOpen();
+    const bool mapOpen = map.open(MPX_DEVMEM_PATH) == 0;
+    uint64_t yc = 0;
+    uint64_t stamp = 0;
+    if (mapOpen) {
+        yc = map.reader().read(plexob::kRingWordYcMode);
+        analog = analog || plexob::analogFromRingLo(static_cast<uint32_t>(yc)) != 0;
+        stamp = map.reader().read(owenb_id::kMpxBuildIdWord);
+    } else if (gateOpen) {
+        log("spelunkr: ctrl page map open failed; Y/C/stamp log skipped (gate already open)");
     }
-    const uint64_t yc = map.reader().read(plexob::kRingWordYcMode);
-    analog = analog || plexob::analogFromRingLo(static_cast<uint32_t>(yc)) != 0;
-    const uint64_t stamp = map.reader().read(owenb_id::kMpxBuildIdWord);
-    if (!spelunkr::coreChangeAllowed(envFlagWanted("MPX_CORE_MANUAL_ONLY"),
-            spelunkr::CoreChange::RuntimeRaster, CoreGate::process(),
-            readCoreNameFile(), readCoreNameFile(kRbfNamePath), stamp)) {
-        log("spelunkr: runtime raster refused: core identity changed");
-        showSpelunkrError("VIDEO CORE UNAVAILABLE");
+    const auto prepErr = spelunkr::videoPrepError(
+        envFlagWanted("MPX_CORE_MANUAL_ONLY"), gateOpen, mapOpen, CoreGate::process(),
+        readCoreNameFile(), readCoreNameFile(kRbfNamePath), stamp);
+    if (prepErr != spelunkr::VideoPrepError::Ok) {
+        if (prepErr == spelunkr::VideoPrepError::Refused)
+            log("spelunkr: video core refused: core identity is not a gate-verified PlexOB");
+        else
+            log("spelunkr: video core unavailable: gate closed after wait");
+        showSpelunkrError(spelunkr::videoPrepOsd(prepErr));
         return false;
     }
     // The core resolves Auto from MiSTer.ini/Y-C and stream VUI. Do not
@@ -5890,6 +6139,22 @@ bool MediaPlayer::spelunkrUiPending() {
     return pending;
 }
 
+void MediaPlayer::adBreakEvent(int ev) {
+#if defined(MPX_HAVE_OWENB_RING)
+    const int64_t now = steadyMs();
+    if (ev == 0) {
+        adGate_.on();
+        withObUi([](owenb_osd::UiBus& ui) { ui.setAdBreak(true); });
+    } else if (ev == 1) {
+        adGate_.resumed(adLastPosMs_.load(std::memory_order_acquire), now);
+    } else if (adGate_.clearNow()) {
+        withObUi([](owenb_osd::UiBus& ui) { ui.setAdBreak(false); });
+    }
+#else
+    (void)ev;
+#endif
+}
+
 void MediaPlayer::showSpelunkrError(const std::string& detail, bool landing) {
 #if defined(MPX_HAVE_OWENB_RING)
     {
@@ -5897,8 +6162,18 @@ void MediaPlayer::showSpelunkrError(const std::string& detail, bool landing) {
         spelunkrBannerPending_ = false;
     }
     if (landing || !spelunkrHasPicture_.load()) {
-        spelunkrHasPicture_.store(false);
-        withObUi([&](owenb_osd::UiBus& ui) { ui.showSpelunkrLanding(detail); });
+        bool skip = false;
+        withObUi([&](owenb_osd::UiBus& ui) {
+            const auto m = ui.snapshot();
+            if (m.hadPicture || m.presented) {
+                skip = true;
+                return;
+            }
+            spelunkrHasPicture_.store(false);
+            ui.showSpelunkrLanding(detail);
+        });
+        if (skip)
+            log("media: GH#648 showSpelunkrError landing skipped (picture already shown)");
     } else
         withObUi([&](owenb_osd::UiBus& ui) {
             ui.failSpelunkrTune(detail);
@@ -5910,15 +6185,29 @@ void MediaPlayer::showSpelunkrError(const std::string& detail, bool landing) {
 #endif
 }
 
-void MediaPlayer::setSpelunkrGuideOverlay(bool open, int cursor, std::vector<std::string> lines) {
-    std::vector<owenb_osd::LibraryRow> rows;
+void MediaPlayer::setSpelunkrGuideOverlay(bool open, int cursor, int viewStart,
+                                          std::vector<std::string> lines) {
+    std::vector<owenb_osd::FormattedGuideRow> rows;
     rows.reserve(lines.size());
     for (auto& t : lines) {
-        owenb_osd::LibraryRow r;
+        owenb_osd::FormattedGuideRow r;
         r.text = std::move(t);
         rows.push_back(std::move(r));
     }
-    withObUi([&](owenb_osd::UiBus& ui) { ui.setSpelunkrGuide(open, cursor, std::move(rows)); });
+    setSpelunkrGuideOverlay(open, cursor, viewStart, std::move(rows));
+}
+
+void MediaPlayer::setSpelunkrGuideOverlay(bool open, int cursor, int viewStart,
+                                          std::vector<owenb_osd::FormattedGuideRow> rows) {
+    std::vector<owenb_osd::LibraryRow> out;
+    out.reserve(rows.size());
+    for (auto& g : rows) {
+        owenb_osd::LibraryRow r;
+        r.text = std::move(g.text);
+        r.source = g.source;
+        out.push_back(std::move(r));
+    }
+    withObUi([&](owenb_osd::UiBus& ui) { ui.setSpelunkrGuide(open, cursor, viewStart, std::move(out)); });
     setSpelunkrGuideOpen(open);
 }
 
@@ -5952,7 +6241,7 @@ void MediaPlayer::stopObInput() {
 
 void MediaPlayer::obMenuState(const std::shared_ptr<owenb::OwenbPlayer>& ob, owenb::ObMenuState& s) {
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
-    s.playing = ob && ob->active();
+    s.playing = pictureMenuOnGlass(ob && ob->active(), playing_.load(), ob && ob->mediaPlayActive());
     s.paused = s.playing && ob->paused();
     s.spelunkrTv = spelunkrTv_.load();
     s.spelunkrGuideOpen = spelunkrGuideOpen_.load();
@@ -6060,6 +6349,7 @@ void MediaPlayer::noteRememberPicture(int mode) {
         std::lock_guard<std::mutex> lock(trackMu_);
         key = trackShowKey_;
     }
+    key = rememberPictureStoreKey(key, spelunkrTv_.load());
     if (key.empty()) {
         log("media: remember picture no show key; mode=" + std::string(pictureModeToken(pm)));
     } else if (processRememberPicture().note(key, pm) &&
@@ -6092,6 +6382,7 @@ void MediaPlayer::obInputLoop() {
     trackkeys::Shortcuts trackShortcuts;
     bool synced = false;
     int64_t refreshAt = 0, libraryAt = 0;
+    misterplex::spelunkr::OsdEdge osdEdge;
     // BUG3 diagnostic (log only): a core with ring_in rewrites the input region at least once a
     // raster frame (IN_HEAD +1, the seqlock then consistent). A head that never moves, or a copy
     // that is never consistent (-EAGAIN), means the RBF has no input region (ring_in tied off,
@@ -6105,6 +6396,8 @@ void MediaPlayer::obInputLoop() {
             std::lock_guard<std::mutex> lock(obMu_);
             ob = ob_;
         }
+        if (ob && picturePumpShared())
+            ob->pumpPicture();
         struct ::h264ring_input in {};
         const int rc = ob ? ob->readInput(in) : -ENODEV;
         if (rc == 0 || rc == -EAGAIN) {
@@ -6127,6 +6420,7 @@ void MediaPlayer::obInputLoop() {
         if (rc != 0) {
             if (rc == -ENODEV && synced) {   // the handle closed (a hop off OB): start over at the next one
                 dec = owenb::ObInputDecoder{};
+                osdEdge.reset();
                 synced = false;
                 if (router.menu().isOpen()) {
                     router.close();
@@ -6152,6 +6446,15 @@ void MediaPlayer::obInputLoop() {
             libraryVisible = library_.visible;
         }
         dec.setReadyIdle(owenb::obReadyIdleForMenuKey(ob->active(), libraryVisible));
+        dec.setTextKeyHandler([this](unsigned code, bool extended) {
+            if (!plexUi_ || !plexUi_->usingShell() || !plexUi_->shellSearchOpen())
+                return false;
+            const char ch = browseShellTextKey(code, extended);
+            if (!ch)
+                return false;
+            plexUi_->postText(ch);
+            return true;
+        });
         std::vector<owenb::ObNav> navs = dec.feed(in, now);
         if (trackkeys::bindingValid(obTrackBinding_)) {   // off unless controller_track_shortcuts names a chord
             trackkeys::Gate gate;
@@ -6186,8 +6489,10 @@ void MediaPlayer::obInputLoop() {
         if (dec.stats().unknownActions != before.unknownActions)
             log("media: OB input: unknown OSD action " + std::to_string(dec.stats().lastUnknownAction) +
                 " (h264ring.h knows 0 Send Home, 1 Program menu)");
-        if (dec.stats().unmappedKeys != before.unmappedKeys)
-            log("media: OB input: unmapped key 0x" + [](int k) { char b[8]; std::snprintf(b, sizeof b, "%03X", k); return std::string(b); }(dec.stats().lastUnmappedKey));
+        if (dec.stats().unmappedKeys != before.unmappedKeys) {
+            const int code = dec.stats().lastUnmappedKey;
+            log("media: OB input: unmapped key 0x" + [](int k) { char b[8]; std::snprintf(b, sizeof b, "%03X", k); return std::string(b); }(code));
+        }
         if (!navs.empty())
             noteMarkerInput(steadyMs());
         if (ob && !router.overscanOpen()) {
@@ -6212,6 +6517,13 @@ void MediaPlayer::obInputLoop() {
             // here (no second reader). If F6 shows input is not polled/bound on some play path
             // (gcast/companion), the fix belongs where this loop is started/bound; this hook follows it.
             if (plexUi_ && !spelunkrTv_.load() && !router.overscanOpen()) {
+                // Browse shell: Menu opens Search (design §6) instead of the Program panel.
+                if (plexUi_->usingShell() && plexUi_->visible() && !ob->active() &&
+                    !router.menu().isOpen() && nav == owenb::ObNav::Menu) {
+                    log("media: OB input menu -> browse-shell search");
+                    plexUi_->postSearch();
+                    continue;
+                }
                 // SPELUNKR owns Up/Down; PlexUI must not take them.
                 const owenb::PlexUiObOp op =
                     owenb::plexUiObNav(nav, plexUi_->visible() && !ob->active(), router.menu().isOpen());
@@ -6281,6 +6593,15 @@ void MediaPlayer::obInputLoop() {
             if (cmd != PlaybackCommand::None)
                 dispatchPlaybackInput(cmd);
             libraryAt = 0;   // a command may have moved the browser
+        }
+        // After this poll's navs: a rising EV_OSD close of the Spelunkr guide
+        // so F12's core OSD is not stacked under it (browse-lane REVIEW-MVP-GLASS-1113).
+        if (osdEdge.step(dec.osdOpen())) {
+            if (spelunkrTv_.load() && spelunkrGuideOpen_.load()) {
+                log("media: spelunkr: core OSD open, closing guide");
+                dispatchPlaybackInput(PlaybackCommand::GuideClose);
+            } else if (spelunkrTv_.load())
+                log("media: spelunkr: core OSD open, guide already closed");
         }
         if (router.menu().isOpen() && now >= refreshAt) {   // the panel follows the state (position, pause)
             refreshAt = now + 500;
@@ -6436,7 +6757,8 @@ void MediaPlayer::obPlexUiPublish() {
     obPlexUiTargetSize(cw, ch, fb.xres, fb.yres, fb.smem, w, h);
     if (w < 320 || h < 240)
         return;
-    if (plexUi_->setRenderTarget(int(w), int(h), plexui::PixelFormat::BGRA8888) || cw != obPlexUiCanvasW_ ||
+    if (plexUi_->setRenderTarget(int(w), int(h), plexui::PixelFormat::BGRA8888,
+                                browseShellInterlacedTarget()) || cw != obPlexUiCanvasW_ ||
         ch != obPlexUiCanvasH_)
         log("media: OB plexui target " + std::to_string(w) + "x" + std::to_string(h) + " BGRA8888 (canvas " +
             std::to_string(cw) + "x" + std::to_string(ch) + ", fb0 " + std::to_string(fb.xres) + "x" +
@@ -6444,18 +6766,40 @@ void MediaPlayer::obPlexUiPublish() {
             " smem " + std::to_string(fb.smem) + ")");
     obPlexUiCanvasW_ = cw;
     obPlexUiCanvasH_ = ch;
-    auto s = std::make_shared<owenb_osd::FullSurface>();
+    const int back = 1 - obPlexUiSurfIdx_;
+    auto s = obPlexUiSurf_[back];
+    if (!s)
+        s = std::make_shared<owenb_osd::FullSurface>();
     if (!plexUi_->copyFrame(s->bgra) || s->bgra.size() != size_t(w) * h * 4u)
         return;
     s->w = w;
     s->h = h;
     s->gen = ++obPlexUiGen_;
+    s->dirtyN = 0;
+    if (plexUi_->usingShell()) {
+        const auto& d = plexUi_->lastFrameDamage();
+        if (!d.full && d.count > 0) {
+            for (int i = 0; i < d.count && s->dirtyN < s->dirty.size(); ++i) {
+                const unsigned y0 = static_cast<unsigned>(std::max(0, d.rects[i].y0));
+                const unsigned y1 = static_cast<unsigned>(std::min(int(h), d.rects[i].y1));
+                if (y0 < y1)
+                    s->dirty[s->dirtyN++] = {y0, y1};
+            }
+        }
+    }
+    obPlexUiSurf_[back] = s;
+    obPlexUiSurfIdx_ = back;
+    if (!obPlexUiSurf_[1 - back] || obPlexUiSurf_[1 - back]->bgra.size() != s->bgra.size()) {
+        auto o = std::make_shared<owenb_osd::FullSurface>();
+        o->bgra.resize(s->bgra.size());
+        obPlexUiSurf_[1 - back] = std::move(o);
+    }
     obPlexUiSubmitGen_.store(s->gen);
     obPlexUiSubmitMs_.store(misterplex::plexui::perfSteadyMs());
     if (!obPlexUiShown_)
         log("media: OB plexui shown over the idle card");
     obPlexUiShown_ = true;
-    ob->ui().setSurface(std::move(s));
+    ob->ui().setSurface(s);
 #endif
 }
 
@@ -6501,7 +6845,9 @@ void MediaPlayer::obPlexUiAckDrain() {
         const int64_t sub = obPlexUiSubmitMs_.load();
         const int64_t shown = obPlexUiAckMs_.load();
         tlObPlexUiInAck = true;
-        plexUi_->onR1FlipAck(sub ? shown - sub : 0, 0);
+        // plxoMs must be the on-screen timestamp, not 0 (0 made onFrameFlushed
+        // use drain-time now and padded BROWSE_MS by the input-thread poll).
+        plexUi_->onR1FlipAck(sub ? shown - sub : 0, shown);
         tlObPlexUiInAck = false;
     }
     if (obPlexUiRepaintPending_.exchange(false))
@@ -6590,7 +6936,13 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
         return false;
     }
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
-    stopOwenbPlay();
+    bool spelunkrZap = false;
+    {
+        std::lock_guard<std::mutex> lock(obMu_);
+        spelunkrZap = spelunkrTv_.load() && ob_ && ob_->active();
+    }
+    if (!spelunkrZap)
+        stopOwenbPlay();
     uint64_t epoch = 0;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -6605,6 +6957,9 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
         req.prefetched = std::move(prefetched);
     req.headers = httpHeaders;
     req.startMs = startOffsetMs > 0 ? startOffsetMs : 0;
+    if (spelunkrTv_.load()) {
+        req.startMs = misterplex::spelunkr::pluto_live::plutoSpelunkrOpenStartMs(urlOrPath, startOffsetMs);
+    }
     std::string dashVideo, dashAudio;
     if (gcast::splitYtAv(urlOrPath, dashVideo, dashAudio)) {
         // Two opened inputs, time-seeked. The audio URL is not rewritten.
@@ -6615,7 +6970,12 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
         // Bake 2217 ms as offset=2 (universal) or the ladder carrier, then do not
         // seek that live TS again. A file/Part still container-seeks.
         req.url = transcode_offset::retargetStartUrl(urlOrPath, req.startMs);
-        req.containerSeek = transcode_offset::demuxSeekMs(req.url, req.startMs) > 0;
+        if (spelunkrTv_.load()) {
+            req.containerSeek =
+                misterplex::spelunkr::pluto_live::plutoSpelunkrOpenContainerSeek(urlOrPath, req.startMs);
+        } else {
+            req.containerSeek = transcode_offset::demuxSeekMs(req.url, req.startMs) > 0;
+        }
     }
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -6866,6 +7226,9 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
     cb.position = [this, epoch](int64_t ms, uint32_t stamp) {
         if (playEpoch_.load(std::memory_order_acquire) != epoch)
             return;
+        // N15: the relay owns the card (it watches this clock through adFramePositionMs): it shows on a frame
+        // stall / relay silence / respawn and clears when the position moves again.
+        adLastPosMs_.store(ms, std::memory_order_release);
         noteObPosition(stamp, ms);
     };
     cb.media = [this, epoch](int64_t ms, uint32_t stamp, bool paused) {
@@ -6936,10 +7299,16 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
             const std::string bannerTitle = m.spelunkrTitle;
             const int64_t bannerShow = m.bannerShowUntilMs;
             const int64_t bannerGone = m.bannerGoneMs;
+            const bool hadPicture = m.hadPicture;
             auto toasts = std::move(m.toasts);
             m = owenb_osd::UiModel{};
             m.spelunkr = spelunkrTv_.load();
             m.toasts = std::move(toasts);
+            // GH#648: a late reset after first picture must not drop the sticky
+            // bit and let Open the Guide show the landing when the banner expires.
+            m.hadPicture = hadPicture;
+            if (hadPicture)
+                m.presented = true;
             m.title = title;
             m.durationMs = durationMs;
             m.positionMs = startMs;
@@ -7004,8 +7373,25 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
     }
     {
         int arm = -1;
-        ob->armSpelunkrAspect(spelunkrTv_.load() ? spelunkrOsdAspect_.load() : -1);
-        if (rememberPictureEnabled()) {
+        const bool liveTv = spelunkrTv_.load();
+        ob->armSpelunkrAspect(liveTv ? spelunkrOsdAspect_.load() : -1);
+        if (liveTv) {
+            if (rememberPictureEnabled()) {
+                if (!processRememberPicture().flush()) // debounced menu writes from the last play
+                    log("media: remember picture deferred save failed");
+                if (const auto row = processRememberPicture().find(kRememberPictureLiveTvKey)) {
+                    if (const auto spec = pictureToApply(row)) {
+                        arm = static_cast<int>(spec->mode);
+                        log("media: remember picture restore show=" + std::string(kRememberPictureLiveTvKey) +
+                            " mode=" + pictureModeToken(spec->mode));
+                    }
+                }
+                arm = ob->pictureModeForPlay(arm);
+                pictureSessionMode().store(arm);
+            }
+            if (arm < 0)
+                arm = kPictureArmLiveTvDefault;
+        } else if (rememberPictureEnabled()) {
             std::string key;
             {
                 std::lock_guard<std::mutex> lock(trackMu_);
@@ -7024,6 +7410,7 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
             arm = ob->pictureModeForPlay(arm);
             pictureSessionMode().store(arm);
         }
+        ob->setRetainAspectOnStop(spelunkrZap);
         ob->armPicture(arm);
     }
     std::string err;
@@ -7102,7 +7489,7 @@ void MediaPlayer::owenbPlayEnded(uint64_t epoch, uint64_t generation, owenb::End
     if (spelunkrTv_.load() && r != owenb::EndReason::Eof) {
         // P2 11-10: undecodable / failed item mid-play skips with a banner; land only with no handler.
         const std::string why = err.empty() ? "PLAY FAILED" : err;
-        // GBE #620 second review P3: CoreLost / RingError land as before; only a failed source skips.
+        // browse-lane #620 second review P3: CoreLost / RingError land as before; only a failed source skips.
         const bool skipItem = spelunkr::midPlayEndSkipsItem(r == owenb::EndReason::NeedsTranscode,
                                                             r == owenb::EndReason::SourceError);
         if (!(skipItem && spelunkrPlayFailed_ && spelunkrPlayFailed_(why)))
@@ -7268,8 +7655,10 @@ void MediaPlayer::stopOwenbPlay() {
         std::lock_guard<std::mutex> lock(obMu_);
         ob = ob_;
     }
-    if (ob)
+    if (ob) {
+        ob->setRetainAspectOnStop(false);
         ob->stop();   // joins the OB thread; IDLE_SCREEN=last holds the picture, black flushes
+    }
 #endif
     // Debounced picture save from the menu: write it on stop, not at the next play.
     if (!processRememberPicture().flushPending())
@@ -8374,6 +8763,33 @@ bool MediaPlayer::tryVideoDrain(uint64_t session) {
 
 bool MediaPlayer::controlFpgaAudio(uint64_t session, AudioSessionControl command) {
     return fpga_.controlAudioSession(session, command, 1000);
+}
+
+void MediaPlayer::rejoinLiveRelayAudio() {
+    log("media: live-relay ffmpeg respawn: rejoin HDMI audio");
+    if (sessionBackend() == VideoBackend::OwenbRing) {
+        std::string why;
+        std::lock_guard<std::mutex> present(presentMu_);
+        if (fpga_.withdrawAudioCommand(why)) {
+            if (why.empty())
+                log("media: live-relay: leftover audio-control commit withdrawn");
+            else
+                log("media: live-relay: audio-control withdraw skipped (" + why + ")");
+        }
+        return;
+    }
+    std::lock_guard<std::mutex> control(pauseControlMu_);
+    std::lock_guard<std::mutex> present(presentMu_);
+    const uint64_t session = fpgaSession_.load();
+    if (!session || !audioEnabled_ || !sourceHasAudio_)
+        return;
+    (void)controlFpgaAudio(session, AudioSessionControl::Reset);
+    if (!controlFpgaAudio(session, AudioSessionControl::Begin)) {
+        log("media: live-relay audio re-Begin failed: " + fpga_.lastError());
+        return;
+    }
+    log("media: live-relay audio re-Begin ACK");
+    fpgaAudioStarted_.store(true);
 }
 
 void MediaPlayer::requestGateFallback(uint64_t epoch, uint64_t generation, int64_t offsetMs, std::string reason,

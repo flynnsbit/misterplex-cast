@@ -2,9 +2,13 @@
 // SPELUNKR=1 TV frontend. Isolated from Plex/YouTube/AirPlay.
 // Does not add SessionArbiter Owner (idx is `& 3`).
 
+#include "libmisterplex/live_disc_rebase.hpp"
+#include "spelunkr/banner.hpp"
 #include "spelunkr/schedule.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -27,11 +31,32 @@ struct PlayRequest {
     std::string id;
     int dial = 0;
     bool advanceItem = false;
-    int endedItemIndex = -1;  // GBE N-2 ended item
+    int endedItemIndex = -1;  // browse-lane N-2 ended item
+    std::string endedArchiveId;  // identity for remapping after a manifest swap
+    std::string endedFile;
+    std::string endedUrl;
     int64_t endedOffsetMs = -1;  // start offset of the ended play; -1 = unknown
     int64_t endedPlayedMs = -1;  // EOF progress; from-zero plays only, -1 = unknown
     unsigned firstPictureAttempt = 0;  // nonzero: watchdog recovery, not natural EOF
     unsigned failedSkips = 0;  // P2 11-10 nonzero: skip endedItemIndex after a mid-play failure / advance timeout
+    int requestedItemIndex = -1;  // warm-header retry: land this exact item in a fresh generation
+};
+
+// Identity of a playing / failing item, so a remapped successor can find it
+// after replaceSection without assuming the numeric index is still right.
+struct ItemIdent {
+    std::string archiveId;
+    std::string file;
+    std::string url;
+    static ItemIdent from(const NowPlaying& np) {
+        return {np.archiveId, np.file, np.url};
+    }
+    bool empty() const { return archiveId.empty() && file.empty() && url.empty(); }
+    void applyTo(PlayRequest& r) const {
+        r.endedArchiveId = archiveId;
+        r.endedFile = file;
+        r.endedUrl = url;
+    }
 };
 
 inline int channelIndexById(const Lineup& L, const std::string& id) {
@@ -48,6 +73,14 @@ inline int resolvePlayIndex(const Lineup& L, const PlayRequest& r) {
     if (idx < 0 || idx >= n || (!r.id.empty() && L.channels[static_cast<size_t>(idx)].id != r.id))
         idx = channelIndexById(L, r.id);
     return idx;
+}
+
+// Re-resolve a play index by id and confirm it is in both the lineup and mans.
+inline bool resolvePlayIndexInSession(const Lineup& L, const std::vector<Manifest>& mans,
+                                      const PlayRequest& r, int& idx) {
+    idx = resolvePlayIndex(L, r);
+    return idx >= 0 && idx < static_cast<int>(L.channels.size()) &&
+           idx < static_cast<int>(mans.size());
 }
 
 inline PlayRequest playRequestFor(const Lineup& L, uint64_t gen, int idx) {
@@ -114,6 +147,7 @@ struct GuideRow {
     std::string id;
     std::string name;
     std::string nowTitle;
+    std::string section;
 };
 
 class Session {
@@ -123,6 +157,10 @@ public:
     TvState tv;
     bool guideOpen = false;
     int guideCursor = -1;  // GH#411: unset, matching tv.index(); pad must not wrap onto slot 0/CH 8
+    int guideViewStart = 0;  // first visible row index; Left/Right page by kSpelunkrGuidePageRows
+    // N16: consecutive "this channel has no next item" skips onto a neighbour channel. Reset by any user zap /
+    // guide tune and by a held picture (main loop).
+    unsigned channelFailSkips = 0;
 
     bool setLineup(Lineup L) {
         lineup = std::move(L);
@@ -139,7 +177,59 @@ public:
         return idx >= 0 && idx < static_cast<int>(mans.size()) &&
                !mans[static_cast<size_t>(idx)].items.empty();
     }
+    // Replace every channel whose section equals `section`, or append if none.
+    // Remaps tv.index() and guideCursor by channel id. Does not bump generation.
+    bool replaceSection(const std::string& section, Lineup incoming, std::vector<Manifest> incomingMans) {
+        if (incoming.channels.size() != incomingMans.size())
+            return false;
+        std::string curId, cursorId;
+        const int cur = tv.index();
+        if (cur >= 0 && cur < static_cast<int>(lineup.channels.size()))
+            curId = lineup.channels[static_cast<size_t>(cur)].id;
+        if (guideCursor >= 0 && guideCursor < static_cast<int>(lineup.channels.size()))
+            cursorId = lineup.channels[static_cast<size_t>(guideCursor)].id;
+        Lineup kept;
+        kept.engine = lineup.engine;
+        kept.generatedAt = lineup.generatedAt;
+        kept.build = lineup.build;
+        kept.snapshot = lineup.snapshot;
+        std::vector<Manifest> keptMans;
+        kept.channels.reserve(lineup.channels.size() + incoming.channels.size());
+        for (size_t i = 0; i < lineup.channels.size(); ++i) {
+            if (lineup.channels[i].section == section)
+                continue;
+            kept.channels.push_back(std::move(lineup.channels[i]));
+            keptMans.push_back(i < mans.size() ? std::move(mans[i]) : Manifest{});
+        }
+        for (size_t i = 0; i < incoming.channels.size(); ++i) {
+            kept.channels.push_back(std::move(incoming.channels[i]));
+            keptMans.push_back(std::move(incomingMans[i]));
+        }
+        lineup = std::move(kept);
+        mans = std::move(keptMans);
+        auto findId = [&](const std::string& id) -> int {
+            if (id.empty())
+                return -1;
+            for (size_t i = 0; i < lineup.channels.size(); ++i) {
+                if (lineup.channels[i].id == id)
+                    return static_cast<int>(i);
+            }
+            return -1;
+        };
+        const int mapped = findId(curId);
+        if (mapped >= 0)
+            tv.setIndex(mapped);
+        else if (!curId.empty() || tv.index() >= static_cast<int>(lineup.channels.size()))
+            tv.setIndex(lineup.channels.empty() ? -1 : 0);
+        const int gmapped = findId(cursorId);
+        if (gmapped >= 0)
+            guideCursor = gmapped;
+        else if (!cursorId.empty() || guideCursor >= static_cast<int>(lineup.channels.size()))
+            guideCursor = tv.index();
+        return true;
+    }
     TuneResult tuneIndex(int idx, int64_t nowMs) {
+        channelFailSkips = 0;
         TuneResult t;
         if (idx < 0 || idx >= static_cast<int>(lineup.channels.size()) || !hasManifest(idx))
             return t;
@@ -158,6 +248,7 @@ public:
         return t;
     }
     TuneResult zap(int delta, int64_t nowMs) {
+        channelFailSkips = 0;
         const int from = guideOpen ? guideCursor : tv.index();
         const int next = channelDelta(lineup, from, delta);
         if (next < 0)
@@ -171,6 +262,7 @@ public:
         return tuneIndex(next, nowMs);
     }
     TuneResult zapSelect(int delta) {
+        channelFailSkips = 0;
         const int from = guideOpen ? guideCursor : tv.index();
         const int next = channelDelta(lineup, from, delta);
         if (next < 0)
@@ -183,9 +275,69 @@ public:
         }
         return selectIndex(next);
     }
+    void syncGuideViewToCursor() {
+        const int n = static_cast<int>(lineup.channels.size());
+        if (n <= 0) {
+            guideViewStart = 0;
+            return;
+        }
+        const int step = std::min(kSpelunkrGuidePageRows, n);
+        const int maxStart = std::max(0, n - step);
+        int cur = guideCursor;
+        if (cur < 0)
+            cur = tv.index();
+        if (cur < 0)
+            cur = 0;
+        if (cur < guideViewStart)
+            guideViewStart = cur;
+        if (cur >= guideViewStart + step)
+            guideViewStart = cur - step + 1;
+        if (guideViewStart < 0)
+            guideViewStart = 0;
+        if (guideViewStart > maxStart)
+            guideViewStart = maxStart;
+    }
+    bool pageGuide(int delta) {
+        if (!guideOpen || lineup.channels.empty())
+            return false;
+#ifdef MUT_SPELUNKR_GUIDE_PAGE_NOP
+        return false;
+#endif
+        const int n = static_cast<int>(lineup.channels.size());
+        const int step = std::min(kSpelunkrGuidePageRows, n);
+        const int maxStart = std::max(0, n - step);
+#ifdef MUT_SPELUNKR_GUIDE_PAGE_SIGN
+        delta = -delta;
+#endif
+        int next = guideViewStart + delta * step;
+        if (next < 0)
+            next = 0;
+        if (next > maxStart)
+            next = maxStart;
+        if (next == guideViewStart)
+            return false;
+        int offset = 0;
+        if (guideCursor >= 0 && guideCursor >= guideViewStart)
+            offset = guideCursor - guideViewStart;
+        guideViewStart = next;
+#ifndef MUT_SPELUNKR_GUIDE_PAGE_CURSOR
+        int newCur = guideViewStart + offset;
+        if (newCur < guideViewStart)
+            newCur = guideViewStart;
+        const int pageEnd = std::min(guideViewStart + step, n) - 1;
+        if (newCur > pageEnd)
+            newCur = pageEnd;
+        guideCursor = newCur;
+#endif
+        return true;
+    }
     void toggleGuide() {
         guideOpen = !guideOpen;
         guideCursor = tv.index();
+        if (guideOpen)
+            syncGuideViewToCursor();
+        else
+            guideViewStart = 0;
     }
     std::vector<GuideRow> guideRows(int64_t nowMs) const {
         std::vector<GuideRow> rows;
@@ -195,6 +347,7 @@ public:
             r.dial = lineup.channels[i].dial;
             r.id = lineup.channels[i].id;
             r.name = lineup.channels[i].name;
+            r.section = lineup.channels[i].section;
             if (hasManifest(static_cast<int>(i))) {
                 const NowPlaying np = nowPlayingOrFirst(lineup.channels[i], mans[i], nowMs);
                 if (np.ok)
@@ -255,17 +408,39 @@ private:
 };
 
 inline NowPlaying nextAfterFirstPictureTimeout(const Channel& ch, const Manifest& man,
-                                               int failedItemIndex, unsigned attempt, int64_t nowMs) {
+                                               int failedItemIndex, unsigned attempt, int64_t nowMs,
+                                               const std::string& endedId = {},
+                                               const std::string& endedFile = {},
+                                               const std::string& endedUrl = {}) {
     // Visit at most one manifest's worth of failed pictures, then show an error.
-    if (failedItemIndex < 0 || failedItemIndex >= static_cast<int>(man.items.size()) ||
+    const int idx = effectiveEndedItemIndex(man, failedItemIndex, endedId, endedFile, endedUrl);
+    if (idx < 0 || idx >= static_cast<int>(man.items.size()) ||
         attempt >= man.items.size())
         return {};
     NowPlaying failed;
-    failed.itemIndex = failedItemIndex;
+    failed.itemIndex = idx;
     auto next = skipToNextItem(ch, man, failed, nowMs);
-    if (next.itemIndex == failedItemIndex)
+    if (next.itemIndex == idx)
         return {};
     return next;
+}
+
+// Glass a1c0af44: Pluto live is ONE item. nextAfterFirstPictureTimeout with
+// attempt=1 returns {} (attempt >= size) and the play job lands
+// FIRST PICTURE FAILED: NO NEXT without reopening remux. Zap (new tune,
+// attempt=0) recovered living Vevo. Retry the same item once so the play job
+// starts a new remux instead of landing.
+inline NowPlaying retryLiveFirstPicture(const Channel& ch, const Manifest& man,
+                                        int failedItemIndex, unsigned attempt, int64_t nowMs,
+                                        const std::string& endedId = {},
+                                        const std::string& endedFile = {},
+                                        const std::string& endedUrl = {}) {
+    const int idx = effectiveEndedItemIndex(man, failedItemIndex, endedId, endedFile, endedUrl);
+    if (!misterplex::live_disc::livePicWatchdogRetries(attempt, static_cast<int>(man.items.size())))
+        return {};
+    if (idx < 0)
+        return {};
+    return playItemAtIndex(ch, man, idx, nowMs);
 }
 
 // P2 11-10: a mid-play failure (NeedsTranscode / SourceError) or an EOF/skip advance that
@@ -273,25 +448,56 @@ inline NowPlaying nextAfterFirstPictureTimeout(const Channel& ch, const Manifest
 // failedSkips counts consecutive failed items on this channel (reset by any zap or natural EOF);
 // at most one manifest's worth is visited, then the caller lands with the error.
 inline NowPlaying nextAfterFailedItem(const Channel& ch, const Manifest& man, int failedItemIndex,
-                                      unsigned failedSkips, int64_t nowMs) {
+                                      unsigned failedSkips, int64_t nowMs,
+                                      const std::string& endedId = {},
+                                      const std::string& endedFile = {},
+                                      const std::string& endedUrl = {}) {
     if (failedSkips == 0)
         return {};
-    return nextAfterFirstPictureTimeout(ch, man, failedItemIndex, failedSkips, nowMs);
+    return nextAfterFirstPictureTimeout(ch, man, failedItemIndex, failedSkips, nowMs,
+                                        endedId, endedFile, endedUrl);
 }
 
 // Same channel, new generation, carrying the failed item. Returns {} (no generation bump) for a
 // stale generation or an unknown failed item, so the caller lands with the error instead.
+// N16 (glass 067d79f7, dial 1062): a Pluto live channel is ONE item. When its relay gave up (crash storm), the
+// failed-item skip had no other item to go to and the job died with "SKIP FAILED: NO NEXT", a dead end. A channel
+// with nothing left to skip to now moves to the NEXT channel (a fresh tune, a fresh budget), at most
+// kChannelSkipMax in a row (an all-bad lineup must not cycle forever). Returns {} when there is no other channel
+// or the budget is spent: the caller lands on the clean error.
+inline constexpr unsigned kChannelSkipMax = 3;
+inline bool channelHasNoNextItem(const Manifest& man, unsigned failedSkips) {
+    return man.items.size() <= 1 || failedSkips >= man.items.size();
+}
 inline PlayRequest advanceAfterFailedItem(Session& session, uint64_t generation, int failedItemIndex,
                                           unsigned failedSkips) {
     if (failedItemIndex < 0 || failedSkips == 0 || !session.tv.current(generation))
         return {};
+#ifndef MUT_N16_NO_NEXT_DEADEND
+    const int cur = session.tv.index();
+    if (cur >= 0 && cur < static_cast<int>(session.mans.size()) &&
+        channelHasNoNextItem(session.mans[static_cast<size_t>(cur)], failedSkips)) {
+#ifndef MUT_N16_CHANNEL_SKIP_UNBOUNDED
+        if (session.channelFailSkips >= kChannelSkipMax)
+            return {};
+#endif
+        const int next = channelDelta(session.lineup, cur, 1);
+        if (next < 0 || next == cur)
+            return {};
+        const auto tune = session.selectIndex(next);
+        if (tune.generation == 0)
+            return {};
+        ++session.channelFailSkips;
+        return playRequestFor(session.lineup, tune.generation, next);   // a fresh tune: no skip carried
+    }
+#endif
     auto req = advanceAfterEof(session, generation, failedItemIndex);
     if (req.generation != 0)
         req.failedSkips = failedSkips;
     return req;
 }
 
-// GBE #620 second review P2: the first-picture watchdog chain and the failed-item chain share ONE
+// browse-lane #620 second review P2: the first-picture watchdog chain and the failed-item chain share ONE
 // consecutive-failure count, so alternating "no first picture" / "mid-play failure or advance
 // timeout" still exhausts one manifest's worth and lands. Reset only by a real first picture
 // (main loop), a zap, or a natural EOF (both carry 0).
@@ -299,18 +505,18 @@ inline unsigned sharedSkipBudget(const PlayRequest& r) {
     return r.firstPictureAttempt > r.failedSkips ? r.firstPictureAttempt : r.failedSkips;
 }
 
-// P3 (GBE second review): only an undecodable / failed source skips the item. CoreLost (OSD Reset,
+// P3 (browse-lane second review): only an undecodable / failed source skips the item. CoreLost (OSD Reset,
 // another program took the core) and RingError must not turn into an item skip.
 inline bool midPlayEndSkipsItem(bool needsTranscode, bool sourceError) {
     return needsTranscode || sourceError;
 }
 
-// GBE #621 P2-a: the shared-budget reset condition as one pure predicate (each term unit-tested).
+// browse-lane #621 P2-a: the shared-budget reset condition as one pure predicate (each term unit-tested).
 inline bool skipBudgetResetGate(bool open, bool stopping, bool playing, bool decodedPicture, bool currentGen) {
     return open && !stopping && playing && decodedPicture && currentGen;
 }
 
-// GBE #621 P3-a: a NeedsTranscode (CAVLC rate/load) verdict can come a few seconds AFTER the first
+// browse-lane #621 P3-a: a NeedsTranscode (CAVLC rate/load) verdict can come a few seconds AFTER the first
 // picture, so resetting on the first picture alone let an all-high-rate channel cycle forever. The
 // budget resets only after the current play has held a real picture for kSkipBudgetResetPlayMs.
 inline constexpr int64_t kSkipBudgetResetPlayMs = 20000;
@@ -349,14 +555,16 @@ struct FailedItemSkip {
     int itemIndex = -1;
     unsigned failedSkips = 0;  // already incremented for this failure
     std::string why;
+    ItemIdent ident;  // the failing item, not necessarily the last one that actually played
 };
 
-// Play-thread / play-job -> main-loop handoff (never takes tvMu on the play thread, GBE P1-2).
+// Play-thread / play-job -> main-loop handoff (never takes tvMu on the play thread, browse-lane P1-2).
 class FailedItemHandoff {
 public:
-    void post(uint64_t generation, int itemIndex, unsigned priorSkips, std::string why) {
+    void post(uint64_t generation, int itemIndex, unsigned priorSkips, std::string why,
+              ItemIdent ident = {}) {
         std::lock_guard<std::mutex> lock(mu_);
-        pending_ = {generation, itemIndex, priorSkips + 1, std::move(why)};
+        pending_ = {generation, itemIndex, priorSkips + 1, std::move(why), std::move(ident)};
     }
     FailedItemSkip take() {
         std::lock_guard<std::mutex> lock(mu_);
@@ -370,6 +578,41 @@ private:
     FailedItemSkip pending_;
 };
 
+struct CachedItemLanding {
+    uint64_t generation = 0;
+    int itemIndex = -1;
+};
+
+class CachedItemHandoff {
+public:
+    void post(uint64_t generation, int itemIndex) {
+        std::lock_guard<std::mutex> lock(mu_);
+        pending_ = {generation, itemIndex};
+    }
+    CachedItemLanding take() {
+        std::lock_guard<std::mutex> lock(mu_);
+        const CachedItemLanding out = pending_;
+        pending_ = {};
+        return out;
+    }
+
+private:
+    std::mutex mu_;
+    CachedItemLanding pending_;
+};
+
+inline PlayRequest landCachedItem(Session& session, uint64_t generation, int itemIndex) {
+    if (itemIndex < 0 || !session.tv.current(generation))
+        return {};
+    const int idx = session.tv.index();
+    const auto tune = session.selectIndex(idx);
+    if (tune.generation == 0)
+        return {};
+    auto req = playRequestFor(session.lineup, tune.generation, idx);
+    req.requestedItemIndex = itemIndex;
+    return req;
+}
+
 inline PlayRequest resumeLastChannel(Session& session, const std::string& id) {
     session.guideOpen = false;
     const int idx = channelIndexById(session.lineup, id);
@@ -377,6 +620,32 @@ inline PlayRequest resumeLastChannel(Session& session, const std::string& id) {
         return {};
     const auto tune = session.selectIndex(idx);
     return playRequestFor(session.lineup, tune.generation, idx);
+}
+
+// First core-open after a Service switch or cold start often happens before
+// Back When is merged. A saved Back When id must not paint Open the Guide
+// until that fetch finishes (ok or fail). Empty / unknown ids still land
+// immediately (browse-lane P1-1 / N-6).
+enum class DeferredResume : uint8_t { Tune, Land, Defer };
+
+inline DeferredResume firstOpenLastChannelAction(const Lineup& lineup, const std::string& lastId,
+                                                 bool backWhenPending) {
+    if (lastId.empty())
+        return DeferredResume::Land;
+    if (channelIndexById(lineup, lastId) >= 0)
+        return DeferredResume::Tune;
+    return backWhenPending ? DeferredResume::Defer : DeferredResume::Land;
+}
+
+// browse-lane #654 P1: a real function, never a block-local lambda captured by
+// setSpelunkrCmd. That [&] callback outlives the lineup-success else, so a
+// local lambda would be a use-after-free on every later pad command.
+template <typename ClearChrome>
+inline void abandonDeferredResume(bool& awaiting, ClearChrome&& clearChrome) {
+    if (!awaiting)
+        return;
+    awaiting = false;
+    clearChrome();
 }
 
 // GH#411: core reopen keeps the dial in progress. Cold boot / first open must
@@ -399,7 +668,7 @@ inline PlayRequest resumeCurrentOrLast(Session& session, const std::string& last
     return playRequestFor(session.lineup, tune.generation, idx);
 }
 
-// GBE #623 frame 153: the channel the next core-open edge will resume, WITHOUT selecting it (no
+// browse-lane #623 frame 153: the channel the next core-open edge will resume, WITHOUT selecting it (no
 // generation bump), or -1 when the open edge will land. Mirrors resumeCurrentOrLast / resumeLastChannel
 // so main can arm the tuning chrome before the gate opens (owenbOpened then keeps it, no landing flash).
 inline int resumeIndexPreview(const Session& session, const std::string& lastId, bool preferCurrentDial) {
@@ -531,6 +800,77 @@ private:
     uint64_t revision_ = 0;
     std::thread thr_;
 };
+
+// Rising edge of Main core OSD (EV_OSD open): close the Spelunkr guide so
+// it is not stacked under the F12 OSD, and so pad Right can change Analog Raster.
+inline bool closeGuideOnCoreOsdOpen(bool wasOsdOpen, bool nowOsdOpen, bool guideOpen) {
+    return !wasOsdOpen && nowOsdOpen && guideOpen;
+}
+
+// Rising-edge tracker for the core OSD, held across input-loop iterations.
+// reset() on decoder/handle recreate so a stale wasOpen cannot swallow the next edge.
+struct OsdEdge {
+    bool wasOpen = false;
+    // Returns true on a rising edge (closed -> open). Updates wasOpen.
+    bool step(bool nowOpen) {
+        const bool rising = !wasOpen && nowOpen;
+        wasOpen = nowOpen;
+        return rising;
+    }
+    void reset() { wasOpen = false; }
+};
+
+// Idempotent guide close (browse-lane #646 P3-1 / #647 P2-5). True if the guide was open
+// and is now closed (caller should publish). False if it was already closed.
+inline bool applyGuideClose(bool& guideOpen) {
+    if (!guideOpen)
+        return false;
+    guideOpen = false;
+    return true;
+}
+
+// Stage-log helpers so duration/attempt/first-picture behaviour is unit-testable
+// (browse-lane #647 surviving mutants were text pins on main.cpp).
+struct StageLog {
+    uint64_t gen = 0;
+    int attempt = 0;
+    bool tJobSet = false;
+    int64_t tPrevMs = 0;
+    std::chrono::steady_clock::time_point tJob{};
+
+    int64_t elapsedMs() const {
+        if (!tJobSet)
+            return 0;
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - tJob)
+            .count();
+    }
+
+    // dur_ms is the delta since the previous line, not the cumulative t_ms.
+    std::string format(const char* name, bool terminal = false, const char* reason = nullptr) {
+        const auto ms = elapsedMs();
+        const auto dur = ms - tPrevMs;
+        tPrevMs = ms;
+        std::string s = "stage gen=" + std::to_string(gen) + " attempt=" + std::to_string(attempt) +
+                        " name=" + (name ? name : "") + " dur_ms=" + std::to_string(dur) +
+                        " t_ms=" + std::to_string(ms);
+        if (reason && *reason) {
+            s += " reason=";
+            s += reason;
+        }
+        if (terminal)
+            s += " terminal=1";
+        return s;
+    }
+};
+
+// One first_picture line per gen. False if picGen is 0 or this gen already logged.
+inline bool claimFirstPictureLog(uint64_t picGen, std::atomic<uint64_t>& loggedGen) {
+    uint64_t seen = loggedGen.load(std::memory_order_acquire);
+    if (picGen == 0 || seen == picGen)
+        return false;
+    return loggedGen.compare_exchange_strong(seen, picGen, std::memory_order_acq_rel);
+}
 
 }  // namespace spelunkr
 }  // namespace misterplex

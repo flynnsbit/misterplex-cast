@@ -16,10 +16,15 @@
 #include "fpga_playback_overlay.hpp"
 #include "idle_screen.hpp"
 #include "owenb_osd_layout.hpp"
+#include "service_switch.hpp"
 #include "subtitle_cues.hpp"
 #include "subtitle_position.hpp"
+#include "spelunkr_guide_format.hpp"
+#include "spelunkr_guide_icons.hpp"
+#include "ad_break_card.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +76,7 @@ struct LibraryRow {
     std::string text;
     bool dir = false;          // a container: drawn with a trailing "/"
     bool selectable = true;    // false: dim (a header, "Loading...")
+    GuideSource source = GuideSource::None;  // GH#650: badge, or none
 };
 struct LibraryPage {
     bool open = false;
@@ -85,7 +91,7 @@ struct LibraryPage {
             return false;
         for (size_t i = 0; i < rows.size(); ++i)
             if (rows[i].text != o.rows[i].text || rows[i].dir != o.rows[i].dir ||
-                rows[i].selectable != o.rows[i].selectable)
+                rows[i].selectable != o.rows[i].selectable || rows[i].source != o.rows[i].source)
                 return false;
         return true;
     }
@@ -99,6 +105,11 @@ struct FullSurface {
     unsigned w = 0, h = 0;
     uint64_t gen = 0;              // bumps with every new frame
     std::vector<uint8_t> bgra;
+    // Inclusive-start exclusive-end row bands. dirtyN==0 means the whole page
+    // (first show / unknown damage). In-window Up/Down fills two focus rows.
+    struct DirtyBand { unsigned y0 = 0, y1 = 0; };
+    std::array<DirtyBand, 8> dirty{};
+    unsigned dirtyN = 0;
 };
 
 // Skip Intro / Skip Credits button, or the Up Next card. Empty unless MARKERS is on.
@@ -158,6 +169,7 @@ struct UiState {
     std::string pendingLabel;
     bool spelunkrStatic = false;
     uint32_t staticFrame = 0;
+    bool adBreak = false;       // N14: Pluto ad pod dropped -> full-screen stand-by card (ad_break_card.hpp)
     std::string idleHint;       // "" -> "Ready to cast"
     std::string idleName;       // the companion's device name ("" none)
     // AMBIENT, default off. Null unless the flag is on, idle, and a library
@@ -184,12 +196,17 @@ struct UiState {
     struct SpelunkrGuide {
         bool open = false;
         int cursor = -1;
+        int viewStart = 0;
         std::vector<LibraryRow> rows;
     } spelunkrGuide;
     bool anyVisible() const {
         return bar != Bar::Hidden || !chip.empty() || !toasts.empty() || error != ErrorScreen::None || menu.open ||
                idle || pending || library.open || surface || captionArmed || !caption1.empty() || !caption2.empty() ||
-               marker.visible() || overscan.open || spelunkrBanner.on || spelunkrGuide.open;
+               marker.visible() || overscan.open || spelunkrBanner.on || spelunkrGuide.open
+#ifndef MUT_ADBREAK_NOT_VISIBLE   // N15 root cause: a card-only state was "nothing visible" -> the overlay was hidden
+               || adBreak
+#endif
+            ;
     }
 };
 
@@ -256,7 +273,8 @@ inline uint64_t contentKey(const UiState& s, const Layout& L) {
                          int64_t(s.spelunkr),
                          int64_t(s.pending),
                          int64_t(s.spelunkrStatic),
-                         s.staticFrame};
+                         s.staticFrame,
+                         int64_t(s.adBreak)};
     h = fnvMix(h, v, sizeof v);
     for (const std::string* t : {&s.title, &s.transport, &s.chip, &s.errorDetail, &s.menu.title, &s.idleHint,
                                  &s.idleName, &s.caption1, &s.caption2, &s.statusText, &s.pendingLabel})
@@ -304,8 +322,12 @@ inline uint64_t contentKey(const UiState& s, const Layout& L) {
     }
     if (s.spelunkrGuide.open) {
         h = fnvMix(h, &s.spelunkrGuide.cursor, sizeof s.spelunkrGuide.cursor);
-        for (const auto& r : s.spelunkrGuide.rows)
+        h = fnvMix(h, &s.spelunkrGuide.viewStart, sizeof s.spelunkrGuide.viewStart);
+        for (const auto& r : s.spelunkrGuide.rows) {
             h = fnvMix(h, r.text);
+            const uint8_t src = static_cast<uint8_t>(r.source);
+            h = fnvMix(h, &src, 1);
+        }
     }
     return h;
 }
@@ -1098,6 +1120,26 @@ inline Frame planFrame(const UiState& s, const Layout& L) {
         const int fh = spelunkrBannerFont(f.font, L.evenLines).height();
         f.spelunkrBanner = spelunkrBannerRect(L, f.pad, fh);
     }
+#ifndef MUT_ADBREAK_NO_CARD
+    if (s.adBreak && s.error == ErrorScreen::None) {
+        // N14/N15: the stand-by card is the whole field; the play bar, captions, markers and the idle card sit
+        // out. Menu, library and the Spelunkr guide stay (FPGA Bug nit on 5f9571b4): they draw over the card.
+        f.idleField = true;
+        f.bar = {};
+        f.reserve = {};
+        f.card = {};
+        f.caption = {};
+        f.scrubThumb = {};
+        f.markerBtn = {};
+        f.markerCard = {};
+        f.spelunkrBanner = {};
+#ifdef MUT_ADBREAK_HIDES_MENU   // mutant: the card hides menu, library and guide (N14 behaviour)
+        f.menu = {};
+        f.lib = {};
+        f.spelunkrGuide = {};
+#endif
+    }
+#endif
     if (s.bar == Bar::Seeking && !f.bar.empty()) {
         const int anchor = f.caption.empty() ? f.bar.y : std::min(f.bar.y, f.caption.y);
 #ifdef MUT_SCRUB_THUMBS_BOX_WITHOUT_FRAME
@@ -1484,6 +1526,88 @@ inline void paintMarker(Surface& S, const UiState& s, const Layout& L, const Fra
     }
 }
 
+inline const uint8_t* guideIconPixels(GuideSource src) {
+    if (src == GuideSource::BackWhen)
+        return kBackWhenGuideIcon;
+    if (src == GuideSource::Spelunkr)
+        return kSpelunkrGuideIcon;
+    return nullptr;
+}
+
+// 16x16 badge + gap. The badge must fit the existing inPlay row height
+// (font+pad is unchanged from pre-#650). Leave at least kGuideIconGap
+// pixels to the dial. Progressive: ≥1 clear line between stacked badges;
+// interlaced (evenLines): ≥2 clear lines (CRT blur / #666). blitGuideIcon
+// must honour drawH — painting all 16 rows ignored badgeH and closed the gap.
+// Per-pixel fills must not snap: a 1-line snap would smear odd rows.
+inline constexpr int kGuideIconGap = 3;
+inline int guideIconTextInset() { return kGuideIconSize + kGuideIconGap; }
+
+inline int guideIconDrawHeight(int rowH, bool evenLines) {
+    // Reserve clear lines between stacked rows: 2 on interlaced, 1 progressive.
+    const int reserve = evenLines ? 2 : 1;
+    int h = std::min(kGuideIconSize, std::max(0, rowH - reserve));
+    if (evenLines)
+        h &= ~1;
+    if (h < 2)
+        h = (evenLines && rowH >= 2) ? (rowH & ~1) : std::max(1, rowH);
+    return h;
+}
+
+// Center in the row, but never eat the bottom gap. evenUp of a centered
+// start can push a 16-line badge onto the last line of an 18-line row
+// so stacked S marks touch (browse-lane P3-3).
+inline int guideIconDrawY(int rowY, int rowH, int badgeH, bool evenLines) {
+    int slack = rowH - badgeH;
+    if (slack < 0)
+        slack = 0;
+    int iy = rowY + slack / 2;
+    if (evenLines)
+        iy &= ~1;
+    if (iy < rowY)
+        iy = evenLines ? (rowY + (rowY & 1)) : rowY;
+    if (slack >= 1 && iy + badgeH >= rowY + rowH) {
+        iy = rowY + rowH - badgeH - 1;
+        if (evenLines)
+            iy &= ~1;
+        if (iy < rowY)
+            iy = evenLines ? (rowY & ~1) : rowY;
+    }
+    return iy;
+}
+
+inline void blitGuideIcon(Surface& S, int x, int y, GuideSource src, const Rect& clip,
+                          int drawH = kGuideIconSize) {
+    const uint8_t* p = guideIconPixels(src);
+    if (!p)
+        return;
+    if (S.evenLines)
+        y &= ~1;
+    int h = drawH;
+    if (h < 1)
+        h = 1;
+    if (h > kGuideIconSize)
+        h = kGuideIconSize;
+    if (S.evenLines)
+        h &= ~1;
+    if (h < 2 && S.evenLines)
+        h = 2;
+    // Center-crop the 16x16 asset into drawH so placement math matches pixels (#666).
+    const int src0 = (kGuideIconSize - h) / 2;
+    for (int row = 0; row < h; ++row) {
+        for (int col = 0; col < kGuideIconSize; ++col) {
+            const uint8_t* px = p + ((src0 + row) * kGuideIconSize + col) * 4;
+            if (px[3] == 0)
+                continue;
+            Rect pix{x + col, y + row, 1, 1};
+            pix = intersect(pix, clip);
+            if (pix.empty())
+                continue;
+            S.fill(pix, Rgba{px[2], px[1], px[0], px[3]}, false);
+        }
+    }
+}
+
 inline void paintBox(Surface &S, const Frame &f, const Rect &r, const std::string &text, Rgba c,
                      bool clipText = false) {
     if (r.empty())
@@ -1767,13 +1891,30 @@ inline void paintAmbientField(Surface& S, const UiState& s) {
 }
 
 // Draw one frame into S, which is reset to the frame's band (rows [first, last]).
+// N14: black field + the scaled stand-by card, centred (letterboxed). With no image registered the
+// field is plain black, which still replaces the frozen frame.
+inline void paintAdBreakCard(Surface& S, const Layout& L) {
+    S.fill({0, S.y0, int(S.W), S.h}, Rgba{0, 0, 0, 0xFF}, false);
+    const auto bm = misterplex::AdCardStore::get().bitmapFor(int(L.W), int(L.H), L.par, L.evenLines);
+    if (!bm || !bm->ok())
+        return;
+    for (int y = 0; y < bm->h; ++y) {
+        const int cy = bm->y + y;
+        if (cy < S.y0 || cy >= S.y0 + S.h)
+            continue;
+        std::memcpy(S.at(bm->x, cy), &bm->bgra[size_t(y) * size_t(bm->w) * 4u], size_t(bm->w) * 4u);
+    }
+}
+
 inline void paint(Surface& S, const UiState& s, const Layout& L, const Frame& f) {
     int first, last;
     f.band(L, first, last);
     S.reset(L.W, std::max(0, first), last < 0 ? 0 : last - first + 1, L.evenLines);
     if (last < 0)
         return;
-    if (f.idleField) {
+    if (f.idleField && s.adBreak && !s.overscan.open) {
+        paintAdBreakCard(S, L);   // the field; menu / library / guide are painted over it below
+    } else if (f.idleField) {
 #ifdef MUT_F3_IDLE_BG_NOT_BLACK
         if (f.lib.empty())
             paintChevronField(S, L);   // mutant: the old grey field, not FIELD-1018 black
@@ -1784,11 +1925,12 @@ inline void paint(Surface& S, const UiState& s, const Layout& L, const Frame& f)
             S.fill({0, S.y0, int(S.W), S.h}, Rgba{0, 0, 0, 255}, false);
             const Font& F = f.font;
             const int y = evenUp(L.safe.y + L.safe.h / 2 - F.height(), L.evenLines);
-            for (const auto& row : {std::make_pair("SPELUNKR", kFg),
-                                    std::make_pair("OPEN THE GUIDE", kAccent)}) {
+            const std::string live = upper(misterplex::service::label(true));
+            for (const auto& row : {std::make_pair(live, kFg),
+                                    std::make_pair(std::string("OPEN THE GUIDE"), kAccent)}) {
                 const std::string text = F.fit(row.first, L.safe.w);
                 F.draw(S, L.safe.x + (L.safe.w - F.width(text)) / 2,
-                       row.first == std::string("SPELUNKR") ? y : evenUp(y + F.height() + f.pad, L.evenLines),
+                       row.first == live ? y : evenUp(y + F.height() + f.pad, L.evenLines),
                        text, row.second);
             }
         } else if (s.pending) {
@@ -1850,19 +1992,46 @@ inline void paint(Surface& S, const UiState& s, const Layout& L, const Frame& f)
         S.fill(f.spelunkrGuide, bg, L.evenLines);
         const int fh = gf.font.height() + gf.pad;
         int y = f.spelunkrGuide.y + f.pad;
-        paintBox(S, gf, {f.spelunkrGuide.x + f.pad, y, f.spelunkrGuide.w - 2 * f.pad, fh}, "SPELUNKR GUIDE", kAccent,
-                 true);
+        paintBox(S, gf, {f.spelunkrGuide.x + f.pad, y, f.spelunkrGuide.w - 2 * f.pad, fh},
+                 misterplex::service::kGuideTitle, kAccent);
         y += fh + f.pad;
         const int room = std::max(1, (f.spelunkrGuide.bottom() - y - f.pad) / fh);
-        int start = 0;
-        if (s.spelunkrGuide.cursor >= room)
-            start = s.spelunkrGuide.cursor - room + 1;
+        int start = s.spelunkrGuide.viewStart;
+        if (start < 0)
+            start = 0;
+        const int maxStart = std::max(0, int(s.spelunkrGuide.rows.size()) - room);
+        if (start > maxStart)
+            start = maxStart;
+        if (s.spelunkrGuide.cursor >= 0) {
+            if (s.spelunkrGuide.cursor < start)
+                start = s.spelunkrGuide.cursor;
+            if (s.spelunkrGuide.cursor >= start + room)
+                start = s.spelunkrGuide.cursor - room + 1;
+            if (start > maxStart)
+                start = maxStart;
+        }
         for (int i = 0; i < room && start + i < int(s.spelunkrGuide.rows.size()); ++i) {
             const int idx = start + i;
             const LibraryRow& row = s.spelunkrGuide.rows[static_cast<size_t>(idx)];
             const bool sel = idx == s.spelunkrGuide.cursor;
             Rgba fg = sel ? Rgba{0xff, 0xff, 0x00, 0xFF} : kFg;
-            paintBox(S, gf, {f.spelunkrGuide.x + f.pad, y, f.spelunkrGuide.w - 2 * f.pad, fh}, row.text, fg, true);
+            const Rect rowR{f.spelunkrGuide.x + f.pad, y, f.spelunkrGuide.w - 2 * f.pad, fh};
+            // Unknown / None: no inset (P3-5). Every guide row sits on the
+            // guide purple, not kPanel, so badge-less rows are not a dark
+            // bar between purple ones (P3-6 / N1). Text origin matches
+            // paintBox (pre-#650).
+            if (!guideIconPixels(row.source)) {
+                const int maxW = std::max(0, rowR.w - 2 * gf.pad);
+                gf.font.draw(S, rowR.x + gf.pad, evenUp(rowR.y + gf.pad, S.evenLines),
+                             upper(row.text), fg, maxW);
+            } else {
+                const int badgeH = guideIconDrawHeight(rowR.h, L.evenLines);
+                const int iy = guideIconDrawY(rowR.y, rowR.h, badgeH, L.evenLines);
+                blitGuideIcon(S, rowR.x + gf.pad, iy, row.source, rowR, badgeH);
+                const int textX = rowR.x + gf.pad + guideIconTextInset();
+                const int maxW = std::max(0, rowR.right() - gf.pad - textX);
+                gf.font.draw(S, textX, evenUp(rowR.y + gf.pad, S.evenLines), upper(row.text), fg, maxW);
+            }
             y += fh;
         }
     } else if (!f.spelunkrBanner.empty() && s.spelunkrBanner.on) {

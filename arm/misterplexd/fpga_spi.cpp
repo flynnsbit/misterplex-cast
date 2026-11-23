@@ -3939,9 +3939,12 @@ bool FpgaSpi::withdrawAudioCommand(std::string& why) {
     namespace ring = ddr_bitstream_ring;
     std::lock_guard<std::recursive_mutex> g(bitstreamMutex());
     why.clear();
-    if (!ensureBitstreamDdrMap()) { // the core gate decides: another core's DDR is not ours
-        why = lastError();
-        return false;
+    // Do not call ensureBitstreamDdrMap(): on PlexOB, CoreGate::open() stays false
+    // (owenbOpen is the live gate), so that remap logs a false "withdraw failed".
+    // A held map is this process's; zero the commit even while the gate is closing.
+    if (!bitstreamMap_) {
+        why = "bitstream map not held (unmapped; skip)";
+        return true;
     }
     auto* words = reinterpret_cast<volatile uint64_t*>(
         bitstreamMap_ + mailbox_abi::kAudioControlAddr - ring::kDataPhys);

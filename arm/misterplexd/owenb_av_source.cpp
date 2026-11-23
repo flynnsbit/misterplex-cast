@@ -17,6 +17,7 @@
 #include "libmisterplex/subtitle_cues.hpp"
 #include "spelunkr/header_cache.hpp"
 #include "spelunkr/header_cache_avio.hpp"
+#include "libmisterplex/live_disc_rebase.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -79,6 +80,8 @@ public:
     void openDone() { openDeadlineMs_.store(0); }   // the attempt cap covers the open only
     std::function<bool()> cancelled_;
     std::atomic<int64_t> openDeadlineMs_{0};
+    std::atomic<int64_t> fillDeadlineMs_{0};
+    std::shared_ptr<std::atomic<int64_t>> openExtraBudgetMs_;
     bool openStopped_ = false;
     bool openCapped_ = false;
     int64_t startPts90k() const override { return startPts90k_; }
@@ -201,6 +204,7 @@ public:
 
     int activeAudioIndex() const override { return aidx_; }
     bool audioDecoderOpen() const override { return adec_ != nullptr; }
+    bool liveRemux() const override { return liveRemux_; }
     int lastAvErr() const override { return lastAvErr_; }
     int lastHttpStatus() const override { return lastHttp_; }
     void setStallWatch(misterplex::netresume::StallWatch w) override {
@@ -226,8 +230,10 @@ public:
         };
         fmt_->interrupt_callback.opaque = this;
         cancelled_ = req.cancelled;
+        openExtraBudgetMs_ = req.attemptExtraBudgetMs;
         if (req.attemptTimeoutMs > 0)
             openDeadlineMs_.store(stallNow() + req.attemptTimeoutMs);
+        liveRemux_ = req.url.find("/yt-live.ts") != std::string::npos;
         // GATE7-1018: bound the demuxer's codec probe. MPEG-TS probes the AAC stream (request_probe) and buffers
         // every packet until it settles; each buffered video packet pins a whole 200 KiB PES buffer while the
         // buffer limit counts only payload bytes. With the ARM static-safe libav (no ADTS demuxer to settle the
@@ -244,6 +250,16 @@ public:
             // Remote PMS can be slow to the first byte; a helper /yt.ts first byte waits on a yt-dlp run
             // (gcast/yt_open_budget.hpp, fr-yt110-1025).
             av_dict_set(dst, "rw_timeout", std::to_string(misterplex::gcast::openRwTimeoutUs(req.url)).c_str(), 0);
+#ifndef MUT_LIVE_NO_CLIENT_RECONNECT
+            // Glass 47abfbbb: client_write closed /yt-live.ts and the player never came back.
+            // libav reconnect_streamed issues a new GET; LiveRelay.accept starts a fresh ffmpeg.
+            if (liveRemux_) {
+                av_dict_set(dst, "reconnect", "1", 0);
+                av_dict_set(dst, "reconnect_streamed", "1", 0);
+                av_dict_set(dst, "reconnect_on_network_error", "1", 0);
+                av_dict_set(dst, "reconnect_delay_max", "4", 0);
+            }
+#endif
             av_dict_set(dst, "max_probe_packets", kMaxProbePackets, 0);
 #ifndef MUT_AV_NO_PROBE_LIMITS
             // Payload and analyze caps next to the packet cap. fflags=nobuffer is not set:
@@ -287,21 +303,33 @@ public:
                 : req.url;
         const int rc = avformat_open_input(&fmt_, openName.c_str(), nullptr, &o);
         av_dict_free(&o);
+        const auto openMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - openT0).count();
         if (usedHeaderIo) {
             const auto& hs = headerIo_.stats();
-            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - openT0).count();
             std::fprintf(stderr,
                          "misterplexd: spelunkr header-cache %s moov_offset=%lld moov_size=%lld "
-                         "bytes_read=%lld cached_bytes=%lld live_bytes=%lld open_ms=%.1f rc=%d\n",
+                         "bytes_read=%lld cached_bytes=%lld live_bytes=%lld open_ms=%.1f "
+                         "live_open_ms=%lld live_seek_ms=%lld cache_read_ms=%lld live_opens=%d "
+                         "live_seeks=%d reconnects=%d rc=%d\n",
                          hs.cacheHit ? "hit" : "miss", (long long)hs.moovOffset, (long long)hs.moovSize,
                          (long long)(fmt_ && fmt_->pb ? fmt_->pb->bytes_read : 0),
-                         (long long)hs.cachedBytesServed, (long long)hs.liveBytesRead, ms, rc);
+                         (long long)hs.cachedBytesServed, (long long)hs.liveBytesRead, openMs,
+                         (long long)hs.liveOpenMs, (long long)hs.liveSeekMs, (long long)hs.cacheReadMs,
+                         hs.liveOpens, hs.liveSeeks, hs.liveReconnects, rc);
         }
         if (rc < 0) {
             if (usedHeaderIo && headerIo_.stats().cacheHit && headerStore_)
                 // P2-2: open itself failed on a cache hit (a stale/poisoned entry, or a hit
                 // whose live gap read failed). Delete it so the next open is a clean miss.
                 headerStore_->remove(headerKey);
+            if (usedHeaderIo)
+                // browse-lane P2-A: for MP4/MOV the moov atom is parsed inside avformat_open_input
+                // itself (mov_read_header), not avformat_find_stream_info -- this is the path
+                // a dial-500-sized moov actually takes on a cancel/prefetch-timeout, and
+                // without this call every byte already read here was discarded before today.
+                // openStopped_/openCapped_ distinguish a cancel/timeout from a genuine
+                // protocol error, so only the former persists a resumable partial.
+                headerIo_.finalizeHeader(false, openStopped_ || openCapped_);
             err = openStopped_ ? std::string("open: stopped")
                   : openCapped_ ? "open: Connection timed out (attempt cap " + std::to_string(req.attemptTimeoutMs) + " ms)"
                                 : "open: " + avErr(rc);
@@ -328,23 +356,38 @@ public:
                 st->discard = keepText ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
             }
         }
+        const auto parseT0 = std::chrono::steady_clock::now();
         int r = avformat_find_stream_info(fmt_, nullptr);
+        const auto movParseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - parseT0)
+                                    .count();
         if (usedHeaderIo) {
             // Persist whatever header bytes were actually touched (a miss, or a hit with a gap)
             // before any seek, so the next open of this (url, size, etag) is a full hit --
             // unless find_stream_info itself failed (P2-2: a failed probe's bytes are not a
             // good header, and a cache hit that failed is deleted rather than persisted).
-            headerIo_.finalizeHeader(r >= 0);
+            // browse-lane P2-A: on a find_stream_info failure, openStopped_/openCapped_ (cancel / zap
+            // window / prefetch-slice timeout, not a genuine protocol error) persists a
+            // resumable partial of what was read instead of dropping it.
+            headerIo_.finalizeHeader(r >= 0, openStopped_ || openCapped_);
             const auto& hs = headerIo_.stats();
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - openT0).count();
             std::fprintf(stderr,
                          "misterplexd: spelunkr header-cache find_stream_info moov_offset=%lld "
-                         "bytes_read=%lld elapsed_ms=%.1f r=%d\n",
-                         (long long)hs.moovOffset, (long long)(fmt_ && fmt_->pb ? fmt_->pb->bytes_read : 0), ms, r);
+                         "bytes_read=%lld elapsed_ms=%.1f mov_parse_ms=%lld r=%d\n",
+                         (long long)hs.moovOffset, (long long)(fmt_ && fmt_->pb ? fmt_->pb->bytes_read : 0), ms,
+                         (long long)movParseMs, r);
             if (req.headerCacheStatsOut) {
                 req.headerCacheStatsOut->cacheHit = hs.cacheHit;
                 req.headerCacheStatsOut->cachedBytesServed = hs.cachedBytesServed;
                 req.headerCacheStatsOut->liveBytesRead = hs.liveBytesRead;
+                req.headerCacheStatsOut->liveOpenMs = hs.liveOpenMs;
+                req.headerCacheStatsOut->liveSeekMs = hs.liveSeekMs;
+                req.headerCacheStatsOut->cacheReadMs = hs.cacheReadMs;
+                req.headerCacheStatsOut->movParseMs = movParseMs;
+                req.headerCacheStatsOut->liveOpens = hs.liveOpens;
+                req.headerCacheStatsOut->liveSeeks = hs.liveSeeks;
+                req.headerCacheStatsOut->liveReconnects = hs.liveReconnects;
             }
         }
         if (r < 0) {
@@ -425,9 +468,30 @@ public:
                 return false;
             }
         }
+        // Live remux was set at open() start so reconnect flags and openAudio
+        // (split MPEG-TS AAC in a second program; related=vidx_ used to stick in aidx_)
+        // both see it.
         // A preferred index names a stream in the muxed file. Separate DASH audio
         // is its own input, so the preference does not apply there.
         openAudio(fmtA_ ? -1 : req.audioStreamIndex);
+        // Pace only split-rendition live (Vevo two-HLS remux). /yt-live.ts alone is
+        // muxed Pluto too; VOD never sets liveRemux_. E 9b4c55a7 REVIEW REJECT.
+        splitLivePace_ = liveRemux_ && (req.splitLiveRendition ||
+                                        misterplex::live_disc::splitLiveRemuxActive().load() ||
+                                        audioOutsideVideoProgram());
+        if (liveRemux_) {
+            const char* codec = "none";
+            int rate = 0;
+            const int logAidx = audioIndexOrNone();
+            if (logAidx >= 0 && audioFmt() && audioFmt()->streams[logAidx] &&
+                audioFmt()->streams[logAidx]->codecpar) {
+                codec = avcodec_get_name(audioFmt()->streams[logAidx]->codecpar->codec_id);
+                rate = audioFmt()->streams[logAidx]->codecpar->sample_rate;
+            }
+            std::fprintf(stderr,
+                         "misterplexd: live remux demux: video_idx=%d audio_idx=%d codec=%s rate=%d decoder=%d\n",
+                         vidx_, logAidx, codec, rate, adec_ ? 1 : 0);
+        }
         // Plex id on subtitleStreamIndex is not a container index. Embedded text
         // uses textSubtitleIndex (SOFT_SUBS, or mov_text overlay #260).
         (void)req.subtitleStreamIndex;
@@ -438,6 +502,15 @@ public:
             if (misterplex::packetTextDecodeAllowedForCodec(req.textCodec) &&
                 static_cast<int>(i) == resolvedTextIndex(req.textSubtitleIndex))
                 continue;
+            // Live remux: if the GATE7 probe missed AAC (Hybrik muxed MPEG-TS, audio
+            // packets after the 64-packet cap), keep audio PIDs so a later PMT/ADTS
+            // can still open the decoder. UNKNOWN: a split PMT can advertise the PID
+            // before codecpar settles; discarding it made VEVO HDMI sit at the floor.
+            if (liveRemux_ && aidx_ < 0 && fmt_->streams[i]->codecpar) {
+                const AVMediaType t = fmt_->streams[i]->codecpar->codec_type;
+                if (t == AVMEDIA_TYPE_AUDIO || t == AVMEDIA_TYPE_UNKNOWN)
+                    continue;
+            }
             fmt_->streams[i]->discard = AVDISCARD_ALL;
         }
         if (fmtA_) {
@@ -493,87 +566,378 @@ public:
 
     SourceRead read(MediaPacket& p, std::string& err) override {
         for (;;) {
-            if (!ready_.empty()) {
-                p = std::move(ready_.front());
-                readyBytes_ -= std::min(readyBytes_, p.data.size());
-                ready_.pop_front();
-                readyDepth_.store(ready_.size());
-                return SourceRead::Packet;
+            if (splitLivePace_ && !firstSpawnPaced_) {
+                if (!fillFirstSpawnPace(err))
+                    return SourceRead::Error;
+#ifndef MUT_LIVE_PACE_HOLD_AUDIO
+                // Prefix only (SPS/AUD/IDR) so needKey_ clears. Glass G kept
+                // popping every later video AU while PCM sat in ready_: the
+                // ring presented video, then the 1.5 s dump was AUD_LATE and
+                // HDMI sat at idle floor from t=0 (glass G 8.99 s / −81.9 dB)
+                // even though audio_bytes=290816. After the first key, FIFO
+                // A+V so paced PCM lands with the video it belongs to.
+                if (!firstVideoDelivered_) {
+                    if (popFirstVideo(p))
+                        return SourceRead::Packet;
+                }
+#else
+                // Mutant: G video-only watermark. Tests must FAIL.
+                if (popFirstVideo(p))
+                    return SourceRead::Packet;
+#endif
             }
-            if (videoPending_) {
-                takeVideo();
-                if (!ready_.empty())
-                    continue;
+            if (!splitLivePace_ || firstSpawnPaced_
+#ifndef MUT_LIVE_PACE_HOLD_AUDIO
+                || firstVideoDelivered_
+#endif
+            ) {
+#ifndef MUT_LIVE_PACE_HOLD_AUDIO
+                // After the first key, deliver by PTS so a video-first ready_
+                // queue cannot dump 1.5 s of video before the paced PCM.
+                if (splitLivePace_ && firstVideoDelivered_ && popReadyByPts(p))
+                    return SourceRead::Packet;
+#endif
+                if (!ready_.empty()) {
+#ifndef MUT_LIVE_NO_VIDEO_LEAD_CAP
+                    // Do not leak a leading video AU through the FIFO fallback
+                    // while popReadyByPts is holding for audio (H 3.42 s / 2.64 s).
+                    if (!(splitLivePace_ && firstVideoDelivered_ &&
+                          ready_.front().kind == MediaPacket::Kind::Video &&
+                          !misterplex::live_disc::videoLeadAllowed(ready_.front().pts90k,
+                                                                   lastAudioEmitPts_)))
+#endif
+                    {
+                    p = std::move(ready_.front());
+                    readyBytes_ -= std::min(readyBytes_, p.data.size());
+                    ready_.pop_front();
+                    readyDepth_.store(ready_.size());
+                    noteEmitted(p);
+                    return SourceRead::Packet;
+                    }
+                }
             }
-            if (audioPending_) {
-                takeAudio();
-                if (!ready_.empty())
-                    continue;
+            const DemuxStep step = demuxOne(err);
+            if (step == DemuxStep::Error)
+                return SourceRead::Error;
+            if (step == DemuxStep::FillTimeout) {
+                // Bound the stuck av_read_frame only. Do not release a 0-byte
+                // watermark (glass F 1066 audio_bytes=0 need=288000).
+                fillDeadlineMs_.store(0);
+                continue;
             }
-            if (drained_)
+            if (step == DemuxStep::Eof) {
+                if (splitLivePace_ && !firstSpawnPaced_)
+                    logFirstSpawnPace(misterplex::live_disc::firstSpawnPaceAudioBytes());
+                firstSpawnPaced_ = true;
+#ifndef MUT_LIVE_PACE_HOLD_AUDIO
+                if (splitLivePace_ && firstVideoDelivered_ && popReadyByPts(p))
+                    return SourceRead::Packet;
+                if (splitLivePace_ && !firstVideoDelivered_ && popFirstVideo(p))
+                    return SourceRead::Packet;
+#else
+                if (splitLivePace_ && popFirstVideo(p))
+                    return SourceRead::Packet;
+#endif
+                if (!ready_.empty()) {
+#ifndef MUT_LIVE_NO_VIDEO_LEAD_CAP
+                    // Do not leak a leading video AU through the FIFO fallback
+                    // while popReadyByPts is holding for audio (H 3.42 s / 2.64 s).
+                    if (!(splitLivePace_ && firstVideoDelivered_ &&
+                          ready_.front().kind == MediaPacket::Kind::Video &&
+                          !misterplex::live_disc::videoLeadAllowed(ready_.front().pts90k,
+                                                                   lastAudioEmitPts_)))
+#endif
+                    {
+                    p = std::move(ready_.front());
+                    readyBytes_ -= std::min(readyBytes_, p.data.size());
+                    ready_.pop_front();
+                    readyDepth_.store(ready_.size());
+                    noteEmitted(p);
+                    return SourceRead::Packet;
+                    }
+                }
                 return SourceRead::Eof;
-            if (abort_.load() && !stallAbort_) {
-                err = "cancelled";
-                return SourceRead::Error;
             }
-            if (fmtA_) {
-                if (!pullDash(err))
-                    return SourceRead::Error;
-                continue;
-            }
-            const int r = av_read_frame(fmt_, pkt_);
-            if (r == AVERROR_EOF) {
-                av_bsf_send_packet(bsf_, nullptr);
-                takeVideo();
-                if (adec_) {
-                    avcodec_send_packet(adec_, nullptr);
-                    takeAudio();
-                }
-                drained_ = true;
-                continue;
-            }
-            if (r < 0) {
-                if (stallAbort_) {
-                    stallAbort_ = false;
-                    lastAvErr_ = misterplex::netresume::kStallAbortAv;
-                    lastHttp_ = 0;
-                    err = "stall";
-                    return SourceRead::Error;
-                }
-                lastAvErr_ = r;
-                err = abort_.load() ? "cancelled" : "read: " + avErr(r);
-                lastHttp_ = httpStatusOf(r, err);
-                return SourceRead::Error;
-            }
-            noteByte();
-            if (pkt_->stream_index == vidx_) {
-                if (av_bsf_send_packet(bsf_, pkt_) == 0)
-                    takeVideo();
-            } else if (adec_ && pkt_->stream_index == aidx_) {
-                if (avcodec_send_packet(adec_, pkt_) == 0)
-                    takeAudio();
-            } else if (sdec_ && pkt_->stream_index == sidx_) {
-                takeSubtitle(pkt_);
-            }
-            av_packet_unref(pkt_);
         }
     }
 
 private:
+    enum class DemuxStep { Ok, Eof, Error, FillTimeout };
+
+    int64_t audioBytesInReady() const {
+        int64_t n = 0;
+        for (const auto& m : ready_) {
+            if (m.kind == MediaPacket::Kind::Audio)
+                n += static_cast<int64_t>(m.data.size());
+        }
+        return n;
+    }
+
+    bool fillDeadlineHit() const {
+        const int64_t dl = fillDeadlineMs_.load();
+        return dl > 0 && stallNow() >= dl;
+    }
+
+    // Split-rendition live: audio is not in the video MPEG-TS program (two-program
+    // remux / test fixture). Muxed Pluto is one program with both A and V.
+    bool audioOutsideVideoProgram() const {
+        if (!fmt_ || vidx_ < 0 || fmt_->nb_programs < 2)
+            return false;
+        int vProg = -1, aProg = -1;
+        for (unsigned p = 0; p < fmt_->nb_programs; ++p) {
+            const AVProgram* pr = fmt_->programs[p];
+            if (!pr)
+                continue;
+            for (unsigned i = 0; i < pr->nb_stream_indexes; ++i) {
+                const int si = static_cast<int>(pr->stream_index[i]);
+                if (si == vidx_)
+                    vProg = static_cast<int>(p);
+                if (aidx_ >= 0 && si == aidx_)
+                    aProg = static_cast<int>(p);
+            }
+        }
+        if (vProg < 0)
+            return false;
+        if (aidx_ < 0)
+            return true;
+        return aProg != vProg;
+    }
+
+    bool popFirstVideo(MediaPacket& p) {
+        // Stream order: SPS/AUD before IDR. F popped the first key from the middle
+        // and then blocked, so the FPGA saw an IDR without the prefix and waited
+        // out the fill (zap first_picture vs B).
+        for (auto it = ready_.begin(); it != ready_.end(); ++it) {
+            if (it->kind != MediaPacket::Kind::Video)
+                continue;
+            p = std::move(*it);
+            readyBytes_ -= std::min(readyBytes_, p.data.size());
+            ready_.erase(it);
+            readyDepth_.store(ready_.size());
+            if (p.keyframe)
+                firstVideoDelivered_ = true;
+            noteEmitted(p);
+            return true;
+        }
+        return false;
+    }
+
+    void noteEmitted(const MediaPacket& p) {
+        if (p.kind == MediaPacket::Kind::Audio && p.pts90k != misterplex::live_disc::kNoPts90k)
+            lastAudioEmitPts_ = p.pts90k;
+        if (p.kind == MediaPacket::Kind::Video && p.pts90k != misterplex::live_disc::kNoPts90k)
+            lastVideoEmitPts_ = p.pts90k;
+    }
+
+    // Glass H r3: after the first key, popReadyByPts dumped 3.42 s of video
+    // (idle-floor HDMI) while 1.5 s of PCM sat in ready_ at a later PTS, and
+    // a mid-soak pts_jump left video moving with no audio. Cap video lead at
+    // the 0.2 s soak gate; snap the first post-key (or post-disc) audio AU
+    // onto the last video emit so paced PCM starts now, not 3.42 s later.
+    bool popReadyByPts(MediaPacket& p) {
+        if (ready_.empty())
+            return false;
+        auto bestAudio = ready_.end();
+        auto best = ready_.begin();
+        for (auto it = ready_.begin(); it != ready_.end(); ++it) {
+            if (it->kind == MediaPacket::Kind::Audio &&
+                (bestAudio == ready_.end() ||
+                 (it->pts90k >= 0 && (bestAudio->pts90k < 0 || it->pts90k < bestAudio->pts90k))))
+                bestAudio = it;
+            if (it->pts90k < 0)
+                continue;
+            if (best->pts90k < 0 || it->pts90k < best->pts90k)
+                best = it;
+        }
+#ifndef MUT_LIVE_NO_VIDEO_LEAD_CAP
+        if (splitLivePace_ && firstVideoDelivered_) {
+            const bool videoLeads = best->kind == MediaPacket::Kind::Video &&
+                !misterplex::live_disc::videoLeadAllowed(best->pts90k, lastAudioEmitPts_);
+            if (videoLeads) {
+                if (bestAudio == ready_.end())
+                    return false;  // demux more; do not emit a ≥0.2 s video-only lead
+                best = bestAudio;
+            }
+        }
+#endif
+        p = std::move(*best);
+        readyBytes_ -= std::min(readyBytes_, p.data.size());
+        ready_.erase(best);
+        readyDepth_.store(ready_.size());
+        if (p.kind == MediaPacket::Kind::Video && p.keyframe)
+            firstVideoDelivered_ = true;
+#ifndef MUT_LIVE_NO_VIDEO_LEAD_CAP
+        // First audio after the key (or after a pts_jump hold): play now with
+        // the picture already on screen, not at a late independent PTS origin.
+        if (p.kind == MediaPacket::Kind::Audio &&
+            lastAudioEmitPts_ == misterplex::live_disc::kNoPts90k &&
+            lastVideoEmitPts_ != misterplex::live_disc::kNoPts90k)
+            p.pts90k = lastVideoEmitPts_;
+#endif
+        noteEmitted(p);
+        return true;
+    }
+
+    void logFirstSpawnPace(int64_t need) {
+        if (paceLogged_)
+            return;
+        paceLogged_ = true;
+        std::fprintf(stderr,
+                     "misterplexd: live remux first-spawn pace audio_bytes=%lld need=%lld\n",
+                     static_cast<long long>(pacedAudioBytes_), static_cast<long long>(need));
+    }
+
+    // Split-rendition live only. Decode 1.5 s of PCM (post-first-key-AU, not
+    // FPGA first_picture) so the H264 ring absorbs a 1.12 s (D t~31 s /
+    // remux ~70 s) or 1.39 s (F t=221.8 s) audio-EXTINF fetch hole. After the
+    // first key, A+V FIFO into the ring (glass G held PCM while video played:
+    // HDMI idle floor). Fill deadline only interrupts a stuck av_read_frame.
+    // Mutant 0 skips the 1.5 s; MUT_LIVE_PACE_HOLD_AUDIO restores G's hold.
+    bool fillFirstSpawnPace(std::string& err) {
+        (void)err;
+        const int64_t need = misterplex::live_disc::firstSpawnPaceAudioBytes();
+        if (need <= 0) {
+            firstSpawnPaced_ = true;
+            return true;
+        }
+        if (fillDeadlineMs_.load() == 0)
+            fillDeadlineMs_.store(stallNow() + misterplex::live_disc::kFirstSpawnPaceFillMs);
+        // Cumulative produced PCM: FIFO after the first key drains ready_, so
+        // audioBytesInReady() is not the watermark (glass G logged 290816 of
+        // held bytes that never reached HDMI).
+        if (pacedAudioBytes_ >= need || audioBytesInReady() >= need) {
+            logFirstSpawnPace(need);
+            fillDeadlineMs_.store(0);
+            firstSpawnPaced_ = true;
+        }
+        return true;
+    }
+
+    DemuxStep demuxOne(std::string& err) {
+        // When ready_ is empty this is the original one-packet pull. During the
+        // post-picture fill, ready_ already holds video; still drain codecs then
+        // read so audio can catch up.
+        if (videoPending_)
+            takeVideo();
+        if (audioPending_)
+            takeAudio();
+        if (ready_.empty()) {
+            if (videoPending_ || audioPending_)
+                return DemuxStep::Ok;
+        }
+        if (drained_)
+            return DemuxStep::Eof;
+        if (abort_.load() && !stallAbort_) {
+            err = "cancelled";
+            return DemuxStep::Error;
+        }
+        if (fillDeadlineHit())
+            return DemuxStep::FillTimeout;
+        if (fmtA_) {
+            if (!pullDash(err))
+                return DemuxStep::Error;
+            return DemuxStep::Ok;
+        }
+        const int r = av_read_frame(fmt_, pkt_);
+        if (r == AVERROR_EOF) {
+            av_bsf_send_packet(bsf_, nullptr);
+            takeVideo();
+            if (adec_) {
+                avcodec_send_packet(adec_, nullptr);
+                takeAudio();
+            }
+            drained_ = true;
+            return DemuxStep::Eof;
+        }
+        if (r < 0) {
+            if (fillDeadlineHit() || (r == AVERROR_EXIT && fillDeadlineMs_.load() > 0))
+                return DemuxStep::FillTimeout;
+            if (stallAbort_) {
+                stallAbort_ = false;
+                lastAvErr_ = misterplex::netresume::kStallAbortAv;
+                lastHttp_ = 0;
+                err = "stall";
+                return DemuxStep::Error;
+            }
+            lastAvErr_ = r;
+            err = abort_.load() ? "cancelled" : "read: " + avErr(r);
+            lastHttp_ = httpStatusOf(r, err);
+            return DemuxStep::Error;
+        }
+        noteByte();
+        if (pkt_->stream_index == vidx_) {
+            if (av_bsf_send_packet(bsf_, pkt_) == 0)
+                takeVideo();
+        } else if (adec_ && pkt_->stream_index == aidx_) {
+            if (avcodec_send_packet(adec_, pkt_) == 0)
+                takeAudio();
+        } else if (sdec_ && pkt_->stream_index == sidx_) {
+            takeSubtitle(pkt_);
+        } else if (liveRemux_ && !adec_ && !fmtA_) {
+            // MPEG-TS can publish an audio PID after find_stream_info. Retry once
+            // the stream list grows or codecpar settles.
+            openAudio(-1);
+            if (adec_ && pkt_->stream_index == aidx_ && avcodec_send_packet(adec_, pkt_) == 0)
+                takeAudio();
+        }
+        av_packet_unref(pkt_);
+        return DemuxStep::Ok;
+    }
+
     AVFormatContext* audioFmt() const { return fmtA_ ? fmtA_ : fmt_; }
+
+    static bool isAudioStream(AVFormatContext* af, int i) {
+        return af && i >= 0 && i < static_cast<int>(af->nb_streams) && af->streams[i] &&
+               af->streams[i]->codecpar && af->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
+    }
+
+    static int firstAudioIndex(AVFormatContext* af) {
+        if (!af)
+            return -1;
+        for (unsigned i = 0; i < af->nb_streams; ++i) {
+            if (isAudioStream(af, static_cast<int>(i)))
+                return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    int audioIndexOrNone() const {
+        return isAudioStream(audioFmt(), aidx_) ? aidx_ : -1;
+    }
 
     void openAudio(int preferred) {
         aidx_ = -1;
+#ifdef MUT_LIVE_SPLIT_NO_AIDX
+        (void)preferred;
+        // glass2 VEVO: skip the split/fmtA_ assignment and leave av_find_best_stream's
+        // AVERROR in aidx_ on the muxed-related search (audio_idx=-1381258232 decoder=0).
+        if (fmtA_)
+            return;
         AVFormatContext* af = audioFmt();
         if (!af)
             return;
-        if (!fmtA_ && preferred >= 0 && preferred < static_cast<int>(af->nb_streams) &&
-            af->streams[preferred]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
-            aidx_ = preferred;
-        else
-            aidx_ = av_find_best_stream(af, AVMEDIA_TYPE_AUDIO, -1, fmtA_ ? -1 : vidx_, nullptr, 0);
+        aidx_ = av_find_best_stream(af, AVMEDIA_TYPE_AUDIO, -1, vidx_, nullptr, 0);
         if (aidx_ < 0)
             return;
+#else
+        AVFormatContext* af = audioFmt();
+        if (!af)
+            return;
+        if (!fmtA_ && isAudioStream(af, preferred))
+            aidx_ = preferred;
+        else {
+            // Live remux and separate-audio opens: do not restrict to the video program.
+            // Split ffmpeg (-map 1:a:0) can put AAC in a second MPEG-TS program; related=vidx_
+            // then returns AVERROR and used to leave that code in aidx_ (glass2 VEVO/CMT).
+            const int related = (liveRemux_ || fmtA_) ? -1 : vidx_;
+            const int found = av_find_best_stream(af, AVMEDIA_TYPE_AUDIO, -1, related, nullptr, 0);
+            aidx_ = isAudioStream(af, found) ? found : firstAudioIndex(af);
+        }
+        if (!isAudioStream(af, aidx_)) {
+            aidx_ = -1;
+            return;
+        }
+#endif
         af->streams[aidx_]->discard = AVDISCARD_DEFAULT;
         if (!openAudioDecoder())
             aidx_ = -1;
@@ -608,6 +972,79 @@ private:
         readyDepth_.store(ready_.size());
     }
 
+    // Push SWR leftover PCM into ready_ before a tagged-disc flush so the
+    // ring reserve is not thrown away with swr_free (H mid-soak hole).
+    void drainSwrResidual() {
+        if (!swr_ || !splitLivePace_)
+            return;
+        const int leftover = swr_get_out_samples(swr_, 0);
+        if (leftover <= 0)
+            return;
+        MediaPacket m;
+        m.kind = MediaPacket::Kind::Audio;
+        m.data.resize(static_cast<size_t>(leftover) * 4u);
+        uint8_t* dst = m.data.data();
+        const int got = swr_convert(swr_, &dst, leftover, nullptr, 0);
+        if (got <= 0)
+            return;
+        m.data.resize(static_cast<size_t>(got) * 4u);
+        m.pts90k = (lastAudioEmitPts_ != misterplex::live_disc::kNoPts90k)
+                       ? lastAudioEmitPts_
+                       : disc_.lastEmit;
+        if (liveRemux_)
+            misterplex::live_disc::notePcmBytes(disc_, m.data.size());
+        if (splitLivePace_)
+            pacedAudioBytes_ += static_cast<int64_t>(m.data.size());
+        pushReady(std::move(m));
+    }
+
+    // AD-REC A: live remux (#1066 split HLS) rebases audio/PTS at every discontinuity
+    // the way a zap/tune reopen does, then keeps playing (play-all splice).
+    void applyLiveDisc(MediaPacket& m, bool discFlag) {
+        if (!liveRemux_ || m.pts90k < 0)
+            return;
+        const auto playlist = discFlag ? misterplex::live_disc::DiscKind::DiscontinuityTag
+                                       : misterplex::live_disc::DiscKind::None;
+        const auto kind = misterplex::live_disc::notePacket(disc_, m.pts90k, playlist,
+                                                            m.kind == MediaPacket::Kind::Audio);
+        // lastEmit is already clampHdmiEmit()'d so the ring never sees a
+        // non-monotonic / oversized jump (glass 47abfbbb client_write).
+        m.pts90k = disc_.lastEmit;
+#ifndef MUT_LIVE_NO_DISC_REBASE
+        if (kind == misterplex::live_disc::DiscKind::None)
+            return;
+        m.discontinuity = true;
+        // Glass H r3: flushing adec + freeing SWR on pts_jump dropped residual
+        // PCM while interleave-0 video kept moving (2.64 s HDMI hole @58.38,
+        // vfps≈31). Keep the decoder/SWR on a PTS-only jump (same codec);
+        // drain residual before a tagged discontinuity flush. Re-arm the
+        // video-lead cap so the next audio AU starts with the picture.
+#ifndef MUT_LIVE_FLUSH_PCM_ON_DISC
+        if (kind == misterplex::live_disc::DiscKind::PtsJump &&
+            misterplex::live_disc::keepPcmOnPtsJump()) {
+            lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+        } else {
+            drainSwrResidual();
+            if (adec_)
+                avcodec_flush_buffers(adec_);
+            swr_free(&swr_);
+            lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+        }
+#else
+        if (adec_)
+            avcodec_flush_buffers(adec_);
+        swr_free(&swr_);
+        lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+#endif
+        std::fprintf(stderr,
+                     "misterplexd: live remux disc rebase kind=%s splices=%d emit_pts=%lld\n",
+                     misterplex::live_disc::discKindName(kind), disc_.splices,
+                     static_cast<long long>(m.pts90k));
+#else
+        (void)kind;
+#endif
+    }
+
     void takeVideo() {
         const AVRational tb = fmt_->streams[vidx_]->time_base;
         while (readyRoom() && av_bsf_receive_packet(bsf_, out_) == 0) {
@@ -620,10 +1057,17 @@ private:
                 m.pts90k = toPts90k(ts, static_cast<uint32_t>(tb.num), static_cast<uint32_t>(tb.den));
             if (m.pts90k < 0 && frameTicks_ > 0)   // a raw .264: the frame rate gives the clock
                 m.pts90k = (videoFrames_ * frameTicks_) & ((int64_t{1} << 33) - 1);
+#ifdef AV_PKT_FLAG_DISCONTINUITY
+            const bool discFlag = (out_->flags & AV_PKT_FLAG_DISCONTINUITY) != 0;
+#else
+            const bool discFlag = false;
+#endif
             ++videoFrames_;
             av_packet_unref(out_);
-            if (!m.data.empty())
+            if (!m.data.empty()) {
+                applyLiveDisc(m, discFlag);
                 pushReady(std::move(m));
+            }
         }
         videoPending_ = readyBytes_ >= kReadyByteCap && !ready_.empty();
     }
@@ -651,12 +1095,34 @@ private:
                 continue;
             m.data.resize(static_cast<size_t>(got) * 4u);
             m.pts90k = pts;
+            applyLiveDisc(m, false);
+            if (liveRemux_)
+                misterplex::live_disc::notePcmBytes(disc_, m.data.size());
+            if (splitLivePace_)
+                pacedAudioBytes_ += static_cast<int64_t>(m.data.size());
             pushReady(std::move(m));
         }
         audioPending_ = readyBytes_ >= kReadyByteCap && !ready_.empty();
     }
 
     bool openSwr() {
+        // Late AAC (Hybrik muxed / GATE7 probe): the first frame can arrive with
+        // sample_rate 0. Do not kill the decoder; a later ADTS frame settles it.
+        // Split live remux (glass F 1066): codecpar.rate=0 at open made every
+        // fill frame fail here, so first-spawn pace logged audio_bytes=0.
+        if (frame_->sample_rate <= 0) {
+            int rate = 0;
+            if (adec_ && adec_->sample_rate > 0)
+                rate = adec_->sample_rate;
+            else if (audioFmt() && aidx_ >= 0 && audioFmt()->streams[aidx_] &&
+                     audioFmt()->streams[aidx_]->codecpar)
+                rate = audioFmt()->streams[aidx_]->codecpar->sample_rate;
+            if (rate <= 0 && splitLivePace_)
+                rate = 48000;
+            if (rate <= 0)
+                return false;
+            frame_->sample_rate = rate;
+        }
         AVChannelLayout outL = AV_CHANNEL_LAYOUT_STEREO;
         AVChannelLayout inL;
         if (frame_->ch_layout.nb_channels > 0)
@@ -669,6 +1135,8 @@ private:
         av_channel_layout_uninit(&inL);
         if (rc < 0 || swr_init(swr_) < 0) {
             swr_free(&swr_);
+            if (liveRemux_)
+                return false;   // keep AAC decoder; retry on the next frame
             avcodec_free_context(&adec_);   // undecodable audio: play the video alone
             aidx_ = -1;
             return false;
@@ -730,6 +1198,8 @@ private:
         } else {
             av_packet_move_ref(pkt_, aHold_);
             haveA_ = false;
+            if (!adec_)
+                openAudio(-1);
             if (adec_ && pkt_->stream_index == aidx_ && avcodec_send_packet(adec_, pkt_) == 0)
                 takeAudio();
         }
@@ -762,10 +1232,19 @@ private:
             openStopped_ = true;
             return 1;
         }
-        const int64_t dl = openDeadlineMs_.load();
-        if (dl > 0 && stallNow() >= dl) {
-            openCapped_ = true;
+        const int64_t fillDl = fillDeadlineMs_.load();
+        if (fillDl > 0 && stallNow() >= fillDl)
             return 1;
+        const int64_t dl = openDeadlineMs_.load();
+        if (dl > 0) {
+            const int64_t extra = openExtraBudgetMs_
+                                      ? std::max<int64_t>(0, openExtraBudgetMs_->load(std::memory_order_relaxed))
+                                      : 0;
+            const int64_t now = stallNow();
+            if (now >= dl && now - dl >= extra) {
+                openCapped_ = true;
+                return 1;
+            }
         }
         if (!stall_.enabled)
             return 0;
@@ -1021,12 +1500,21 @@ private:
     }
     std::vector<SoftCue> cues_;
     int64_t startPts90k_ = h264stream::kNoPts90k;
+    misterplex::live_disc::RebaseState disc_{};
     int64_t darNum_ = 0, darDen_ = 0;
     int64_t frameTicks_ = 0, videoFrames_ = 0;
     bool drained_ = false;
     bool videoPending_ = false;
     bool audioPending_ = false;
     bool haveV_ = false, haveA_ = false, vEof_ = false, aEof_ = false;
+    bool liveRemux_ = false;
+    bool splitLivePace_ = false;
+    bool firstVideoDelivered_ = false;
+    bool firstSpawnPaced_ = false;
+    bool paceLogged_ = false;
+    int64_t pacedAudioBytes_ = 0;
+    int64_t lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+    int64_t lastVideoEmitPts_ = misterplex::live_disc::kNoPts90k;
     std::deque<MediaPacket> ready_;
     std::atomic<size_t> readyDepth_{0};
     unsigned probePackets_ = 0;

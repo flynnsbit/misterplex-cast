@@ -204,6 +204,15 @@ inline constexpr OwenbBuildInfo kOwenbBuilds[] = {
     {0x0B1101C5u, "MiSTerPlex 240p+ss1c", false,
      "BUILD_ID 0x0B1101C5; same file MiSTerPlex.rbf; source 5588134126b965c8095eb2fa7cf3655f958579da; "
      "RBF md5 96eb13d2; seed 10; 0x0B2403A7 stays accepted"},
+    {0x0B110715u, "MiSTerPlex analog 15 kHz dest", false,
+     "BUILD_ID 0x0B110715; PR #374 analog Progressive 15 kHz dest; same file MiSTerPlex.rbf; "
+     "RBF md5 <pending gated fit>; seed 10; rollback/shipped pin is 0x0B1101C5 / 96eb13d2"},
+    {0x0B110724u, "MiSTerPlex analog Progressive 240p", false,
+     "BUILD_ID 0x0B110724; PR #374 reviewer N1 analog Progressive is true 240p; same file MiSTerPlex.rbf; "
+     "RBF md5 <pending gated fit>; seed 10; 0x0B110715 and shipped 0x0B1101C5 / 96eb13d2 stay accepted"},
+    {0x0B111401u, "MiSTerPlex analog Progressive 240p fleet", false,
+     "BUILD_ID 0x0B111401; PR #374 combined fit (Progressive 240p + overlay idle); same file MiSTerPlex.rbf; "
+     "RBF md5 <pending gated fit>; seed 10; 0x0B110724 and shipped 0x0B1101C5 / 96eb13d2 stay accepted"},
 #endif
 };
 
