@@ -461,7 +461,7 @@ private:
     bool keepaliveWanted();
     static constexpr std::chrono::seconds kSubscriberKeepalive{3};
     void requestTimelinePush(bool immediate);
-    // Bounded buffering@navigation hold (holdIdle RCA, FPGA Bug H1-H4). Caller holds mu_.
+    // Bounded buffering@navigation hold (holdIdle RCA, reviewer H1-H4). Caller holds mu_.
     static int holdMsFromEnv(const char* name, int fallback);
     void armHoldLocked(int ms);
     void disarmHoldLocked();

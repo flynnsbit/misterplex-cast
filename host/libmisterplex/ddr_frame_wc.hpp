@@ -1,7 +1,7 @@
 #pragma once
 // MPX_DDR_FRAME_WC: may the frame/doorbell DDR map use the write-combining /dev/mplex_ddr window?
 //
-// K1-B1 (FPGA Bug note 7c12b8ca): a fixed mplex_ddr kmod (the second 2 MiB WC window for the R1
+// K1-B1 (reviewer note 7c12b8ca): a fixed mplex_ddr kmod (the second 2 MiB WC window for the R1
 // host idle frame buffer) must never move a running daemon's frame and doorbell writes from
 // uncached /dev/mem to WC unasked. Before this guard, FpgaSpi::ensureDdrMap used /dev/mplex_ddr
 // whenever it opened and covered the layout.

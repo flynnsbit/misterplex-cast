@@ -281,7 +281,7 @@ static ArgvRun runArgvOnce(const std::vector<std::string>& args, bool mergeStder
     std::vector<std::string> own = args;   // writable, stable storage for argv
     // FU8: the choke point for every curl in this file. A token in a URL query or a
     // -H pair moves into the -K config (stdin or /dev/fd/N), never argv (ps on  lab).
-    // FU9 (FPGA Bug nit): only a curl argv is scrubbed; other tools keep their argv as built.
+    // FU9 (reviewer nit): only a curl argv is scrubbed; other tools keep their argv as built.
     std::string fu8Cfg = curlKConfig ? *curlKConfig : std::string{};
     if (runArgvIsCurl(own) && mpx::scrubPlexTokenArgv(own, fu8Cfg))
         curlKConfig = &fu8Cfg;

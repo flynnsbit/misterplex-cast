@@ -4,7 +4,7 @@
 
 MiSTerPlex turns a MiSTer (DE10-Nano) into a Plex player. A custom FPGA core, **MiSTerPlex** (`MiSTerPlex.rbf`, built from the PlexOB fork of MiSTer_h264_decoder), decodes the video in hardware. A small program on the MiSTer's Linux side, **misterplexd**, talks to Plex, YouTube and AirPlay.
 
-The core file used to be called `PlexOB.rbf`; from rc3 it is `MiSTerPlex.rbf`, loaded from `_Utility`. To install or update, follow the **[install guide](docs/INSTALL.md)**.
+The core file used to be called `PlexOB.rbf`; from rc3 it is `MiSTerPlex.rbf`, loaded from `_Utility`. To install or update, see **[Quick start](#quick-start-v101)** below and the **[install guide](docs/INSTALL.md)**.
 
 > This is pre-release software. Things may break. Keep backups of your SD card.
 
@@ -17,7 +17,7 @@ The core file used to be called `PlexOB.rbf`; from rc3 it is `MiSTerPlex.rbf`, l
 - **Made for CRTs.** 480i and 240p analog output, a CRT-safe menu area, per-TV overscan trim, 4:3 / 14:9 / letterbox picture modes, and a Large menu size. S-video/composite works when `vga_mode` in `MiSTer.ini` and the core's **Analog Output** menu agree (see [Troubleshooting](docs/INSTALL.md#troubleshooting)).
 - **Subtitles.** Text subtitles (SRT, ASS) drawn on screen, with an optional OpenSubtitles fallback.
 - **Phone status page** at `http://<mister-ip>:3005/misterplex/status`.
-- **Restarts itself** if the program crashes.
+- **Restarts itself** if the program crashes (needs the restart supervisor; see [What is in the v1.0.2 package](#what-is-in-the-v102-package)).
 
 ### Limits
 
@@ -45,37 +45,73 @@ See the **[full screenshot gallery](docs/SCREENSHOTS.md)** for widescreen and 4:
 
 ## How the install works
 
-A release has **one FPGA core**, `MiSTerPlex.rbf`, which the installer puts in `/media/fat/_Utility/` only (one copy; an older root copy `/media/fat/MiSTerPlex.rbf` is removed so the menu does not list the core twice). There is no separate `Plex.rbf` or `PlexOB.rbf` to install any more. It also has the **misterplexd** program, which starts by itself at boot: the installer adds one line to `/media/fat/linux/user-startup.sh` that runs `misterplexd-boot-rc3.sh`. That script starts misterplexd under a small supervisor (`misterplexd_supervise.sh`), which restarts it if it crashes. `BOOT_SUPERVISE=0` in the settings file turns the supervisor off. You never need to start the program yourself. Just load **MiSTerPlex** from `_Utility`.
+A release has **one FPGA core**, `MiSTerPlex.rbf`, which goes in `/media/fat/_Utility/` only. There is no separate `Plex.rbf` or `PlexOB.rbf` to install any more. It also has the **misterplexd** program in `/media/fat/misterplex/bin/`, which starts by itself at boot from one line in `/media/fat/linux/user-startup.sh` that runs `misterplexd-boot-rc3.sh`. After a reboot that script loads MiSTerPlex by itself (the MiSTer comes up on its menu, and the script loads the core from there), then starts misterplexd. You never need to start the program yourself. If you open another core later, load **MiSTerPlex** from `_Utility` to come back.
 
-## Upgrading from rc5
+When `misterplexd_supervise.sh` is installed, the boot script runs misterplexd under it, and it restarts the program if it crashes (`BOOT_SUPERVISE=0` in the settings file turns that off). The v1.0.2 package, like v1.0.1, does not include the supervisor; an install that already has it keeps it.
 
-rc5 installed the core in two places, `/media/fat/` and `/media/fat/_Utility/`. The new installer keeps a single copy in `/media/fat/_Utility/` and removes the old copy in `/media/fat/`.
+## What is in the v1.0.2 package
 
-## Quick start
+The v1.0.2 download, `misterplex-<build>.tar.gz` (`<build>` is the build id shown on the release page), is the **minimal package**: the core, the program and its boot scripts, plus the installer `install-misterplex.sh`, `README.txt` and `MD5SUMS`. Every MiSTerPlex package uses the same installer name, `install-misterplex.sh`.
 
-1. Download the release package from https://github.com/flynnsbit/misterplex-cast/releases and unpack it.
-2. From the unpacked folder, run the installer against your MiSTer (or copy the folder to the MiSTer and run `sh install-misterplex.sh` there). See the **[install guide](docs/INSTALL.md)**:
+| File | Goes to |
+| --- | --- |
+| `MiSTerPlex.rbf` | `/media/fat/_Utility/MiSTerPlex.rbf` |
+| `misterplexd` | `/media/fat/misterplex/bin/misterplexd` and `/media/fat/misterplex/bin/misterplexd-spelunkr` |
+| `owenb_idle_card` | `/media/fat/misterplex/bin/` |
+| `misterplexd-boot-rc3.sh` | `/media/fat/misterplex/bin/` |
+| `misterplex_mode.sh` | `/media/fat/misterplex/bin/` |
+
+It does **not** include the settings example, `configure-misterplex.sh`, `uninstall-misterplex.sh`, `update_ytdlp.sh`, the restart supervisor, the AirPlay helper and its ffmpeg, yt-dlp, the CA bundle or the menu fonts. An existing MiSTerPlex install keeps the copies it already has, so v1.0.2 is a complete **update**. On a card that never had MiSTerPlex, v1.0.2 installs the core and the program; AirPlay, YouTube and automatic restart need the files above, which come with the full package (not published for v1.0.2).
+
+The release's own checksums (`MD5SUMS`, `SHA256SUMS`) are on the release page. The core md5 for each release is on its release page (v1.0.1: `042f86171b562a61694da46860b89d89`).
+
+## Quick start (v1.0.2)
+
+1. Download `misterplex-<build>.tar.gz` and `MD5SUMS` from https://github.com/flynnsbit/misterplex-cast/releases/tag/v1.0.2, check it, and unpack it:
 
    ```sh
-   sh install-misterplex.sh --remote <mister-ip>
+   grep ' misterplex-<build>.tar.gz$' MD5SUMS | md5sum -c -
+   tar xzf misterplex-<build>.tar.gz
    ```
 
-   It copies the files, checks and installs the MiSTerPlex core, keeps your settings, and runs the boot script (`/media/fat/misterplex/bin/misterplexd-boot-rc3.sh install`). That adds this line to `/media/fat/linux/user-startup.sh`, so MiSTerPlex starts at boot:
+2. Copy the folder to `/tmp` on the MiSTer (nothing is left on the SD card) and run the installer there:
 
    ```sh
-   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &
+   scp -r misterplex-<build> root@<mister-ip>:/tmp/
+   ssh root@<mister-ip> 'cd /tmp/misterplex-<build> && sh install-misterplex.sh'
    ```
 
-3. Optional: change settings with `ssh -t root@<mister-ip> sh /media/fat/misterplex/bin/configure-misterplex.sh`.
-4. Reboot, load **MiSTerPlex** from `_Utility`, and sign in with the `plex.tv/link` code shown on the TV.
+   `install-misterplex.sh` checks every file against `MD5SUMS` first (a mismatch installs nothing). Then it:
+   - copies the core to `/media/fat/_Utility/MiSTerPlex.rbf` and the program and scripts to `/media/fat/misterplex/bin/`, skipping files that are already the same;
+   - moves an old core at `/media/fat/MiSTerPlex.rbf` (left by an older installer; the boot script would load it first) into the backup folder, when it differs from the new core;
+   - turns on start at boot: it adds this line to `/media/fat/linux/user-startup.sh` once (never twice), and keeps a copy of the old file as `user-startup.sh.bak.<stamp>`:
 
-The boot script also takes `uninstall`, `start` and `stop`. To remove MiSTerPlex, run `sh /media/fat/misterplex/bin/uninstall-misterplex.sh`: it keeps your settings and player identity (add `--purge` to remove them) and, in `/media/fat/linux/airplay` and `/media/fat/linux/gcast`, removes only the files it installed. To update YouTube support, run `/media/fat/misterplex/bin/update_ytdlp.sh`.
+     ```sh
+     /media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &
+     ```
 
-`update_ytdlp.sh` checks a network download against upstream `SHA2-256SUMS` from the same GitHub origin (corruption only; no signature). A `YTDLP_LOCAL_ZIP` is checked only when `YTDLP_LOCAL_SUMS` or a pin is set. Optional pins: `YTDLP_PIN_VERSION` (release tag instead of latest) and `YTDLP_PIN_SHA256` (exact 64-hex of the zip; mismatch or a malformed value refuses the install). Set both: a SHA pin alone still follows latest, so it refuses every new upstream release until you bump it.
+   - saves every file it replaces to `/media/fat/misterplex/backup-<time>/` and writes a `restore.sh` there that undoes this install. Old `PlexOB.rbf` files are saved there on every run (about 4 MB each), so with those on the card a re-run makes a new backup folder; otherwise, when nothing changes, it makes no backup folder. You can delete old `backup-<time>` folders you no longer need.
+
+   It never changes an existing settings file, and it does not stop a running MiSTerPlex. `sh install-misterplex.sh --dry-run` shows what it would do without changing anything.
+
+3. Reboot (`ssh root@<mister-ip> reboot`). MiSTerPlex loads by itself. The first time, link it at `plex.tv/link` with the code shown on the TV ([install guide, section 4](docs/INSTALL.md#4-first-start-and-link-to-plex-required)).
+
+**If the installer can't** finish a step, it stops with `FAILED at step: …` and prints the `sh …/backup-<time>/restore.sh` command that undoes everything it changed so far. Run that and reboot, or fix the cause and run the installer again. Only if it keeps failing, do the two setup steps by hand: `sh /media/fat/misterplex/bin/misterplexd-boot-rc3.sh install` adds the boot line, and `mv /media/fat/MiSTerPlex.rbf /media/fat/misterplex/backup-<time>/` moves the old root core. An old `PlexOB.rbf` from before the rename is usually left where it is (the boot script prefers `_Utility/MiSTerPlex.rbf` unless your settings file sets `PLEX_RBF`, and you can delete it). If an earlier full install left `misterplex/cores/MiSTerPlex.rbf.md5`, the boot step may remove old `PlexOB.rbf` files; the installer saves them first and `restore.sh` puts them back.
+
+To undo the install, run `sh /media/fat/misterplex/backup-<time>/restore.sh` and reboot. To stop and start MiSTerPlex, use the boot script: `misterplexd-boot-rc3.sh stop`, `start`, or `uninstall` (stops it and removes the boot line).
+
+On an install that already has them, `sh /media/fat/misterplex/bin/uninstall-misterplex.sh` removes MiSTerPlex and `/media/fat/misterplex/bin/update_ytdlp.sh` updates YouTube support. `update_ytdlp.sh` checks a network download against upstream `SHA2-256SUMS` from the same GitHub origin (corruption only; no signature). A `YTDLP_LOCAL_ZIP` is checked only when `YTDLP_LOCAL_SUMS` or a pin is set. Optional pins: `YTDLP_PIN_VERSION` (release tag instead of latest) and `YTDLP_PIN_SHA256` (exact 64-hex of the zip; a mismatch refuses the install). Set both: a SHA pin alone still follows latest, so it refuses every new upstream release until you bump it.
 
 ## Settings
 
-All settings live in one file: **`/media/fat/linux/misterplex.conf`**. The install copies a default (`conf/misterplex.conf.example` in the package) only if you don't already have one. Each setting is explained inside the file. Reboot after a change.
+All settings live in one file: **`/media/fat/linux/misterplex.conf`**. No installer replaces an existing one. The v1.0.2 package does not create it: on a new card MiSTerPlex runs with built-in defaults until you add one. To start from the example, download [`assets/misterplex.conf.example`](https://raw.githubusercontent.com/flynnsbit/misterplex-cast/v1.0.2/assets/misterplex.conf.example) and copy it to the MiSTer only if it has no settings file yet:
+
+```sh
+ssh root@<mister-ip> test -e /media/fat/linux/misterplex.conf \
+  || scp misterplex.conf.example root@<mister-ip>:/media/fat/linux/misterplex.conf
+```
+
+Each setting is explained inside the file. Reboot after a change.
 
 ## Optional features
 
@@ -116,13 +152,14 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Source and license
 
-This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored hps/ client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE) and [NOTICE](NOTICE). MiSTerPlex.rbf is built from the PlexOB core. The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast. Source revision: eb6e7dbc542251db8e4dca01946d8439aa15f0b0. The casting helper's licence and checksums are in packaging/licenses/gcast-ffmpeg; its source is not in this repository. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
+This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored hps/ client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE) and [NOTICE](NOTICE). MiSTerPlex.rbf is built from the PlexOB core; its source is in this repository (`fpga/`) and in the release source archive below. Licence texts stay in this repository and on the release page; the installer does not copy them to the MiSTer. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
 
 ### Source code
 
 Each release page carries, next to the install package, the complete corresponding source for that build:
 
 - `misterplex-source-<revision>.tar.gz`: this repository's source export for the release (single commit), buildable with `scripts/repro_arm_build.sh`.
+- The release tag points at that export commit, so its commit id differs from the build revision the program reports. For v1.0.1 the program, the package name and the source archive say `eb6e7dbc`, and tag `v1.0.1` in this repository is the single-commit export of that build (commit `8f3c37c9`). For v1.0.2 they say `6e55d1ce`, and tag `v1.0.2` is the single-commit export of that build (its commit id differs from `6e55d1ce`, as with v1.0.1).
 - The exact upstream source archives that are compiled into or statically linked with `misterplexd`: UxPlay at 4e95a9ec (our patches are in `tools/airplay/uxplay-patches/`), FFmpeg 8.1.2, OpenSSL 3.0.15, libplist 2.6.0, and the Arm GNU Toolchain 13.2.Rel1 source snapshot (glibc and the GCC runtime libraries).
 - `SHA256SUMS` lists the checksum of every source archive.
 

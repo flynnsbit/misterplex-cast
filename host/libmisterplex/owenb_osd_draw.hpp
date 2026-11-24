@@ -9,7 +9,7 @@
 // pixels wide (§2: par = aspect x H / W); the spec's TTF path (stb_truetype) is not in this
 // change -- the bitmap font is the spec's own fallback (T6-OSD-SPEC-GAPS.md G1).
 // 480i / 576i: every fill starts on an even line and covers an even count (strokes >= 2 lines,
-// §2); the fabric's (1,2,1) anti-twitter stays on (fpga-bug-arm-osd-review-1017.md).
+// §2); the fabric's (1,2,1) anti-twitter stays on (reviewer-arm-osd-review-1017.md).
 
 #include "ambient.hpp"
 #include "browse_nav.hpp"
@@ -1123,7 +1123,7 @@ inline Frame planFrame(const UiState& s, const Layout& L) {
 #ifndef MUT_ADBREAK_NO_CARD
     if (s.adBreak && s.error == ErrorScreen::None) {
         // N14/N15: the stand-by card is the whole field; the play bar, captions, markers and the idle card sit
-        // out. Menu, library and the Spelunkr guide stay (FPGA Bug nit on 5f9571b4): they draw over the card.
+        // out. Menu, library and the Spelunkr guide stay (reviewer nit on 5f9571b4): they draw over the card.
         f.idleField = true;
         f.bar = {};
         f.reserve = {};

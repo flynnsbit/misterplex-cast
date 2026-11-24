@@ -678,7 +678,7 @@ struct CompressedSyntax {
                             return out(activeField, static_cast<int64_t>(active), capRefs,
                                        "multiple active references are unsupported");
                     }
-                    // FPGA Bug 03:04 (p3), re-labelled by FPGA Bug 04:16 (n1): an active count above
+                    // reviewer 03:04 (p3), re-labelled by reviewer 04:16 (n1): an active count above
                     // max_num_ref_frames is legal H.264 (7.4.2.2, 7.4.3; the extra RefPicList0
                     // entries are "no reference picture", 8.2.4.2), but this decoder has only
                     // max_num_ref_frames DPB slots, so it is OUT for us, never MALFORMED. It is

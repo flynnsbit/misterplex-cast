@@ -1376,7 +1376,7 @@ bool PlexUiController::loadStartupCatalog(const BrowseCancelFn& cancel) {
         serverIndex_ = hi;
         assignServerLocked(servers_[static_cast<std::size_t>(hi)]);
         haveServer_ = true;
-        // reviewer: a 401/403 on the picked server is shown, not an empty library.
+        // gwyden: a 401/403 on the picked server is shown, not an empty library.
         const auto ui = static_cast<std::size_t>(hi);
         if (ui < secErrs.size() && secErrs[ui].find("(40") != std::string::npos) {
             lastLoadErr_ = secErrs[ui];

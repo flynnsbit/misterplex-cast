@@ -1,6 +1,6 @@
 #pragma once
 // GH#9: misterplexd --version must print and exit before ProcessSingleton,
-// FPGA, or companion. A hung version probe on lab left FPGA color bars and
+// FPGA, or companion. A hung version probe on  lab device left FPGA color bars and
 // no :3005 (forbidden companion 4fdf97e0).
 
 #include <cstdio>

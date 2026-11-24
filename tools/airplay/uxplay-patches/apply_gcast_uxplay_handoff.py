@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AirPlay→YouTube handoff: no SIGSEGV on playlist delete. Idempotent.
 
-lab 2026-10-28: AirPlay from X, then a YouTube cast. The log line immediately
+ lab device 2026-10-28: AirPlay from X, then a YouTube cast. The log line immediately
 before misterplexd FATAL signal 11 is
 
     airplay: deleting playlist playback_uuid … duration (seconds) 0.000000
@@ -186,7 +186,7 @@ def main() -> None:
             "        plist_get_string_val(req_content_location_node, &playback_location);\n"
             "    }\n"
             "    /* GCAST handoff: node present but not a string. strstr(NULL) is SIGSEGV 11\n"
-            "       immediately after \"deleting playlist\" (the lab AirPlay→YouTube line). */\n"
+            "       immediately after \"deleting playlist\" (the  lab device AirPlay→YouTube line). */\n"
             "    if (!playback_location) {\n"
             "        logger_log(raop->logger, LOGGER_ERR, \"Play Content-Location is not a string\");\n"
             "        goto play_error;\n"

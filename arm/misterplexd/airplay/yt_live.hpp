@@ -66,7 +66,7 @@ inline constexpr char kLiveHlsFormat[] =
 inline constexpr int64_t kLiveLoungeDurationMs = 48LL * 3600 * 1000;
 inline constexpr int kLiveFirstByteMs = 12000;
 
-// N13 (#685 glass 10a21b2e). CLI repro (buildhost pluto-probe RESULT-STABILITY.md): at a Pluto ad break the
+// N13 (#685 glass 10a21b2e). CLI repro (build-host pluto-probe RESULT-STABILITY.md): at a Pluto ad break the
 // ffmpeg hls->mpegts remux emits NOTHING for 30-156 s while it keeps downloading the ad pod at real-time
 // rate (the pod is a different MPEG-TS program/PIDs: "no program with id N found", a/v "timestamp
 // discontinuity"); the playlist keeps refreshing 200, host and jwt never change. Regular content then
@@ -93,7 +93,7 @@ inline constexpr int kLiveFirstSpawnsMax = 3;
 inline constexpr int kLiveHealthyMs = 3000;           // a child must stay up this long to count as healthy
 inline constexpr int kLiveRespawnBackoffCapMs = 15000;  // exponential back-off cap
 inline constexpr int kLiveRespawnFailMax = 8;          // consecutive failed spawns, then the relay ends
-// N17 (#685, FPGA Bug review of N16): a child that lives just over kLiveHealthyMs (3.2 s), dies, and repeats every ~12 s
+// N17 (#685, reviewer review of N16): a child that lives just over kLiveHealthyMs (3.2 s), dies, and repeats every ~12 s
 // resets the consecutive-failure count each time and spends only 5 of the 10 respawns per 120 s window, so it
 // is never capped. A slowly decaying failure score closes that gap: every death of a child that lived less than
 // kLiveScoreShortMs adds 1, the score decays by 1 per kLiveScoreDecayMs, and at kLiveScoreMax the relay ends (the player
@@ -103,7 +103,7 @@ inline constexpr int kLiveRespawnFailMax = 8;          // consecutive failed spa
 inline constexpr int kLiveScoreShortMs = 30000;
 inline constexpr int kLiveScoreDecayMs = 30000;
 inline constexpr int kLiveScoreMax = 6;
-// #686 x relay (buildhost real Pluto, vevo-90s, 2026-11-18): with the audio rendition as a 2nd ffmpeg input, an ad boundary
+// #686 x relay (build-host real Pluto, vevo-90s, 2026-11-18): with the audio rendition as a 2nd ffmpeg input, an ad boundary
 // (the ad video segments use other PIDs / a reset timebase) makes ffmpeg stop emitting VIDEO for good while the AUDIO
 // input keeps flowing (video 300 pkts/10 s -> 0, audio 469 pkts/10 s unbroken for 160 s). Bytes keep arriving, so the
 // whole-stream silence watchdog never fires and the picture stays frozen with sound. For a split-audio relay the
@@ -114,7 +114,7 @@ inline constexpr unsigned kLiveVideoPid = 0x100;
 inline constexpr size_t kTsPacket = 188;
 
 // N14 stand-by card trigger. The byte gap that means "ad pod dropped" is NOT 2 s: ffmpeg emits one
-// burst per 5 s segment, so normal gaps are 3-11 s (buildhost stability logs: 268 gaps >= 2 s in 24 min on
+// burst per 5 s segment, so normal gaps are 3-11 s (build-host stability logs: 268 gaps >= 2 s in 24 min on
 // 90s-kids, max normal 11.1 s) while every ad-pod stall was >= 30 s. 15 s sits in the empty 12-30 s
 // band. An ffmpeg exit / re-spawn mid-stream shows the card at once.
 inline constexpr int kLiveAdCardMs = 15000;
@@ -286,9 +286,111 @@ inline constexpr char kFfmpegNetProto[] = "http,https,tcp,tls,crypto";
 inline constexpr char kFfmpegNetProtoHttps[] = "https,tcp,tls,crypto,hls";
 inline constexpr char kFfmpegNetProtoPluto[] = "https,tcp,tls,crypto,hls";
 
+// v1.0.1 glass (device, 2026-11-23 09:18 CT, Pluto 1062 MTV): a muxed Pluto variant whose live edge carried no
+// audio stream made the REQUIRED `-map 0:a:0` (ec11e6bb) fatal: "Stream map '' matches no streams ...
+// Failed to set value '0:a:0' for option 'map'", rc=234, sent=0 on every spawn, then 5XX / PREFETCH TIMEOUT.
+// The audio map is a ladder per relay, chosen by the error the shipped ffmpeg 8.1.2 really prints (reviewer review
+// of af87b021, F2):
+//   * "Stream map '' matches no streams" (no audio stream in the input at all): a deeper probe never adds a
+//     stream that only appears in a later segment, so go straight to the OPTIONAL map (video-only remux; the
+//     relay lives). A missing audio stream must never kill the relay.
+//   * "[mpegts] sample rate not set" before the first byte (ec11e6bb's case: the PMT declares AAC, its first
+//     packet is late): retry the SAME required map with a deeper probe, which does find the late AAC.
+// Split (#686) keeps `1:a:0?` at every step; YouTube keeps `0:a:0?`.
+enum class LiveAudioMap { Required = 0, RequiredDeepProbe = 1, Optional = 2 };
+
+inline const char* liveAudioMapName(LiveAudioMap m) {
+    return m == LiveAudioMap::Required ? "required" : (m == LiveAudioMap::RequiredDeepProbe ? "required-deep-probe" : "optional");
+}
+
+// ffmpeg's option-parse error for a non-optional -map that names no stream of its input (rc 234 / -EINVAL).
+inline bool liveErrAudioMapMissing(const std::string& errTail) {
+#ifdef MUT_PLUTO_AMAP_NO_DETECT
+    (void)errTail;
+    return false;
+#else
+    if (errTail.find("matches no streams") == std::string::npos)
+        return false;
+    return errTail.find("'0:a:0'") != std::string::npos || errTail.find("'1:a:0'") != std::string::npos;
+#endif
+}
+
+// The muxer's header failure when a mapped audio stream has no parameters yet (late first AAC packet, rc 234).
+inline bool liveErrAudioRateUnset(const std::string& errTail) {
+    return errTail.find("sample rate not set") != std::string::npos;
+}
+
+// Next rung after a pre-first-byte failure: `mapMissing` (no audio stream) -> Optional; `rateUnset` (late AAC) on the
+// plain required map -> RequiredDeepProbe. Anything else keeps the map. Optional is terminal for the ladder (only
+// the bounded audio re-check below goes back to Required).
+inline LiveAudioMap nextLiveAudioMap(LiveAudioMap m, bool mapMissing, [[maybe_unused]] bool rateUnset) {
+    if (mapMissing && m != LiveAudioMap::Optional) {
+#ifdef MUT_PLUTO_AMAP_MISSING_VIA_DEEP
+        if (m == LiveAudioMap::Required)
+            return LiveAudioMap::RequiredDeepProbe;   // mutant: af87b021's rung 2 on an error it cannot help
+#endif
+        return LiveAudioMap::Optional;
+    }
+#ifndef MUT_PLUTO_AMAP_SKIP_DEEP_PROBE
+    if (rateUnset && m == LiveAudioMap::Required)
+        return LiveAudioMap::RequiredDeepProbe;
+#endif
+    return m;
+}
+
+// F1 (reviewer review of af87b021): an OPTIONAL-map child that started on an audio-less stretch stays video-only for
+// life (ffmpeg cannot add an output stream after the header), so audio that comes back later is never remuxed. While
+// the relay is on the optional map, a child that has put no packet on the muxer audio PID (0x101: the 2nd mapped
+// stream) for kLiveAudioRecheckMs is killed and respawned ONCE with the required map. If the input still has no audio,
+// that required spawn fails fast ("matches no streams") and the ladder drops back to optional. Bounded: at most
+// kLiveAudioRecheckMax re-checks per relay, at least kLiveAudioRecheckGapMs apart, and only with 2 respawn slots left
+// in the budget (the re-check never ends a working video-only relay).
+// A re-check kill is intentional (not a failed spawn): it adds to neither the failure streak nor the failure score.
+// A re-check child that meets late AAC ("sample rate not set") gets the deep-probe rung; one that dies young for any
+// other reason (or whose deep probe fails too) goes straight back to the optional map, so a re-check can never end a
+// working video-only relay through the failure caps (reviewer review of 139c3a35, finding 4).
+inline constexpr unsigned kLiveAudioPid = 0x101;
+inline constexpr int kLiveAudioRecheckMs = 10000;
+inline constexpr int kLiveAudioRecheckGapMs = 30000;
+inline constexpr int kLiveAudioRecheckMax = 3;
+
+// Deeper probe on the muxed Pluto input after a "sample rate not set" failure: 10 s / 10 MB lets a late first ADTS frame
+// (behind large Hybrik video PES) reach find_stream_info before the required map is checked.
+inline constexpr const char* kLiveDeepProbeAnalyzeUs = "10000000";
+inline constexpr const char* kLiveDeepProbeSizeBytes = "10000000";
+
+// fix5 diag (glass ef980632 r1: 5 holes at pts_jump splices, no ffmpeg evidence at
+// -loglevel error). The HLS demuxer's "Failed to open segment" skip is a WARNING.
+// MPX_LIVE_FFMPEG_LOGLEVEL wins. A lab run (MPX_MEMSTAT_SEC set) gets warning.
+// Otherwise it stays error.
+inline const char* liveFfmpegLogLevel() {
+    if (const char* e = std::getenv("MPX_LIVE_FFMPEG_LOGLEVEL"); e && (std::strcmp(e, "warning") == 0 ||
+                                                                       std::strcmp(e, "info") == 0 ||
+                                                                       std::strcmp(e, "verbose") == 0 ||
+                                                                       std::strcmp(e, "error") == 0))
+        return e;
+    if (const char* m = std::getenv("MPX_MEMSTAT_SEC"); m && m[0] && std::strcmp(m, "0") != 0)
+        return "warning";
+    return "error";
+}
+
+// The ffmpeg stderr lines worth a daemon log line in a lab run (segment skips,
+// reconnects, TLS pulls, timestamp discontinuities). Not the per-packet noise.
+inline bool liveFfmpegDiagLine(const std::string& l) {
+    static const char* const keys[] = {"Failed to open segment", "keepalive request failed", "Error in the pull",
+                                       "skipping", "timestamp discontinuity", "Unable to open", "HTTP error",
+                                       "expired from playlist", "Will reconnect", "Connection reset", "Invalid data",
+                                       "End of file", "Immediate exit"};
+    for (const char* k : keys)
+        if (l.find(k) != std::string::npos)
+            return true;
+    return false;
+}
+
 // tsOffsetSec > 0 only on a re-spawn: the new ffmpeg starts its mpegts at 0, so the relay shifts it
 // by the seconds already streamed to keep the player's timeline monotonic (MUT_LIVE_NO_TS_OFFSET).
-inline std::vector<std::string> liveFfmpegArgs(const LiveSource& src, double tsOffsetSec = 0.0) {
+inline std::vector<std::string> liveFfmpegArgs(const LiveSource& src, double tsOffsetSec = 0.0,
+                                               LiveAudioMap audioMap = LiveAudioMap::Required) {
     std::vector<std::string> a;
     const char* proto = src.plutoHlsRemux     ? kFfmpegNetProtoPluto
                         : src.httpsOnlyProto ? kFfmpegNetProtoHttps
@@ -298,7 +400,7 @@ inline std::vector<std::string> liveFfmpegArgs(const LiveSource& src, double tsO
     a.push_back("-nostdin");
     a.push_back("-hide_banner");
     a.push_back("-loglevel");
-    a.push_back("error");
+    a.push_back(liveFfmpegLogLevel());
     a.push_back("-protocol_whitelist");
     a.push_back(proto);
 #ifndef MUT_LIVE_NO_DISC_REBASE
@@ -344,6 +446,12 @@ inline std::vector<std::string> liveFfmpegArgs(const LiveSource& src, double tsO
     if (src.plutoHlsRemux)
         plutoInputOpts();
     plutoAvAlignInputOpts();
+    if (src.plutoHlsRemux && !split && audioMap == LiveAudioMap::RequiredDeepProbe) {
+        a.push_back("-analyzeduration");
+        a.push_back(kLiveDeepProbeAnalyzeUs);
+        a.push_back("-probesize");
+        a.push_back(kLiveDeepProbeSizeBytes);
+    }
     a.push_back("-i");
     a.push_back(src.videoUrl);
     if (split) {
@@ -372,7 +480,8 @@ inline std::vector<std::string> liveFfmpegArgs(const LiveSource& src, double tsO
     // ffmpeg start a video-only remux after a video-first HLS probe, so the player
     // loopback never sees AAC (picture living, HDMI stuck at the -81.9 floor). Split
     // keeps 1:a:0?. YouTube muxed keeps 0:a:0? (a livestream can be video-only).
-    a.push_back(split ? "1:a:0?" : (src.plutoHlsRemux ? "0:a:0" : "0:a:0?"));
+    a.push_back(split ? "1:a:0?"
+                      : (src.plutoHlsRemux && audioMap != LiveAudioMap::Optional ? "0:a:0" : "0:a:0?"));
 #endif
     a.push_back("-sn");
     a.push_back("-dn");
@@ -403,6 +512,10 @@ inline std::vector<std::string> liveFfmpegArgs(const LiveSource& src, double tsO
     // and left audio_bytes=0, so the next 1.39 s fetch hole at t=221.8 s hit HDMI.
     // G fills the watermark without holding video. Glass G then held PCM while
     // video played: HDMI idle floor from t=0. H FIFOs A+V after the first key.
+    // Glass I (4beb780b r1): a Vevo track splice with no pts_jump left AAC/SWR
+    // stale (HDMI silent from t=23.234); zap return killed /yt-live.ts while
+    // the old session still read it. Player recovers the audio gap and stops
+    // the reader before replacing the remux.
     if (src.plutoHlsRemux && split) {
 #ifndef MUT_PLUTO_RESPAWN_KEEP_COPYTS
         if (tsOffsetSec <= 0.0)
@@ -466,7 +579,7 @@ inline bool writeAllFd(int fd, const char* p, size_t n) {
     return true;
 }
 
-// #687 (lab, 2026-11-18): the card's ffmpeg is a STATIC glibc build (80baac9d). Its mpegts demuxer decodes the DVB SDT
+// #687 ( lab device, 2026-11-18): the card's ffmpeg is a STATIC glibc build (80baac9d). Its mpegts demuxer decodes the DVB SDT
 // service name with iconv_open("UTF-8","ISO6937"), the static glibc then dlopen()s /usr/lib/gconv/ISO_6937.so, which pulls the
 // card's dynamic libc 2.31 and aborts ("Fatal glibc error: dl-call-libc-early-init.c:37 ... sym != NULL", rc=-6) about 1.6 s
 // after the spawn, before a single byte. Pluto's MTV clip library is transcoded by Hybrik and every such segment carries an SDT
@@ -672,6 +785,7 @@ public:
             stop_.store(false);
             listenFd_ = fd;
             src_ = src;
+            servedHeader_ = false;  // relay thread not running (stop() joined it)
         }
         misterplex::live_disc::splitLiveRemuxActive().store(!src.audioUrl.empty() &&
                                                             src.audioUrl != src.videoUrl);
@@ -809,6 +923,8 @@ private:
         int out = -1;
         int err = -1;
         std::string errTail;
+        std::string errLine;  // fix5 diag: partial stderr line
+        int diagLines = 0;
         std::chrono::steady_clock::time_point started{};
     };
 
@@ -830,7 +946,8 @@ private:
         return t;
     }
 
-    bool spawnChild(const LiveSource& src, double tsOffsetSec, Child& c) {
+    bool spawnChild(const LiveSource& src, double tsOffsetSec, Child& c,
+                    LiveAudioMap audioMap = LiveAudioMap::Required) {
         int outPipe[2] = {-1, -1};
         int errPipe[2] = {-1, -1};
         if (::pipe(outPipe) != 0)
@@ -841,7 +958,7 @@ private:
             return false;
         }
         // Build argv before fork. The child of a multithreaded process must not allocate.
-        const std::vector<std::string> store = liveFfmpegArgs(src, tsOffsetSec);
+        const std::vector<std::string> store = liveFfmpegArgs(src, tsOffsetSec, audioMap);
         std::vector<char*> argv;
         argv.reserve(store.size() + 1);
         for (const auto& s : store)
@@ -918,6 +1035,21 @@ private:
             c.errTail.append(b, b + n);
             if (c.errTail.size() > 600)
                 c.errTail.erase(0, c.errTail.size() - 600);
+            for (ssize_t i = 0; i < n; ++i) {
+                if (b[i] != '\n' && b[i] != '\r') {
+                    if (c.errLine.size() < 400)
+                        c.errLine.push_back(b[i]);
+                    continue;
+                }
+                if (!c.errLine.empty() && c.diagLines < 400 && liveFfmpegDiagLine(c.errLine)) {
+                    ++c.diagLines;
+                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    std::fprintf(stderr, "misterplexd: live relay ffmpeg: wall_ms=%lld %s\n",
+                                 static_cast<long long>(ms), redactTail(c.errLine).c_str());
+                }
+                c.errLine.clear();
+            }
         }
     }
 
@@ -931,6 +1063,9 @@ private:
         const int stallMs = liveKnobMs("MPX_LIVE_STALL_RESTART_MS", kLiveStallRestartMs, 200, 120000);
         const int firstStallMs = liveKnobMs("MPX_LIVE_FIRST_STALL_MS", kLiveFirstStallRestartMs, 100, 60000);
         const int videoStallMs = liveKnobMs("MPX_LIVE_VIDEO_STALL_MS", kLiveVideoStallRestartMs, 200, 120000);
+        [[maybe_unused]] const int audioRecheckMs = liveKnobMs("MPX_LIVE_AUDIO_RECHECK_MS", kLiveAudioRecheckMs, 200, 600000);
+        [[maybe_unused]] const int audioRecheckGapMs = liveKnobMs("MPX_LIVE_AUDIO_RECHECK_GAP_MS", kLiveAudioRecheckGapMs, 100, 3600000);
+        [[maybe_unused]] const int audioRecheckMax = liveKnobMs("MPX_LIVE_AUDIO_RECHECK_MAX", kLiveAudioRecheckMax, 0, 100);
         const bool splitAudio = !src.audioUrl.empty() && src.audioUrl != src.videoUrl;
         const int firstByteMs = liveKnobMs("MPX_LIVE_FIRST_BYTE_MS", kLiveFirstByteMs, 200, 60000);
         const int backoffMs = liveKnobMs("MPX_LIVE_RESPAWN_BACKOFF_MS", kLiveRespawnBackoffMs, 0, 10000);
@@ -984,6 +1119,12 @@ private:
         Clock::time_point nextSpawn = tServe;
         int spawns = 0;
         int consecutiveFails = 0;
+        LiveAudioMap audioMap = LiveAudioMap::Required;   // v1.0.1 1062: escalates on a no-audio map failure
+        bool childAudio = false;                          // this child put a packet on kLiveAudioPid
+        [[maybe_unused]] int audioRechecks = 0;           // F1: optional -> required re-checks so far
+        Clock::time_point lastAudioRecheck{};
+        bool recheckSpawn = false;                        // the current required/deep child came from an F1 re-check
+        uint64_t childBytes = 0;                          // media bytes the current child wrote (reset by a spawn)
         double failScore = 0;                       // N17: decaying count of short-lived deaths
         Clock::time_point failScoreAt = tServe;
         static const unsigned char kNull[kTsPacket] = {
@@ -1024,6 +1165,19 @@ private:
             drainErr(ch);
             const int64_t liveMs = ch.pid > 0 ? msSince(ch.started) : 0;
             const std::string tail = redactTail(ch.errTail);
+            const bool audioMapMissing = src.plutoHlsRemux && !splitAudio && liveErrAudioMapMissing(ch.errTail);
+            // "sample rate not set" (late AAC) gets the deep-probe rung whenever the dying child wrote no media
+            // byte: the first open, an F1 re-check child (reviewer review of 139c3a35, finding 4), and a reconnect
+            // whose 200 header went out at accept (finding 7). The 200 header alone says nothing about this child.
+#if defined(MUT_PLUTO_AMAP_RECHECK_NO_RECOVER)
+            const bool rateGate = !headerSent;                  // mutant: 139c3a35's gate
+#elif defined(MUT_PLUTO_AMAP_RATE_GATE_HEADER)
+            const bool rateGate = !headerSent || recheckSpawn;  // mutant: the header, not this child's bytes
+#else
+            const bool rateGate = childBytes == 0 || recheckSpawn;
+#endif
+            const bool audioRateUnset =
+                src.plutoHlsRemux && !splitAudio && rateGate && liveErrAudioRateUnset(ch.errTail);
             const int rc = reapChild(ch);
             std::fprintf(stderr,
                          "misterplexd: live relay: ffmpeg gone why=%s rc=%d after_ms=%lld sent=%llu spawns=%d "
@@ -1032,6 +1186,30 @@ private:
                          tail.c_str());
             if (stop_.load())
                 return false;
+            [[maybe_unused]] const LiveAudioMap mapWas = audioMap;
+            if (audioMapMissing || audioRateUnset) {
+                const LiveAudioMap was = audioMap;
+                audioMap = nextLiveAudioMap(audioMap, audioMapMissing, audioRateUnset);
+                if (audioMap != was)
+                    std::fprintf(stderr,
+                                 "misterplexd: live relay: %s for the audio map (%s); respawn with audio map %s "
+                                 "spawns=%d\n",
+                                 audioMapMissing ? "input has no audio stream" : "input audio has no sample rate yet",
+                                 liveAudioMapName(was), liveAudioMapName(audioMap), spawns);
+            }
+            // An F1 re-check child (required, then the deep probe on "sample rate not set") that dies young for any
+            // other reason goes back to the working video-only map instead of retrying required until the failure
+            // caps end the relay (reviewer review of 139c3a35, finding 4; their candidate fix).
+#ifndef MUT_PLUTO_AMAP_RECHECK_NO_RECOVER
+            if (recheckSpawn && std::strcmp(why, "audio_recheck") != 0 && audioMap != LiveAudioMap::Optional &&
+                liveMs < healthyMs && !(audioRateUnset && mapWas == LiveAudioMap::Required)) {
+                audioMap = LiveAudioMap::Optional;
+                std::fprintf(stderr, "misterplexd: live relay: audio re-check failed (%s); back to audio map optional\n",
+                             liveAudioMapName(mapWas));
+            }
+#endif
+            if (audioMap == LiveAudioMap::Optional)
+                recheckSpawn = false;
             if (!headerSent) {
 #ifdef MUT_LIVE_NO_FIRST_BYTE_RETRY
                 return false;
@@ -1061,7 +1239,8 @@ private:
             // browse-lane P2-2: long-lived video_stall kill is intentional restart, not a failed spawn.
             const bool intentionalVideoStall =
                 std::strcmp(why, "video_stall") == 0 && liveMs >= scoreShortMs;
-            if (!intentionalVideoStall)
+            const bool audioRecheckKill = std::strcmp(why, "audio_recheck") == 0;   // F1: intentional, bounded
+            if (!intentionalVideoStall && !audioRecheckKill)
                 ++consecutiveFails;
 #ifndef MUT_N16_NO_FAIL_CAP
             if (consecutiveFails > failMax) {
@@ -1083,10 +1262,12 @@ private:
                     failScore = 0;
 #endif
                 failScoreAt = nowS;
+                if (!audioRecheckKill) {
 #ifndef MUT_N17_COUNT_LONG
-                if (liveMs < scoreShortMs)
+                    if (liveMs < scoreShortMs)
 #endif
-                    failScore += 1.0;
+                        failScore += 1.0;
+                }
 #ifndef MUT_N17_NO_SCORE_CAP
                 if (failScore >= scoreMax) {
                     std::fprintf(stderr,
@@ -1138,13 +1319,33 @@ private:
             return true;
 #endif
         };
+        // Glass 40c9feb4 r1: after `ending why=client_write` the player's libav
+        // reconnect GET got no header until this new child's first byte
+        // (2.5-4.5 s on Pluto). The player's cover wake aborts a blocked read
+        // after 100 ms, so 17 reconnects died in the header read ("Error
+        // reading HTTP response: Immediate exit requested", relay sent=0) and
+        // the picture froze at 6629 for the rest of the soak. The 200 header is
+        // only held back on the first response, where a dead first spawn can
+        // still turn into a 502. A reconnect gets it at once and the keepalive
+        // null packets carry it to the first byte.
+        if (servedHeader_ && misterplex::live_disc::liveReconnectHeaderAtAccept()) {
+            if (!writeAll(client, kHdr, sizeof kHdr - 1)) {
+                std::fprintf(stderr, "misterplexd: live relay: ending why=client_write sent=0 spawns=0\n");
+                return;
+            }
+            headerSent = true;
+            tFirstData = Clock::now();
+            std::fprintf(stderr, "misterplexd: live relay: reconnect header at accept\n");
+        }
         auto forward = [&](const char* p, size_t n) -> bool {
             if (!headerSent) {
                 if (!writeAll(client, kHdr, sizeof kHdr - 1))
                     return false;
                 headerSent = true;
+                servedHeader_ = true;
                 tFirstData = Clock::now();
             }
+            childBytes += n;
 #ifdef MUT_LIVE_NO_HOLDBACK
             if (!writeAll(client, p, n))
                 return false;
@@ -1166,6 +1367,14 @@ private:
                         lastVideo = Clock::now();
                         break;
                     }
+                if (!childAudio && audioMap == LiveAudioMap::Optional)
+                    for (size_t i = 0; i + kTsPacket <= whole; i += kTsPacket)
+                        if (static_cast<unsigned char>(pend[i]) == 0x47 &&
+                            ((static_cast<unsigned>(static_cast<unsigned char>(pend[i + 1]) & 0x1f) << 8) |
+                             static_cast<unsigned char>(pend[i + 2])) == kLiveAudioPid) {
+                            childAudio = true;
+                            break;
+                        }
                 sent += whole;
                 pend.erase(0, whole);
             }
@@ -1208,7 +1417,7 @@ private:
                         off = std::chrono::duration<double>(now - tFirstData).count();
                     if (havePrev && headerSent)
                         respawnTimes.push_back(now);
-                    if (!spawnChild(src, off, ch)) {
+                    if (!spawnChild(src, off, ch, audioMap)) {
                         std::fprintf(stderr, "misterplexd: live relay: spawn failed\n");
                         if (!headerSent)
                             send502();
@@ -1217,11 +1426,14 @@ private:
                     ++spawns;
                     havePrev = true;
                     gapBytes = false;
+                    childAudio = false;
+                    childBytes = 0;
                     lastReal = Clock::now();
                     lastVideo = lastReal;
                     // Header already sent: this is a video_stall / TLS-EOF / stall respawn.
                     // Rejoin HDMI PCM so remux AAC is not stuck at the grabber floor (-81.9).
-                    if (headerSent) {
+                    // (spawns > 1: a reconnect's header-at-accept is not a respawn.)
+                    if (headerSent && spawns > 1) {
                         std::fprintf(stderr, "misterplexd: live relay: ffmpeg respawn spawns=%d\n", spawns);
                         fireRespawn();
                     }
@@ -1262,8 +1474,10 @@ private:
                         }
                         lastReal = Clock::now();
                         lastData = lastReal;
-                        if (msSince(ch.started) >= healthyMs)
+                        if (msSince(ch.started) >= healthyMs) {
                             consecutiveFails = 0;   // only a child that stayed up ends a failure streak
+                            recheckSpawn = false;
+                        }
                         if (gapOn)
                             gapBytes = true;
                         continue;
@@ -1300,6 +1514,32 @@ private:
                     if (!childGone("video_stall")) {
                         break;
                     }
+                    continue;
+                }
+#endif
+#ifndef MUT_PLUTO_AMAP_NO_AUDIO_RECHECK
+                // F1: an optional-map child with no audio output for audioRecheckMs -> respawn once with the required
+                // map (audio may be back). Bounded per relay; see kLiveAudioRecheckMax.
+                if (headerSent && src.plutoHlsRemux && !splitAudio && audioMap == LiveAudioMap::Optional &&
+                    !childAudio && msSince(ch.started) >= audioRecheckMs &&
+                    // never spend the last respawn slots on a re-check: a working video-only relay must not end on it
+                    budgetOk() && static_cast<int>(respawnTimes.size()) + 2 <= respawnMax &&
+#ifdef MUT_PLUTO_AMAP_RECHECK_UNBOUNDED
+                    true) {
+#else
+                    audioRechecks < audioRecheckMax &&
+                    (audioRechecks == 0 || msSince(lastAudioRecheck) >= audioRecheckGapMs)) {
+#endif
+                    ++audioRechecks;
+                    lastAudioRecheck = Clock::now();
+                    audioMap = LiveAudioMap::Required;
+                    recheckSpawn = true;
+                    std::fprintf(stderr,
+                                 "misterplexd: live relay: optional audio map sent no audio for %lld ms; respawn with "
+                                 "audio map required (audio re-check %d/%d)\n",
+                                 static_cast<long long>(msSince(ch.started)), audioRechecks, audioRecheckMax);
+                    if (!childGone("audio_recheck"))
+                        break;
                     continue;
                 }
 #endif
@@ -1449,6 +1689,7 @@ private:
     std::atomic<pid_t> ffmpegPid_{-1};
     int listenFd_ = -1;
     LiveSource src_;
+    bool servedHeader_ = false;  // relay thread: a response header went out since start()
     std::thread thread_;
 };
 

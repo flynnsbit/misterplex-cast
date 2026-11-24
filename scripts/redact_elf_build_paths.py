@@ -4,7 +4,7 @@
 FFmpeg bakes --prefix=/home/<user>/... into av_get_configuration() and
 __FILE__. The daemon link already uses -ffile-prefix-map for this tree;
 static libav was configured elsewhere. Same-length overwrite keeps the
-ELF intact. T3 forbids /home/<user>/, /Users/, and /work/ or /work/ roots.
+ELF intact. T3 forbids /home/<user>/, /Users/, and /work/ or /workspace/ roots.
 """
 from __future__ import annotations
 

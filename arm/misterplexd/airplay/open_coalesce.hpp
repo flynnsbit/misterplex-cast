@@ -2,7 +2,7 @@
 #include "airplay/ns.hpp"
 // A repeat play of the SAME stream must not abort the open already in flight.
 //
-// 2026-11-18 lab, AirPlay FoxOne: /ladder.ts takes 10-14 s to its first byte on a live HLS source. The phone
+// 2026-11-18  lab device, AirPlay FoxOne: /ladder.ts takes 10-14 s to its first byte on a live HLS source. The phone
 // re-sends /play (and a POST /stop) every 2-5 s while it waits. Each castPlay bumped playGen, which aborted the
 // pending open ("Immediate exit requested" -> "open: stopped"), and the AirPlay Stop event retired it. So no open
 // lived long enough to see a byte. The Fox URL also changes on every retry (a signed token path segment and the

@@ -1,25 +1,24 @@
 # Installing MiSTerPlex on a MiSTer
 
-This guide sets up MiSTerPlex on a MiSTer FPGA (DE10-Nano) with two scripts from the release package:
+This guide sets up MiSTerPlex on a MiSTer FPGA (DE10-Nano). Below, the MiSTer's IP address is written `<mister-ip>` (for example `192.0.2.50`).
 
-- `install-misterplex.sh` installs or updates everything. It is safe to run again.
-- `configure-misterplex.sh` changes your settings, step by step or with flags.
+There are two kinds of release package. Both are installed with the same command, **`sh install-misterplex.sh`**, run from the unpacked package folder:
 
-It takes about 5 minutes. The last step, **linking the MiSTer to your Plex account at https://plex.tv/link (section 4)**, is required: until it is done, Browse Plex on the TV shows **FETCH FAILED**. Below, the MiSTer's IP address is written `<mister-ip>` (for example `192.0.2.50`).
+- **Minimal package** (v1.0.2, `misterplex-<build>.tar.gz`; `<build>` is the build id on the release page): the core, the program and its boot scripts. Sections 1, 2 and 4 to 8 cover it.
+- **Full package** (built by `scripts/package_release.sh`; not published for v1.0.2): everything, plus `configure-misterplex.sh` for settings. Section 2C covers it.
 
-## Quick start (easy install)
+The last step, **linking the MiSTer to your Plex account at https://plex.tv/link (section 4)**, is required: until it is done, Browse Plex on the TV shows **FETCH FAILED**.
 
-If you just want it running:
+## Quick start (v1.0.2)
 
-1. Download and unpack the release package on your computer.
-2. In the unpacked folder, run `sh install-misterplex.sh --remote <mister-ip>` and enter the MiSTer root password when asked.
-3. Reboot the MiSTer, load **MiSTerPlex** from `_Utility`, and link it at https://plex.tv/link with the code on the screen (section 4).
-
-The installer puts the core at `/media/fat/_Utility/MiSTerPlex.rbf` (one copy), the program and boot script (`misterplexd-boot-rc3.sh`) in `/media/fat/misterplex/bin/`, and creates `/media/fat/linux/misterplex.conf` from the example only if you don't already have one. Settings and boot files it replaces are backed up first as `<name>.bak.<date>`; a replaced core is kept in `/media/fat/misterplex/backup/`. The installer needs no chmod, owners or symlinks, so it works on the exFAT card. The sections below explain each step.
+1. Download `misterplex-<build>.tar.gz` and `MD5SUMS` from the [v1.0.2 release](https://github.com/flynnsbit/misterplex-cast/releases/tag/v1.0.2), check it (`grep ' misterplex-<build>.tar.gz$' MD5SUMS | md5sum -c -`) and unpack it.
+2. `scp -r misterplex-<build> root@<mister-ip>:/tmp/` then `ssh root@<mister-ip> 'cd /tmp/misterplex-<build> && sh install-misterplex.sh'`.
+   The installer also adds the start-at-boot line and moves an old root core aside (section 2A).
+3. Reboot the MiSTer. MiSTerPlex loads by itself. Link it at https://plex.tv/link with the code on the screen (section 4).
 
 ## At a glance: how the install works
 
-A release has **one FPGA core**, `MiSTerPlex.rbf`, which the installer puts in `/media/fat/_Utility/` only (one copy; an older root copy `/media/fat/MiSTerPlex.rbf` is removed so the menu does not list the core twice). There is no separate `Plex.rbf` or `PlexOB.rbf` to install any more. It also has the **misterplexd** program, which starts by itself at boot: the installer adds one line to `/media/fat/linux/user-startup.sh` that runs `misterplexd-boot-rc3.sh`. That script starts misterplexd under a small supervisor (`misterplexd_supervise.sh`), which restarts it if it crashes. `BOOT_SUPERVISE=0` in the settings file turns the supervisor off. You never need to start the program yourself. Just load **MiSTerPlex** from `_Utility`.
+A release has **one FPGA core**, `MiSTerPlex.rbf`, which goes in `/media/fat/_Utility/` only. There is no separate `Plex.rbf` or `PlexOB.rbf` to install any more. The **misterplexd** program lives in `/media/fat/misterplex/bin/` and starts by itself at boot from one line in `/media/fat/linux/user-startup.sh` that runs `misterplexd-boot-rc3.sh`. After a reboot that script loads MiSTerPlex from the MiSTer menu by itself, then starts misterplexd. When `misterplexd_supervise.sh` is installed (full package, or an earlier install), misterplexd runs under it and is restarted if it crashes; `BOOT_SUPERVISE=0` in the settings file turns that off. If you open another core later, load **MiSTerPlex** from `_Utility` to come back.
 
 ## 1. What you need
 
@@ -28,13 +27,51 @@ A release has **one FPGA core**, `MiSTerPlex.rbf`, which the installer puts in `
 - SSH turned on, with the root password (the stock MiSTer password is `1`; change it if you can).
 - A Plex Media Server you can reach, and a Plex account.
 - A computer with `ssh` and `scp` (macOS, Linux, or Windows with OpenSSH).
-- The release package from https://github.com/flynnsbit/misterplex-cast/releases, unpacked on that computer.
+- The release package, unpacked on that computer.
 
 ## 2. Install
 
-Pick one way. Both do the same thing.
+### 2A. Minimal package (v1.0.2)
 
-**A. From your computer** (in the unpacked package folder):
+The package holds `MiSTerPlex.rbf`, `misterplexd`, `owenb_idle_card`, `misterplexd-boot-rc3.sh`, `misterplex_mode.sh`, `install-misterplex.sh`, `README.txt` and `MD5SUMS`.
+
+```sh
+scp -r misterplex-<build> root@<mister-ip>:/tmp/
+ssh root@<mister-ip>
+cd /tmp/misterplex-<build> && sh install-misterplex.sh
+```
+
+Use `/tmp`: it is cleared at the next reboot, so the package folder is not left on the SD card. (If you copy it to `/media/fat/` instead, delete it after the install.)
+
+What `install-misterplex.sh` does in the minimal package:
+
+1. Checks every file against `MD5SUMS`. Every payload file must be listed; on a mismatch or a missing file it stops and installs nothing.
+2. Installs `MiSTerPlex.rbf` to `/media/fat/_Utility/MiSTerPlex.rbf`, and `misterplexd` (twice, as `misterplexd` and `misterplexd-spelunkr`), `owenb_idle_card`, `misterplexd-boot-rc3.sh` and `misterplex_mode.sh` to `/media/fat/misterplex/bin/`. Each file is written as `<file>.new` and then renamed, and files that are already the same are skipped.
+3. If `/media/fat/MiSTerPlex.rbf` exists (left by an older installer) and differs from the new core, moves it into the backup folder. The boot script loads a root copy before the one in `_Utility`.
+4. Leaves `/media/fat/linux/misterplex.conf` alone if it exists. The minimal package has no example settings file, so on a new card none is created and MiSTerPlex uses built-in defaults.
+5. Turns on start at boot, unless the line is already there: it runs `misterplexd-boot-rc3.sh install`, which adds this line once to `/media/fat/linux/user-startup.sh` (and to `_user-startup.sh` if that file exists), keeping a copy of the old file as `user-startup.sh.bak.<stamp>`:
+
+   ```sh
+   /media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &
+   ```
+
+6. Before each change, saves what it will replace to `/media/fat/misterplex/backup-<time>/` and adds the undo step to `restore.sh` there, so `restore.sh` is complete even if a later step fails. `restore.sh` stops MiSTerPlex, puts `user-startup.sh` back exactly as it was (which removes the boot line if this run added it), puts the saved files back, and deletes the files and folders this run created. On a new card with no old `PlexOB.rbf` the folder holds `restore.sh` and the small files it needs (such as the saved `user-startup.sh` or conf state files). Old `PlexOB.rbf` files are saved first, on every run (about 4 MB each), so with those on the card even a re-run with nothing else to change makes a new backup folder; without them, when nothing changes, no folder is made. You can delete old `backup-<time>` folders you no longer need.
+
+It does not stop a running MiSTerPlex; the new files take effect at the next reboot. Options: `--dry-run` (show what it would do, change nothing) and `--no-boot-line` (skip step 5). Licence texts, the README, `MD5SUMS` and the installer stay in the package folder.
+
+### 2B. After the minimal install
+
+- **Reboot.** MiSTerPlex loads by itself; link it at https://plex.tv/link the first time (section 4).
+- **If the installer can't** finish a step, it stops with `FAILED at step: …`, exits with an error and prints the `sh /media/fat/misterplex/backup-<time>/restore.sh` command; `restore.sh` is kept complete before every change, so it undoes everything done so far. Run it and reboot, or fix the cause and run the installer again. Only if it keeps failing, do the two setup steps by hand: `sh /media/fat/misterplex/bin/misterplexd-boot-rc3.sh install`, and `mv /media/fat/MiSTerPlex.rbf /media/fat/misterplex/backup-<time>/`.
+- **Old `PlexOB.rbf`.** A core under the old name (`/media/fat/PlexOB.rbf`, `_Utility/`, `_Console/` or `cores/PlexOB.rbf`) is usually left in place. If an earlier full install left `/media/fat/misterplex/cores/MiSTerPlex.rbf.md5` and it matches the new core, the boot script removes those old files (at install, or at a later boot or mode switch); the installer saves a copy of each one first on every run, with or without the boot line, and `restore.sh` puts back any that are gone. The boot script prefers `_Utility/MiSTerPlex.rbf` unless your settings file sets `PLEX_RBF`; you can delete an old file that is left.
+- **Settings (optional on a new install).** v1.0.2 does not create `/media/fat/linux/misterplex.conf`; without one MiSTerPlex uses built-in defaults. To start from the example file, download [`assets/misterplex.conf.example`](https://raw.githubusercontent.com/flynnsbit/misterplex-cast/v1.0.2/assets/misterplex.conf.example) and copy it to `/media/fat/linux/misterplex.conf` only if that file does not exist.
+- **Not in v1.0.2.** The AirPlay helper and its ffmpeg, yt-dlp (YouTube), the CA bundle, the menu fonts, the restart supervisor, `configure-misterplex.sh`, `uninstall-misterplex.sh` and `update_ytdlp.sh`. An earlier install keeps the copies it has. On a new card, AirPlay, YouTube and automatic restart need those files from a full package.
+
+### 2C. Full package
+
+A full package (from `scripts/package_release.sh`, with `cores/`, `bin/`, `conf/`, `linux/`, `Scripts/` and `SHA256SUMS`) is installed with the same command, `sh install-misterplex.sh`, from its top level. v1.0.2 is not published as a full package; in this repository the script is `scripts/install-misterplex.sh`, and it needs the full package layout around it.
+
+**From your computer** (in the unpacked full package folder):
 
 ```sh
 sh install-misterplex.sh --remote <mister-ip>
@@ -42,7 +79,7 @@ sh install-misterplex.sh --remote <mister-ip>
 
 It checks the package (`SHA256SUMS`), copies it to `/tmp` on the MiSTer, runs the installer there, and cleans up. You'll be asked for the root password (several times unless you use an SSH key). Add `--user <name>` if you don't log in as `root`.
 
-**B. On the MiSTer** (copy the unpacked folder over first):
+**On the MiSTer** (copy the unpacked folder over first):
 
 ```sh
 scp -r misterplex-package root@<mister-ip>:/tmp/
@@ -50,12 +87,12 @@ ssh root@<mister-ip>
 sh /tmp/misterplex-package/install-misterplex.sh
 ```
 
-What the installer does:
+What the full installer does:
 
 1. Stops a running MiSTerPlex, if there is one.
-2. Copies the program, scripts, docs and licences to `/media/fat/misterplex/` (the old `bin` folder is kept as a backup).
+2. Copies the program, scripts and fonts to `/media/fat/misterplex/` (the old `bin` folder is kept as a backup). Licence texts, docs and READMEs are not copied to the MiSTer.
 3. Creates `/media/fat/linux/misterplex.conf` from the example **only if you don't have one**. An existing file is backed up and kept.
-4. Checks `MiSTerPlex.rbf` against its md5 and against the release pin list, and puts it in `/media/fat/_Utility/` only. A different old core there is moved to `/media/fat/misterplex/backup/`; a root `/media/fat/MiSTerPlex.rbf` left by an older installer is removed (or moved to that backup folder if its md5 differs), and old `MiSTerPlex.rbf.bak.*` files are moved there too. Only the pinned release core (md5 `96eb13d2cfc966fa56528703d0b542cf`) is accepted. The core used to be called `PlexOB.rbf`; once the new core is in place and checked, the installer removes an old `/media/fat/PlexOB.rbf`, `/media/fat/_Utility/PlexOB.rbf`, `/media/fat/_Console/PlexOB.rbf`, and `/media/fat/cores/PlexOB.rbf` only after the new file's md5 matches. A mismatch leaves the old file in place.
+4. Checks `MiSTerPlex.rbf` against its md5 and against the release pin list, and puts it in `/media/fat/_Utility/` only. A different old core there is moved to `/media/fat/misterplex/backup/`; a root `/media/fat/MiSTerPlex.rbf` left by an older installer is removed (or moved to that backup folder if its md5 differs), and old `MiSTerPlex.rbf.bak.*` files are moved there too. Only the core whose md5 is in the package's `cores/MiSTerPlex.rbf.md5` (and on the release pin list) is accepted; check the md5 against the release page for your version (v1.0.1: `042f86171b562a61694da46860b89d89`). The core used to be called `PlexOB.rbf`; once the new core is in place and checked, the installer removes an old `/media/fat/PlexOB.rbf`, `/media/fat/_Utility/PlexOB.rbf`, `/media/fat/_Console/PlexOB.rbf`, and `/media/fat/cores/PlexOB.rbf` only after the new file's md5 matches. A mismatch leaves the old file in place.
 5. Copies the casting helpers to `/media/fat/linux/` (checked against `MD5SUMS`).
 6. Names the player `misterplex-<last three parts of its IP>`, for example `misterplex-0.2.50`, unless you already set a name.
 7. Runs `/media/fat/misterplex/bin/misterplexd-boot-rc3.sh install`, which adds this line to `/media/fat/linux/user-startup.sh` (only once):
@@ -70,10 +107,10 @@ Useful options: `--dry-run` (show what would happen, change nothing), `--reboot`
 
 ## 3. Configure
 
-The defaults work for most people. To change settings:
+The defaults work for most people. The v1.0.2 minimal package does not include `configure-misterplex.sh`; without it, edit `/media/fat/linux/misterplex.conf` directly (section 2B shows where the example file comes from). A full package installs it as `/media/fat/Scripts/configure-misterplex.sh` (it also shows up in the MiSTer **Scripts** menu); older installs have it in `/media/fat/misterplex/bin/`. To change settings with it:
 
 ```sh
-ssh -t root@<mister-ip> sh /media/fat/misterplex/bin/configure-misterplex.sh
+ssh -t root@<mister-ip> bash /media/fat/Scripts/configure-misterplex.sh
 ```
 
 It asks a few questions, with your current value as the default (press Enter to keep it):
@@ -88,7 +125,7 @@ It asks a few questions, with your current value as the default (press Enter to 
 Without questions (for scripts), use flags, for example:
 
 ```sh
-sh /media/fat/misterplex/bin/configure-misterplex.sh -y --server http://<server-ip>:32400 --raster 240p --subtitles on --sub-lang en
+bash /media/fat/Scripts/configure-misterplex.sh -y --server http://<server-ip>:32400 --raster 240p --subtitles on --sub-lang en
 ```
 
 Run it with `--help` for every flag and the matching `MPX_*` environment variables. `--dry-run` shows the result without writing; `--fresh` starts again from the example file but keeps your player name. Your old file is always saved as `misterplex.conf.bak.<date>` first.
@@ -101,7 +138,7 @@ Every other option is explained inside `/media/fat/linux/misterplex.conf`. Resta
 ssh root@<mister-ip> reboot
 ```
 
-When the MiSTer is back, load **MiSTerPlex** from `_Utility`. The MISTERPLEX Ready screen shows two rows, for example:
+When the MiSTer is back, the boot script loads MiSTerPlex by itself (you don't need to pick it from `_Utility`; do that only to come back from another core). The MISTERPLEX Ready screen shows two rows, for example:
 
 ```text
 Ready · AirPlay · YouTube
@@ -157,11 +194,11 @@ Don't use `killall`; the boot script handles stopping cleanly.
 
 ## 7. Updating (or repairing)
 
-Unpack the new package and run the installer again, the same way as in section 2. Your settings and player name are kept, and the old files are backed up. Then reboot.
+Unpack the new package and run its installer again, the same way as in section 2 (`sh install-misterplex.sh` from the unpacked folder, for either kind of package; the v1.0.1 package's installer was named `install.sh`). Your settings and player name are kept, and the old files are backed up. Then reboot.
 
 To see new options, compare your settings with `/media/fat/misterplex/conf/misterplex.conf.example`, or run `configure-misterplex.sh` again.
 
-To update just YouTube support:
+To update just YouTube support (on an install that has `update_ytdlp.sh`; the minimal package does not ship it):
 
 ```sh
 ssh root@<mister-ip> /media/fat/misterplex/bin/update_ytdlp.sh
@@ -169,13 +206,26 @@ ssh root@<mister-ip> /media/fat/misterplex/bin/update_ytdlp.sh
 
 ## 8. Uninstalling and going back
 
+**Minimal package.** To undo an install or update, run the `restore.sh` the installer wrote, then reboot:
+
+```sh
+ssh root@<mister-ip> 'ls -d /media/fat/misterplex/backup-*'
+ssh root@<mister-ip> sh /media/fat/misterplex/backup-<time>/restore.sh
+```
+
+If you edited a settings file the install created, `restore.sh` moves it into the backup folder as `misterplex.conf.after-install` instead of deleting it. `restore.sh` works the same after a failed install. It reports `Restore finished with N error(s)` and exits with an error if any undo step failed. If there is no `restore.sh`, stop MiSTerPlex (`misterplexd-boot-rc3.sh stop`), copy the files from the backup folder back by hand (`MiSTerPlex.rbf` to `/media/fat/_Utility/`, the rest to `/media/fat/misterplex/bin/`) and reboot.
+
+To remove a minimal-package-only install, run the boot script's `uninstall` (below), then delete `/media/fat/_Utility/MiSTerPlex.rbf` and `/media/fat/misterplex/`. Your settings file is kept unless you delete it.
+
+**Full installs:**
+
 Turn off start at boot (this stops MiSTerPlex and removes its line from `user-startup.sh`):
 
 ```sh
 ssh root@<mister-ip> /media/fat/misterplex/bin/misterplexd-boot-rc3.sh uninstall
 ```
 
-Or run the uninstall script, which does that and also removes what the installer created (your settings and player identity are kept unless `--purge`):
+Or run the uninstall script (full installs; the minimal package does not ship it), which does that and also removes what the installer created (your settings and player identity are kept unless `--purge`):
 
 ```sh
 ssh root@<mister-ip> sh /media/fat/misterplex/bin/uninstall-misterplex.sh

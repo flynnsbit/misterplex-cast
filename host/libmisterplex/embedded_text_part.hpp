@@ -3,7 +3,7 @@
 // /library/streams/<id> body: PMS answers 501 Not Implemented. The #258 packet
 // fallback demuxes the input the daemon plays, which on a universal transcode
 // (start.mp4 ... subtitles=embedded) holds only video + audio, so it never finds
-// the track either (glass lab lane 4, 2026-11-04 05:20 CT).
+// the track either (glass  lab device lane 4, 2026-11-04 05:20 CT).
 //
 // Fix (option A, EVID-334-probes P3: Part GET honours Range, 206): read the text
 // track from the original Part (/library/parts/<id>/<ts>/file.ext), token only in

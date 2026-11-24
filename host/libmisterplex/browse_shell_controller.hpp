@@ -198,7 +198,7 @@ private:
     std::size_t artDamageSize_ = 0;
     FrameDamage lastDamage_{};
 
-    // G2 three-clock split on the browse-shell path (lab product default).
+    // G2 three-clock split on the browse-shell path ( lab device product default).
     // plexui: navtrace was only emitted on the old Plex TV worker.
     struct NavTrace {
         uint64_t id = 0;

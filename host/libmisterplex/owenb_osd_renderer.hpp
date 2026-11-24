@@ -1248,7 +1248,7 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
     }
     // New gen: present on this tick. The 16 ms floor is the same-frame sleep
     // above. Waiting here held in-window nav for another vsync/timer (glass
-    // HDMI 123-176 ms on lab).
+    // HDMI 123-176 ms on  lab device).
 #ifdef MUT_NAV_OSD_SURF_8HZ
     if (now - lastDrawMs_ < kSurfaceMinMs)
         return lastDrawMs_ + kSurfaceMinMs - now;
@@ -1325,7 +1325,7 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
 #endif
     }
 #ifndef MUT_NAV_OSD_DOUBLE_FLIP
-    // lab is double-buffered 8888 1280x720 (8 MiB fb0), not the 720p single-page
+    //  lab device is double-buffered 8888 1280x720 (8 MiB fb0), not the 720p single-page
     // path f088b3dc retimed. A nav flip to the free page waits for ovl_gen/vsync
     // (GH#27: this box may never ack). Write dirty rows on the page the core is
     // already scanning so HDMI sees the focus move without a later tick.

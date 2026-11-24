@@ -1,7 +1,7 @@
 #pragma once
 // Loaded-core gate for misterplexd's FPGA traffic, v2.
 //
-// FPGA Bug, fpga-bug-hdmi-fixes-review-1004 Y1: v1 opened and closed on the core name
+// reviewer, reviewer-hdmi-fixes-review-1004 Y1: v1 opened and closed on the core name
 // alone. It failed open, and it never saw a Plex->Plex reload or the reprogram window.
 // v2 rules:
 //
@@ -349,7 +349,7 @@ public:
     void dropFabricRegs(const volatile uint32_t* regs) {
         regs_.compare_exchange_strong(regs, nullptr, std::memory_order_acq_rel);
     }
-    // For a thread that may take no lock (the F1 PLXL beat, FPGA Bug 01:39 k1): the gate's
+    // For a thread that may take no lock (the F1 PLXL beat, reviewer 01:39 k1): the gate's
     // {open generation, build id} as of its last Open transition. A core change always closes the
     // gate and reopens it through probeResult, which publishes a new generation before open_.
     // Read open() first; equal snapshots read on both sides of an access mean the same opening.
@@ -700,7 +700,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         return state_;
     }
-    // FPGA Bug 01:10 R5a: true while the gate's own CAPS probe sequence still runs (a probe in
+    // reviewer 01:10 R5a: true while the gate's own CAPS probe sequence still runs (a probe in
     // flight, or a retry scheduled after a failed one), so a failed-cure verdict waits for the
     // 5-probe give-up.
     bool probeSequenceActive() const {

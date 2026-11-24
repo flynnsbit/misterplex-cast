@@ -32,8 +32,8 @@ The installer copies it to /media/fat/_Utility/MiSTerPlex.rbf only (one copy).
 
 ## misterplexd
 - Licence: GPL-3.0-or-later (daemon and the MiSTerPlex FPGA fork).
-- Source revision: eb6e7dbc542251db8e4dca01946d8439aa15f0b0
-- Docs and installer revision: eb6e7dbc542251db8e4dca01946d8439aa15f0b0
+- Source revision: 6e55d1ce1a45f9ad3ac6aa3d5abc12d9af22edea
+- Docs and installer revision: 6e55d1ce1a45f9ad3ac6aa3d5abc12d9af22edea
 - Paths: arm/misterplexd, host/libmisterplex, third_party/owenb-h264ring, Makefile
 - Host build from this tree alone: `make plexd`
 - ARM build (the shipped binary's recipe), from a git checkout of this tree:

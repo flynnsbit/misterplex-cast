@@ -308,6 +308,16 @@ CoreStatus OwenbRing::coreStatus() const {
     cs.ringLevel = window_.ringSize() - h264ring_free(ring_);
     cs.refusedCode = static_cast<unsigned>(H264RING_ST(&st, FE_REFUSED_CODE));
     cs.picsReconstructed = static_cast<uint32_t>(H264RING_ST(&st, RC_PIC));
+    cs.audState = static_cast<unsigned>(H264RING_ST(&st, AUD_STATE));
+    cs.audLowLatency = static_cast<unsigned>(H264RING_ST(&st, AUD_LL));
+    cs.audQRec = static_cast<uint32_t>(H264RING_ST(&st, AUD_Q_REC));
+    cs.audQSamples = static_cast<uint32_t>(H264RING_ST(&st, AUD_Q_SAMPLES));
+    cs.audPlayed = static_cast<uint32_t>(H264RING_ST(&st, AUD_PLAYED));
+    cs.audRecords = static_cast<uint32_t>(H264RING_ST(&st, AUD_RECORDS));
+    cs.audGap = static_cast<uint32_t>(H264RING_ST(&st, AUD_GAP));
+    cs.audLate = static_cast<uint32_t>(H264RING_ST(&st, AUD_LATE));
+    cs.audUnderruns = static_cast<uint32_t>(H264RING_ST(&st, AUD_UNDERRUNS));
+    cs.audAnchor = static_cast<uint32_t>(H264RING_ST(&st, AUD_ANCHOR));
     return cs;
 }
 

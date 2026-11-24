@@ -157,7 +157,7 @@ void on_signal(int sig) {
 #ifdef MPX_HAVE_MAST_RELOAD
 // MAST-WEDGE: set once the guarded-reload launcher has started; main exits with
 // misterplex::mast::kReloadExitCode so the launcher's load finds no daemon. The hand-off time
-// lets the exit line report the teardown (FPGA Bug 21:52: it must end well inside the
+// lets the exit line report the teardown (reviewer 21:52: it must end well inside the
 // launcher's MR_EXIT_WAIT).
 std::atomic<bool> g_mastReload{false};
 std::atomic<int64_t> g_mastReloadAtMs{0};
@@ -1870,7 +1870,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "misterplexd: SUBTITLES=burn (PMS universal)\n");
     else if (subtitleMode == "ffmpeg")
         std::fprintf(stderr, "misterplexd: SUBTITLES=ffmpeg (local files, STREAM=0)\n");
-    // #328 (reviewer): initPresent() fails while the core gate is still closed at start (PlexOB
+    // #328 (gwyden): initPresent() fails while the core gate is still closed at start (PlexOB
     // answers CAPS later). The server catalog and the PlexUI / browse v2 controller do not need a
     // present path, so they are set up either way; only the paint/idle/poll workers wait for one.
     // Gating them on initPresent left browseTargets empty and browseV2_ false: the legacy library_
@@ -2155,7 +2155,7 @@ int main(int argc, char** argv) {
                          "misterplexd: play-file content fps=%d/%d (match cap 30Hz)\n",
                          srcFpsN, srcFpsD);
         }
-        // A lab play-file plays its own file: never a transcode (FPGA Bug 19:37 N1).
+        // A lab play-file plays its own file: never a transcode (reviewer 19:37 N1).
         player.setSourceTranscoded(false);
         if ((!sourceAspect.valid && !player.fpgaH264Backend()) ||
             !player.setSourceAspect(sourceAspect)) {
@@ -2506,6 +2506,13 @@ int main(int argc, char** argv) {
         // Arm before lineup GET so pad Up/Down cannot open Plex browse (GH#411).
         player.setSpelunkrTv(true);
         playQ.start([&](misterplex::spelunkr::PlayRequest req, const std::function<bool()>& superseded) {
+#ifndef MUT_LIVE_RELAY_KILL_WHILE_READING
+            // Glass 4beb780b r1 zap02: the previous job's first line killed
+            // /yt-live.ts while the old session still read it. Premature resume
+            // + SourceError; this playjob never pictured and later ENTERs posted
+            // no playjob until a daemon restart. Stop the reader first.
+            player.stop();
+#endif
             stopSpelunkrPlutoLiveRemux();
             const uint64_t gen = req.generation;
             auto tvCurrent = [&]() -> bool {
@@ -2539,6 +2546,14 @@ int main(int argc, char** argv) {
                         // moves. Keep guide closed so pad up/down remain zaps.
                         if (tvSess && misterplex::live_disc::liveRemuxRecoversInputsAfterTerminalPrefetch()) {
                             tvSess->tv.bumpGeneration();
+                            // GATE-V2 r2: clear leftover picture / error OSD so later
+                            // zaps post a playjob. Glass 85629316 zap4: do not force
+                            // the guide open — ChannelUp/Down on guideOpen swallow
+                            // zaps. Keep #668 hook (product keeps guide closed).
+                            if (misterplex::live_disc::liveRemuxStrongTerminalRecover()) {
+                                player.clearSpelunkrPictureForRecover();
+                                player.showSpelunkrLanding();
+                            }
                             tvSess->guideOpen = misterplex::live_disc::liveRemuxTerminalFailOpensGuide();
                             if (tvSess->guideCursor < 0)
                                 tvSess->guideCursor = tvSess->tv.index();
@@ -3016,6 +3031,25 @@ int main(int argc, char** argv) {
             // The same libav open probes format/aspect and retains its IDR.
             // No ring or display settings change while the old session plays.
             const bool plutoPrefetchItem = plutoLiveHlsBudget.load(std::memory_order_relaxed);
+            // v1.0.1 1063/1066: the Pluto remux open gets its own 8 s from here, not what the metadata
+            // resolve left of the job's 15 s window (see plutoRemuxOpenWindowStartMs).
+            {
+                const int64_t ws = zapWindowStartMs.load();
+                const int64_t nowOpen = zapSteadyNowMs();
+                const int64_t rearmed =
+                    misterplex::spelunkr::plutoRemuxOpenWindowStartMs(plutoPrefetchItem, ws, nowOpen);
+                if (rearmed != ws) {
+                    zapWindowStartMs.store(rearmed);
+                    std::fprintf(stderr,
+                                 "misterplexd: spelunkr: pluto remux open budget re-armed open_ms=%lld "
+                                 "window_left_was_ms=%lld window_used_ms=%lld attempt=%d gen=%llu\n",
+                                 static_cast<long long>(rearmed + misterplex::spelunkr::kSpelunkrPlutoZapBudgetMs -
+                                                        nowOpen),
+                                 static_cast<long long>(ws + misterplex::spelunkr::kSpelunkrPlutoZapBudgetMs - nowOpen),
+                                 static_cast<long long>(nowOpen - ws), attempt,
+                                 static_cast<unsigned long long>(gen));
+                }
+            }
             const int64_t prefetchBudget = misterplex::spelunkr::spelunkrPrefetchBudgetMs(
                 plutoPrefetchItem,
                 misterplex::spelunkr::zapWindowElapsedMs(zapSteadyNowMs(), zapWindowStartMs.load()));
@@ -3972,7 +4006,7 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> handoff(playHandoffMu);
             gen = player.r1BeginPlayRequest([&] { return ++playGen; });
         }
-        // R1 (FPGA Bug 06:57 D3, 07:30 C1, 08:17 (2)): no PLXH en=1 from this PLAY request to the
+        // R1 (reviewer 06:57 D3, 07:30 C1, 08:17 (2)): no PLXH en=1 from this PLAY request to the
         // session's BEGIN. This doPlay owns its generation's hold while it runs (no expiry) and on
         // every exit releases it if it started no session and was not replaced by a seek's replay,
         // else leaves it to the session's enter or to the replay (r1_plxh.hpp PlayRequestHold).
@@ -5832,7 +5866,7 @@ int main(int argc, char** argv) {
     comp.setPlayQueued([&]() {
         if (gcastOn)
             gcastArbiter.claim(misterplex::gcast::Owner::Plex);   // last caster wins (Plex preempts a cast)
-        // R1 C1 (FPGA Bug 07:30): the new generation and its PLXH en=1 hold in one step, before
+        // R1 C1 (reviewer 07:30): the new generation and its PLXH en=1 hold in one step, before
         // the resolve; a release for an older generation can no longer land between them.
         const uint64_t gen = player.r1BeginPlayRequest([&] { return ++playGen; });
         player.armPlayPendingCue(gen, misterplex::gcast_osd::pendingLoadingLine("Plex"));   // playMedia queued: chevron before resolve
@@ -6126,7 +6160,7 @@ int main(int argc, char** argv) {
     misterplex::wirePlaybackControls(comp, player, pmsTimeline, transport, activePlayGen,
         playHandoffMu, seekMu, seekStart, [&](uint64_t stopGen) {
             // R1 C1: the STOP ends every PLAY request before its own generation; a PLAY (and a seek)
-            // after the STOP keeps its hold (FPGA Bug 08:17 (1)).
+            // after the STOP keeps its hold (reviewer 08:17 (1)).
             player.r1PlayRequestsEndedBefore(stopGen);
             // SPS-gate L3 b4: a USER stop clears the on-screen gate error (the player's own teardown never does).
             player.clearGateError("user stop", true);

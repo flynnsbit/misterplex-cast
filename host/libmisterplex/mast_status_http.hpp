@@ -1,4 +1,4 @@
-// GET /misterplex/mast: the MAST reload status, read-only (MAST R5b follow-up; FPGA Bug 01:28 and
+// GET /misterplex/mast: the MAST reload status, read-only (MAST R5b follow-up; reviewer 01:28 and
 // 03:52, reviewer 04:05). Served by the existing companion HTTP server (no new port or listener),
 // first after the header read, so it touches no other companion state. Binding spec:
 //   - GET only, no parameters: another method on this path gives 405, a query or fragment 400;
@@ -16,7 +16,7 @@
 //   cure_failed=0|1    (1 only for state=cure-failed)
 // A marker with an unknown or missing state is invalid and echoes nothing; unknown marker keys are
 // never echoed.
-// Reading a reply (FPGA Bug 04:10 N1): HTTP 200 only means the endpoint answered; read marker=
+// Reading a reply (reviewer 04:10 N1): HTTP 200 only means the endpoint answered; read marker=
 // first. A file that is present but invalid (missing or unknown state, binary, over the cap, a
 // symlink, a FIFO) also answers 200, with marker=invalid, empty fields and cure_failed=0: that is
 // NOT "marker OK" and NOT "no failed cure", only "the marker cannot be read as a status".

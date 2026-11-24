@@ -1,5 +1,5 @@
 // mplex_ddr_probe: K1 KM-3 ABI check of /dev/mplex_ddr on the MiSTer (k1-kmod-wc-window-note-1004 §6).
-// READ-ONLY on DDR (Bug 19:01 F: KM-3 on lab is read-only; no scratch write): it only opens, ioctls and maps, and
+// READ-ONLY on DDR (Bug 19:01 F: KM-3 on  lab device is read-only; no scratch write): it only opens, ioctls and maps, and
 // never touches mapped memory. Prints one line per check and "MPLEX_PROBE_OK" or "MPLEX_PROBE_FAIL n". --hold S
 // keeps the idle-FB mapping open for S seconds (KM-6: rmmod must answer EBUSY meanwhile). Build:
 // -D_FILE_OFFSET_BITS=64 (mmap2 passes the page offset, so a huge pgoff reaches the driver instead of failing in

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AirPlay /play: map X's twitterav://video-s.twimg.com/... to https://. Idempotent.
 
-lab 2026-11-10 19:14 CT: after a swipe in the X app every /play arrived as
+ lab device 2026-11-10 19:14 CT: after a swipe in the X app every /play arrived as
     Content-Location: twitterav://video-s.twimg.com/amplify_video/.../pl/....m3u8
 and stock UxPlay 4e95a9e logged "Content-Location has unsupported form",
 answered 400 and reset the connection, so nothing played. The CDN serves the

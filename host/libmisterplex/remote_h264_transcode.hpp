@@ -6,7 +6,7 @@
 // the decoder. The WAN decision always pins videoCodec/audioCodec/videoProfile/videoLevel, the
 // resolver never takes the source Part on a remote server (HEVC refused; out-of-spec H.264 gave
 // black screen + audio only, #207), and a failed remote decision errors instead of "trying Part".
-// A remote H.264 that already fits the OwenB core still direct-plays (reviewer-DIRECT-1030).
+// A remote H.264 that already fits the OwenB core still direct-plays (JOSE-DIRECT-1030).
 // Off (0): tip behavior. LAN plays are never changed.
 #include <cctype>
 #include <atomic>
@@ -61,7 +61,7 @@ inline bool forceRemotePathEnabled() {
 // MPX_FORCE_REMOTE_RETRY=1 (env only, default OFF; glass/test aid, never set in a shipped conf).
 // Makes ONE remote PlexOB transcode request count as failed: ensureUniversalDecision reports a decision mismatch
 // ("forced remote retry ...") so the daemon's real lowered-retry path runs (main.cpp: one lowerPmsLadder retry) and
-// remoteObRung steps down to 640x480 at <= 2000k. Scope (FPGA Bug review of a335aebd, N1/N2/N4):
+// remoteObRung steps down to 640x480 at <= 2000k. Scope (reviewer review of a335aebd, N1/N2/N4):
 //  * only the HD first request: HDMI Native + /library key + remote + OwenB (tlsForcedRetryHdRung, set by
 //    resolvePlayTarget from remoteObRung(...).hd). Analog/CRT output, Live TV and every other key are never forced;
 //  * only ONCE PER DAEMON RUN: the first qualifying request claims the force (claimForcedRetry); a second play, a seek,
@@ -485,7 +485,7 @@ inline int remoteFpgaKbps(int cur) {
     return (cur > 0 && cur < kRemoteFpgaMaxKbps) ? cur : kRemoteFpgaMaxKbps;
 }
 
-// #276: any remote OwenB play (flag off too) asks 640x480 at <= 4000k so reviewer
+// #276: any remote OwenB play (flag off too) asks 640x480 at <= 4000k so jose
 // 720p/6.5M does not abort. REMOTE_H264_TRANSCODE=1 still uses 2000k via F7.
 constexpr int kRemoteOwenbMaxKbps = 4000;
 inline void applyRemoteOwenbCap(std::string& videoResolution, int& maxVideoBitrateKbps, bool owenb,

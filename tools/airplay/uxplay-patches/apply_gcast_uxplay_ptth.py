@@ -7,7 +7,7 @@ That is not enough:
 
 1. GET /server-info and POST /reverse are HTTP/1.1 with Host and no CSeq. Stock
    UxPlay marks them HLS (`hls_request = host && !cseq && !client_session_id`)
-   so http_handler_reverse never runs → HTTP 404 then hang (lab lab d3155a4a).
+   so http_handler_reverse never runs → HTTP 404 then hang (lab  lab device d3155a4a).
 2. Stock reverse handler set-then-count: a second /reverse is typed PTTH with
    no http_response_init (404/hang). Glass grants 101 only when count==0, else 409.
 3. staging_len leftover from POST /reverse feeds "HTTP/1.1 200 OK" to llhttp
@@ -16,7 +16,7 @@ That is not enough:
 5. INFO 101 finish: utils_data_to_text(NULL) / strchr-no-NL → SIGSEGV.
 
 Mutant: GCAST_MUT_PTTH=1 leaves the tree unpatched (airplay_ptth_repro.sh).
-Never lab.
+Never  lab device.
 """
 import os
 import pathlib
@@ -147,7 +147,7 @@ def main() -> None:
         raop,
         old="    hls_request =  (host && !cseq && !client_session_id);\n",
         new=(
-            "    /* GH#8 lab lab: iPhone POST /reverse and GET /server-info are HTTP/1.1\n"
+            "    /* GH#8 lab  lab device: iPhone POST /reverse and GET /server-info are HTTP/1.1\n"
             "       with Host and no CSeq. The HLS test stole them (404) so\n"
             "       http_handler_reverse never ran. Control URLs are not localhost HLS. */\n"
             "    bool airplay_ctrl = url && (\n"

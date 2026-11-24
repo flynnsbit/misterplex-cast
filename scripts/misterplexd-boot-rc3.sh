@@ -37,7 +37,7 @@
 #      With none of those, pick a non-169.254 IPv4 — the default-route
 #      source when this wait found one, otherwise any non-link-local — and
 #      write FRIENDLY_NAME and PLAYER_ID once as the same string
-#      misterplex-<last three octets> (192.0.2.10 is
+#      misterplex-<last three octets> (192.0.2.229 is
 #      misterplex-0.2.229). A later boot does not rewrite it. Link-local
 #      is never used. The no-network fallback (MiSTerPlex / misterplex-1)
 #      is this boot only and is never written. Nothing is written at stop
@@ -854,7 +854,7 @@ any_usable_ipv4() {
     }'
 }
 
-# 192.0.2.10 -> misterplex-0.2.229. FRIENDLY_NAME and PLAYER_ID share it.
+# 192.0.2.229 -> misterplex-0.2.229. FRIENDLY_NAME and PLAYER_ID share it.
 last3_name() {
   case "$1" in
     *.*.*.*) ;;

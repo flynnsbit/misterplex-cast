@@ -34,7 +34,7 @@ inline std::string plutoBootBaseUrl() {
 // Slate fix (glass #685 80544cc5): the legacy `<stitcher>/stitch/hls/channel/<id>/master.m3u8` path now
 // serves Pluto's takedown slate ("no longer available on this device", clip *ptv_takedownslates*) for every
 // session; the same boot + bearer + stitcherParams on `/v2/stitch/hls/channel/...` returns the real channel
-// (buildhost pluto-probe RESULT-SLATE.md). MUT_PLUTO_LEGACY_STITCH_PATH restores the legacy path.
+// (build-host pluto-probe RESULT-SLATE.md). MUT_PLUTO_LEGACY_STITCH_PATH restores the legacy path.
 #ifdef MUT_PLUTO_LEGACY_STITCH_PATH
 inline constexpr const char* kPlutoStitchChannelPath = "/stitch/hls/channel/";
 #else
@@ -43,7 +43,7 @@ inline constexpr const char* kPlutoStitchChannelPath = "/v2/stitch/hls/channel/"
 // The /v2 stitcher requires the session on every request: master without it is 401, and the media playlist
 // ffmpeg fetches (it gets NO Authorization header since ADDENDUM 8) is 401 unless the session rides in the
 // URL. `jwt=<sessionToken>&masterJWTPassthrough=true` makes the stitcher copy the jwt into every media
-// playlist URI (buildhost probe: slate_bearer.py / slate_jwtq.py). The jwt only goes to the *.pluto.tv stitcher
+// playlist URI (build-host probe: slate_bearer.py / slate_jwtq.py). The jwt only goes to the *.pluto.tv stitcher
 // host; segment/key hosts (plutotv.net) need no auth. Logs redact the `jwt` key (log_redact.hpp).
 inline std::string plutoUrlEncodeComponent(const std::string& in) {
     static const char* hex = "0123456789ABCDEF";
@@ -932,7 +932,7 @@ inline bool plutoSpelunkrStopsLiveRemuxOnTeardown() {
 // MUT_PLUTO_OPEN_RETRY_ANY: retries non-transient failures (unsupported resolution, non-H.264...).
 inline constexpr int kPlutoOpenRetryMax = 2;
 
-// N2 (FPGA Bug review of a310e5c3): a 4XX (expired jwt 401/403, unknown channel 404, 410, 429) is the stitcher's
+// N2 (reviewer review of a310e5c3): a 4XX (expired jwt 401/403, unknown channel 404, 410, 429) is the stitcher's
 // answer, not a blip: retrying it only delays the terminal and re-sends a rejected jwt. A 4XX anywhere in the
 // reason is terminal even when the message also carries a transient needle ("... 4XX Client Error ... End of
 // file"). MUT_PLUTO_OPEN_RETRY_4XX: the 4XX guard is gone and "Server returned 4" counts as transient.
@@ -980,6 +980,7 @@ inline bool plutoPrefetchFailTransient(const std::string& why) {
     // libav strings for the loopback relay / network: 5xx, reset, timeout, EOF/EIO before first data.
     // Unable to open resource / prefetch timeout: glass ff11ef73 zap02 crypto
     // stall sent=0 then PREFETCH TIMEOUT: NO NEXT (retry before 1-item fail).
+    // sample_rate=0: live remux demux reject (zap4 multi-zap stall) — retry open.
     // Glass a6bfe8e0 #668: remux first-spawn pace with audio_bytes=0 then ffmpeg SIGKILL
     // (rc=-9, err='') does not match crypto needles; treat zap-window cancel and relay
     // teardown as retriable like prefetch timeout.
@@ -987,7 +988,8 @@ inline bool plutoPrefetchFailTransient(const std::string& why) {
     static const char* kNeedles[] = {"Server returned 5XX", "Connection timed out", "Connection reset",
                                      "Connection refused", "Input/output error", "End of file",
                                      "Unable to open resource", "prefetch timeout", "prefetch cancelled",
-                                     "ffmpeg gone", "first-spawn pace", "unknown resolution"};
+                                     "ffmpeg gone", "first-spawn pace", "unknown resolution",
+                                     "sample_rate=0"};
     for (const char* n : kNeedles)
         if (why.find(n) != std::string::npos)
             return true;

@@ -40,7 +40,7 @@ inline std::string gcastReadyLine(bool airplay, bool youtube) {
     return s;
 }
 
-// GH#23 F2150: a linked PLEXTV_TOKEN (len 20 on lab) must not paint plex.tv/link
+// GH#23 F2150: a linked PLEXTV_TOKEN (len 20 on  lab device) must not paint plex.tv/link
 // on the idle Ready card. QR remaining is the unlink glass path.
 inline std::string gcastLinkCodeForIdle(bool linked, const std::string& linkCode) {
 #ifdef MUT_GOSD_LINK_WHEN_LINKED

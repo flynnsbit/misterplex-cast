@@ -1,6 +1,7 @@
 // OWENB-P1B T5: the OB play loop (owenb_session.hpp). Writes the owenb ring only (OwenbRing); never
 // touches the idle framebuffer (owenb_session.hpp) and never paints DDR.
 #include "owenb_session.hpp"
+#include "live_disc_rebase.hpp"
 #include "ob_decode_envelope.hpp"
 #include "soft_subs.hpp"
 #include "../../arm/misterplexd/gcast/open_retry.hpp"
@@ -15,6 +16,8 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 extern "C" {
@@ -634,11 +637,43 @@ bool OwenbPlaySession::applySeek(const Cmd& c) {
     return true;
 }
 
+// fix5 diag (glass ef980632 r1: 5 DECODER_ONLY holes with no core-side evidence).
+// MPX_AUDSTAT_MS=<n> logs the paced audio gate every n ms. A lab run
+// (MPX_MEMSTAT_SEC set) gets 500 ms. Otherwise it is off.
+static int64_t audStatPeriodMs() {
+    static const int64_t p = [] {
+        if (const char* e = std::getenv("MPX_AUDSTAT_MS"); e && e[0]) {
+            const long v = std::strtol(e, nullptr, 10);
+            return static_cast<int64_t>(v > 0 && v <= 60000 ? v : 0);
+        }
+        if (const char* m = std::getenv("MPX_MEMSTAT_SEC"); m && m[0] && std::strcmp(m, "0") != 0)
+            return int64_t{500};
+        return int64_t{0};
+    }();
+    return p;
+}
+
+static void logAudStat(const CoreStatus& cs, int64_t& lastMs, int64_t now) {
+    const int64_t period = audStatPeriodMs();
+    if (period <= 0 || (lastMs > 0 && now - lastMs < period))
+        return;
+    lastMs = now;
+    const auto wall = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch()).count();
+    std::fprintf(stderr,
+                 "misterplexd: AUDSTAT wall_ms=%lld state=%u ll=%u q_rec=%u q_samples=%u played=%u records=%u "
+                 "gap=%u late=%u underruns=%u anchor=%u stc=%lld live=0x%x ring_kb=%u pics=%u\n",
+                 static_cast<long long>(wall), cs.audState, cs.audLowLatency, cs.audQRec, cs.audQSamples,
+                 cs.audPlayed, cs.audRecords, cs.audGap, cs.audLate, cs.audUnderruns, cs.audAnchor,
+                 static_cast<long long>(cs.stc90k), cs.live, cs.ringLevel / 1024, cs.picsReconstructed);
+}
+
 void OwenbPlaySession::updatePosition() {
     const uint32_t ep = seekEpoch_.load(std::memory_order_acquire);
     const CoreStatus cs = ring_.coreStatus();
     if (!cs.valid)
         return;
+    logAudStat(cs, audStatLastMs_, nowMs());
     if (!cs.sessionOk) {
         endWith(EndReason::CoreLost, "the core no longer runs this session (OSD Reset or another program)");
         return;
@@ -794,6 +829,12 @@ OwenbPlaySession::EarlyEof OwenbPlaySession::classifyEof(bool fromError) {
 #ifdef MUT_OWENB_PREMATURE_OFF
     return EarlyEof::NotEarly;   // mutant: the old behaviour, every EOF is the end
 #endif
+    // Glass 4beb780b r1 zap02: live remux duration is ~INT64_MAX, so a relay
+    // kill/EOF looked like "input ended at 22587 ms of 9223372036854774000 ms"
+    // and the VOD premature seek SourceError'd the return tune.
+    if (misterplex::live_disc::liveRemuxUrl(currentReq_.url) &&
+        misterplex::live_disc::liveRemuxSkipsPrematureResume())
+        return EarlyEof::NotEarly;
     if (!cfg_.onPrematureEof || dur <= 0 || stopReq_.load() || pendingCmds_.load() > 0)
         return EarlyEof::NotEarly;
     // Where the input really ended: its video span from where it started, and the picture's

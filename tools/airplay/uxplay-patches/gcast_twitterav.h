@@ -2,7 +2,7 @@
  *   twitterav://video-s.twimg.com/amplify_video/<id>/pl/<key>.m3u8?...
  * Stock UxPlay 4e95a9e only routes http:// and https:// to the player, so
  * every such /play was "Content-Location has unsupported form" + conn_reset
- * (lab 2026-11-10 19:14 CT). The same path is served over https by the CDN.
+ * ( lab device 2026-11-10 19:14 CT). The same path is served over https by the CDN.
  *
  * gcast_twitterav_rewrite(loc) rewrites a leading "twitterav://" to "https://"
  * in place ONLY when the authority is exactly "video-s.twimg.com" and is

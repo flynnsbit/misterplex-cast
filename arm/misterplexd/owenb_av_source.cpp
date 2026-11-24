@@ -491,6 +491,37 @@ public:
             std::fprintf(stderr,
                          "misterplexd: live remux demux: video_idx=%d audio_idx=%d codec=%s rate=%d decoder=%d\n",
                          vidx_, logAidx, codec, rate, adec_ ? 1 : 0);
+            // Glass dbd11006 zap4: after multi-zap remux churn, demux opens
+            // codec=aac rate=0 decoder=1 and stalls until client_write — never
+            // prefetch/first_picture. Reject before prefetch so the playjob
+            // retries (plutoOpenRetryAllowed) instead of wedging.
+            if (misterplex::live_disc::liveRemuxRejectsZeroRateStall()) {
+                const int settled = (adec_ && adec_->sample_rate > 0) ? adec_->sample_rate : 0;
+                // fix6: a split rendition whose AAC PES is merely late (942696de
+                // tune, +4.5 s) is not the zap4 stall. Open, and fail the read
+                // with the same error only if no rate settles within the budget.
+                if (rate <= 0 && settled <= 0 && splitLivePace_ && !fmtA_ && adec_ &&
+                    misterplex::live_disc::liveRemuxDefersLateAudioReject()) {
+                    lateAudioRejectAtMs_ = stallNow() + misterplex::live_disc::kLiveLateAudioSettleMs;
+                    std::fprintf(stderr,
+                                 "misterplexd: live remux demux rate=0 deferred (late audio rendition, "
+                                 "budget_ms=%lld)\n",
+                                 static_cast<long long>(misterplex::live_disc::kLiveLateAudioSettleMs));
+#ifdef MUT_LIVE_REJECT_VIDEO_ONLY
+                } else if (rate <= 0 && settled <= 0) {
+#else
+                // reviewer trial review a71b9295 F1: reject only the zap4 class (an audio stream with no
+                // rate, or any split rendition). A muxed input with no audio stream at all (af87b021
+                // LiveAudioMap::Optional, the 1062 video-only relay) opens video-only instead of being
+                // rejected on every retry (open=0, PREFETCH FAILED).
+                } else if (rate <= 0 && settled <= 0 && (logAidx >= 0 || splitLivePace_)) {
+#endif
+                    err = "live remux demux sample_rate=0";
+                    std::fprintf(stderr,
+                                 "misterplexd: live remux demux reject rate=0 (retry)\n");
+                    return false;
+                }
+            }
         }
         // Plex id on subtitleStreamIndex is not a container index. Embedded text
         // uses textSubtitleIndex (SOFT_SUBS, or mov_text overlay #260).
@@ -604,7 +635,7 @@ public:
                     if (!(splitLivePace_ && firstVideoDelivered_ &&
                           ready_.front().kind == MediaPacket::Kind::Video &&
                           !misterplex::live_disc::videoLeadAllowed(ready_.front().pts90k,
-                                                                   lastAudioEmitPts_)))
+                                                                   audioLeadClock())))
 #endif
                     {
                     p = std::move(ready_.front());
@@ -622,7 +653,28 @@ public:
             if (step == DemuxStep::FillTimeout) {
                 // Bound the stuck av_read_frame only. Do not release a 0-byte
                 // watermark (glass F 1066 audio_bytes=0 need=288000).
+                // Glass 9e6d1814: the 29.8 s crypto wedge and the 30.5 s empty
+                // video_stall are this block. Keep HDMI loud with energetic PCM
+                // while the child is not delivering PES.
                 fillDeadlineMs_.store(0);
+                if (splitLivePace_ && firstSpawnPaced_ && firstVideoDelivered_ &&
+                    misterplex::live_disc::extinfCoverWakesBlockedRead() &&
+                    !lastEnergeticPcm_.empty() && hdmiAudioUnderrun()) {
+                    const int64_t clock = audioLeadClock();
+                    MediaPacket cover;
+                    if (clock != misterplex::live_disc::kNoPts90k &&
+                        emitExtinfCover(cover, clock + 200 * 90)) {
+                        wallCoverBytesSinceVideo_ += static_cast<int64_t>(cover.data.size());
+                        noteWallCoverBudget();
+                        // Pace the next wake off this cover. Leaving lastByteMs_
+                        // at the pre-block packet makes onInterrupt abort every
+                        // poll and the player never returns to the socket.
+                        noteExtinfCoverPaced();
+                        pushReady(std::move(cover));
+                        continue;
+                    }
+                    noteExtinfCoverPaced();
+                }
                 continue;
             }
             if (step == DemuxStep::Eof) {
@@ -645,7 +697,7 @@ public:
                     if (!(splitLivePace_ && firstVideoDelivered_ &&
                           ready_.front().kind == MediaPacket::Kind::Video &&
                           !misterplex::live_disc::videoLeadAllowed(ready_.front().pts90k,
-                                                                   lastAudioEmitPts_)))
+                                                                   audioLeadClock())))
 #endif
                     {
                     p = std::move(ready_.front());
@@ -722,11 +774,166 @@ private:
         return false;
     }
 
+    int64_t audioLeadClock() const {
+        if (misterplex::live_disc::extinfSampleClockCover() &&
+            lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k)
+            return lastPcmCoveredPts_;
+        return lastAudioEmitPts_;
+    }
+
+    // fix5 diag (glass ef980632 r1): one COVERSTAT line a second in a lab run
+    // (MPX_MEMSTAT_SEC set, or MPX_COVERSTAT=1). cover_ms is emitted PCM that did
+    // not come from the decoder. a_lead_ms is the sample clock minus the last video
+    // PTS. debt_ms is the wall-cover model's emitted-minus-wall.
+    static bool diagCoverStatOn() {
+        static const bool on = [] {
+            if (const char* e = std::getenv("MPX_COVERSTAT"); e && e[0])
+                return std::strcmp(e, "0") != 0;
+            const char* m = std::getenv("MPX_MEMSTAT_SEC");
+            return m && m[0] && std::strcmp(m, "0") != 0;
+        }();
+        return on;
+    }
+    void diagCoverStat() {
+        if (!splitLivePace_ || !diagCoverStatOn())
+            return;
+        const int64_t now = stallNow();
+        if (diagLastMs_ > 0 && now - diagLastMs_ < 1000)
+            return;
+        diagLastMs_ = now;
+        const auto wall = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch()).count();
+        const int64_t lead = (lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k &&
+                              lastVideoEmitPts_ != misterplex::live_disc::kNoPts90k)
+                                 ? (lastPcmCoveredPts_ - lastVideoEmitPts_) / 90
+                                 : 0;
+        const int64_t debt = wallAnchorMs_ > 0
+                                 ? emittedPcmBytes_ * 1000 / misterplex::live_disc::kPcmBytesPerSec - (now - wallAnchorMs_)
+                                 : 0;
+        const int64_t coverMs = (diagAudioBytes_ - diagRealAudioBytes_) * 1000 / misterplex::live_disc::kPcmBytesPerSec;
+        std::fprintf(stderr,
+                     "misterplexd: COVERSTAT wall_ms=%lld a_lead_ms=%lld debt_ms=%lld cover_ms=%lld real_ms=%lld "
+                     "clamp_fwd_ms=%lld trimmed_ms=%lld snaps=%d snap_ms=%lld splices=%d v_pts=%lld a_cov_pts=%lld cap_hit=%d\n",
+                     static_cast<long long>(wall), static_cast<long long>(lead), static_cast<long long>(debt),
+                     static_cast<long long>(coverMs),
+                     static_cast<long long>(diagRealAudioBytes_ * 1000 / misterplex::live_disc::kPcmBytesPerSec),
+                     static_cast<long long>(diagClampFwdTicks_ / 90),
+                     static_cast<long long>(diagTrimmedBytes_ * 1000 / misterplex::live_disc::kPcmBytesPerSec), diagSnaps_,
+                     static_cast<long long>(diagSnapTicks_ / 90), disc_.splices,
+                     static_cast<long long>(lastVideoEmitPts_), static_cast<long long>(lastPcmCoveredPts_),
+                     coverCapHitMs_ > 0 ? 1 : 0);
+    }
+
     void noteEmitted(const MediaPacket& p) {
-        if (p.kind == MediaPacket::Kind::Audio && p.pts90k != misterplex::live_disc::kNoPts90k)
-            lastAudioEmitPts_ = p.pts90k;
-        if (p.kind == MediaPacket::Kind::Video && p.pts90k != misterplex::live_disc::kNoPts90k)
+        if (p.kind == MediaPacket::Kind::Audio)
+            diagAudioBytes_ += static_cast<int64_t>(p.data.size());
+        diagCoverStat();
+        if (p.kind == MediaPacket::Kind::Audio && p.pts90k != misterplex::live_disc::kNoPts90k) {
+            const int64_t end = p.pts90k + misterplex::live_disc::pcmTicksForBytes(p.data.size());
+            // Sample-clock end, not the packet start. A 4096-byte stamp at the
+            // video PTS used to advance this clock without covering the gap.
+            if (misterplex::live_disc::extinfSampleClockCover())
+                lastAudioEmitPts_ = end;
+            else
+                lastAudioEmitPts_ = p.pts90k;
+            if (lastPcmCoveredPts_ == misterplex::live_disc::kNoPts90k || end > lastPcmCoveredPts_)
+                lastPcmCoveredPts_ = end;
+            lastAudioEmitWallMs_ = stallNow();
+            if (firstSpawnPaced_ && wallAnchorMs_ == 0)
+                wallAnchorMs_ = stallNow();
+            if (wallAnchorMs_ > 0)
+                emittedPcmBytes_ += static_cast<int64_t>(p.data.size());
+        }
+        if (p.kind == MediaPacket::Kind::Video && p.pts90k != misterplex::live_disc::kNoPts90k) {
             lastVideoEmitPts_ = p.pts90k;
+            wallCoverBytesSinceVideo_ = 0;
+            // The video clock was stopped from the cap until this AU; HDMI audio
+            // with it. That wall time is not HDMI consumption: without this the
+            // respawn inherits a debt of the whole outage and the wall cover
+            // fires on every burst gap (host O: A lead +9.1 s at a 3.0 s cap).
+            if (coverCapHitMs_ > 0 && wallAnchorMs_ > 0)
+                wallAnchorMs_ += stallNow() - coverCapHitMs_;
+            coverCapHitMs_ = 0;
+        }
+    }
+
+    void noteWallCoverBudget() {
+        if (coverCapHitMs_ == 0 && misterplex::live_disc::extinfWakeKeepsVideoFrames() &&
+            !misterplex::live_disc::wallCoverWithinVideoBudget(wallCoverBytesSinceVideo_))
+            coverCapHitMs_ = stallNow();
+    }
+
+    // dfc960ee r1 hole 281–314 s: ~900 video AUs were pushed while HDMI stayed
+    // at the capture floor. Those reads succeed, so a fill deadline never
+    // arms, and the video PTS stays inside 0.2 s of the sample clock, so the
+    // PTS-lead cover does not either. The silence is wall time since the last
+    // audio emit.
+    // HDMI is consuming faster than we have emitted PCM (wall debt). Wall-clock
+    // covers and the read wake are only allowed here (glass d0045771 r1).
+    bool hdmiAudioUnderrun() const {
+        if (!misterplex::live_disc::coverGatedOnWallDebt())
+            return true;
+        if (wallAnchorMs_ <= 0)
+            return false;
+        // Glass 40c9feb4: no real video AU for the cover budget means the video
+        // clock (and HDMI audio with it) is stopped. More cover only queues PCM
+        // ahead of the picture (out_q 1 -> 85), and the wake it drives aborts
+        // the read the respawned child needs.
+        if (misterplex::live_disc::extinfWakeKeepsVideoFrames() &&
+            !misterplex::live_disc::wallCoverWithinVideoBudget(wallCoverBytesSinceVideo_))
+            return false;
+        return misterplex::live_disc::hdmiAudioUnderrun(emittedPcmBytes_, stallNow() - wallAnchorMs_);
+    }
+
+    bool audioEmitWallQuiet() const {
+        if (!misterplex::live_disc::extinfCoverWakesBlockedRead())
+            return false;
+        if (lastAudioEmitWallMs_ <= 0 || lastEnergeticPcm_.empty())
+            return false;
+        if (audioLeadClock() == misterplex::live_disc::kNoPts90k)
+            return false;
+        if (stallNow() - lastAudioEmitWallMs_ < misterplex::live_disc::extinfCoverWakeQuietMs())
+            return false;
+        return hdmiAudioUnderrun();
+    }
+
+    // Repeat last energetic PCM from the sample clock toward targetPts.
+    // Does not pop ready_. Caller noteEmitted()s when the packet is delivered.
+    bool emitExtinfCover(MediaPacket& p, int64_t targetPts) {
+        if (!misterplex::live_disc::extinfSampleClockCover() || lastEnergeticPcm_.empty() ||
+            (lastEnergeticPcm_.size() % 4) != 0)
+            return false;
+        const int64_t covered = lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k
+                                    ? lastPcmCoveredPts_
+                                    : lastAudioEmitPts_;
+        const auto plan = misterplex::live_disc::planExtinfSampleCover(targetPts, covered);
+        if (plan.fillTicks <= 0 || plan.leavesHole || plan.pts == misterplex::live_disc::kNoPts90k)
+            return false;
+        const size_t need = misterplex::live_disc::pcmBytesForTicks(plan.fillTicks);
+        if (need < 4)
+            return false;
+        MediaPacket fill;
+        fill.kind = MediaPacket::Kind::Audio;
+        fill.pts90k = plan.pts;
+        fill.data.reserve(need);
+        while (fill.data.size() + lastEnergeticPcm_.size() <= need)
+            fill.data.insert(fill.data.end(), lastEnergeticPcm_.begin(), lastEnergeticPcm_.end());
+        if (fill.data.size() < need) {
+            const size_t n = (need - fill.data.size()) & ~size_t{3};
+            fill.data.insert(fill.data.end(), lastEnergeticPcm_.begin(),
+                             lastEnergeticPcm_.begin() + static_cast<std::ptrdiff_t>(n));
+        }
+        if (fill.data.size() < 4)
+            return false;
+        if (!extinfCoverLogged_) {
+            extinfCoverLogged_ = true;
+            std::fprintf(stderr,
+                         "misterplexd: live remux extinf pcm cover bytes=%zu ticks=%lld pts=%lld\n",
+                         fill.data.size(), static_cast<long long>(plan.fillTicks),
+                         static_cast<long long>(plan.pts));
+        }
+        p = std::move(fill);
+        return true;
     }
 
     // Glass H r3: after the first key, popReadyByPts dumped 3.42 s of video
@@ -751,12 +958,97 @@ private:
         }
 #ifndef MUT_LIVE_NO_VIDEO_LEAD_CAP
         if (splitLivePace_ && firstVideoDelivered_) {
+            const int64_t audioClock = audioLeadClock();
+            // Video-only bursts keep av_read_frame returning, so the blocked-read
+            // wake stays asleep. Cover from the wall clock before popping video.
+            if (bestAudio == ready_.end() && audioEmitWallQuiet() &&
+                audioClock != misterplex::live_disc::kNoPts90k &&
+                emitExtinfCover(p, audioClock + 200 * 90)) {
+                wallCoverBytesSinceVideo_ += static_cast<int64_t>(p.data.size());
+                noteWallCoverBudget();
+                noteEmitted(p);
+                return true;
+            }
+            // Glass 9e6d1814: an audio AU whose PTS sits on the video edge must
+            // not be popped across an uncovered sample-clock gap. That gap is
+            // the 5.000 s EXTINF underrun (capture floor, not a quiet AU).
+            if (misterplex::live_disc::extinfSampleClockCover() &&
+                bestAudio != ready_.end() &&
+                lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k &&
+                bestAudio->pts90k - lastPcmCoveredPts_ >=
+                    misterplex::live_disc::kSoakGapGateTicks90k &&
+                !lastEnergeticPcm_.empty()) {
+                if (emitExtinfCover(p, bestAudio->pts90k)) {
+                    if (!energeticFillLogged_) {
+                        energeticFillLogged_ = true;
+                        std::fprintf(stderr,
+                                     "misterplexd: live remux hold energetic pcm fill "
+                                     "bytes=%zu peak=%d\n",
+                                     p.data.size(), lastEnergeticPeak_);
+                    }
+                    noteEmitted(p);
+                    return true;
+                }
+            }
             const bool videoLeads = best->kind == MediaPacket::Kind::Video &&
-                !misterplex::live_disc::videoLeadAllowed(best->pts90k, lastAudioEmitPts_);
+                !misterplex::live_disc::videoLeadAllowed(best->pts90k, audioClock);
             if (videoLeads) {
-                if (bestAudio == ready_.end())
+                if (bestAudio == ready_.end()) {
+                    // GATE-V2 r2/r1: demux audio-starved while video lives and
+                    // host-HLS is loud. Repeat held energetic PCM for the whole
+                    // starve (one-shot 4 KB fill left the 261 s State Farm hole).
+                    // 9e6d1814: that 4 KB AU was stamped at the video PTS, so the
+                    // EXTINF gap stayed capture-floor. Cover from the sample clock.
+                    if (misterplex::live_disc::energeticPcmFillRepeatsAcrossStarve() &&
+                        !lastEnergeticPcm_.empty()) {
+                        if (misterplex::live_disc::extinfSampleClockCover() &&
+                            emitExtinfCover(p, best->pts90k)) {
+                            if (!energeticFillLogged_) {
+                                energeticFillLogged_ = true;
+                                std::fprintf(stderr,
+                                             "misterplexd: live remux hold energetic pcm fill "
+                                             "bytes=%zu peak=%d\n",
+                                             p.data.size(), lastEnergeticPeak_);
+                            }
+                            noteEmitted(p);
+                            return true;
+                        }
+                        MediaPacket fill;
+                        fill.kind = MediaPacket::Kind::Audio;
+                        fill.data = lastEnergeticPcm_;
+                        fill.pts90k = lastVideoEmitPts_ != misterplex::live_disc::kNoPts90k
+                                          ? lastVideoEmitPts_
+                                          : lastAudioEmitPts_;
+                        if (!energeticFillLogged_) {
+                            energeticFillLogged_ = true;
+                            std::fprintf(stderr,
+                                         "misterplexd: live remux hold energetic pcm fill "
+                                         "bytes=%zu peak=%d\n",
+                                         lastEnergeticPcm_.size(), lastEnergeticPeak_);
+                        }
+                        p = std::move(fill);
+                        noteEmitted(p);
+                        return true;
+                    }
                     return false;  // demux more; do not emit a ≥0.2 s video-only lead
+                }
                 best = bestAudio;
+            }
+            // Closed-short soak (glass dbd11006 0.454s@22.241): keep a 0.5 s
+            // PCM floor in ready_ so a brief mid-soak underrun cannot open a
+            // ≥0.2 s HDMI hole. Distinct from I's 2.767 s track-boundary recover.
+            const int64_t floorBytes = misterplex::live_disc::closedShortSoakFloorBytes();
+            if (floorBytes > 0 && best->kind == MediaPacket::Kind::Video &&
+                audioBytesInReady() < floorBytes) {
+                if (bestAudio == ready_.end())
+                    return false;  // demux more audio before video
+                best = bestAudio;
+                if (!closedShortFloorLogged_) {
+                    closedShortFloorLogged_ = true;
+                    std::fprintf(stderr,
+                                 "misterplexd: live remux closed-short soak cover floor=%lld\n",
+                                 static_cast<long long>(floorBytes));
+                }
             }
         }
 #endif
@@ -764,6 +1056,8 @@ private:
         readyBytes_ -= std::min(readyBytes_, p.data.size());
         ready_.erase(best);
         readyDepth_.store(ready_.size());
+        if (p.kind == MediaPacket::Kind::Audio)
+            diagRealAudioBytes_ += static_cast<int64_t>(p.data.size());
         if (p.kind == MediaPacket::Kind::Video && p.keyframe)
             firstVideoDelivered_ = true;
 #ifndef MUT_LIVE_NO_VIDEO_LEAD_CAP
@@ -771,9 +1065,55 @@ private:
         // the picture already on screen, not at a late independent PTS origin.
         if (p.kind == MediaPacket::Kind::Audio &&
             lastAudioEmitPts_ == misterplex::live_disc::kNoPts90k &&
-            lastVideoEmitPts_ != misterplex::live_disc::kNoPts90k)
-            p.pts90k = lastVideoEmitPts_;
+            lastVideoEmitPts_ != misterplex::live_disc::kNoPts90k) {
+            // Glass 9e6d1814 pts_jump at 159.000 s snapped the next AU onto
+            // the video edge and left the stall wedge as capture-floor silence.
+            // Hold the sample clock when it is already behind that edge.
+            const bool coverHoldsClock =
+                misterplex::live_disc::extinfSampleClockCover() &&
+                lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k &&
+                lastVideoEmitPts_ > lastPcmCoveredPts_ +
+                                         misterplex::live_disc::kSoakGapGateTicks90k;
+            const int64_t before = p.pts90k;
+            if (!coverHoldsClock)
+                p.pts90k = lastVideoEmitPts_;
+            else if (p.pts90k < lastPcmCoveredPts_ && !misterplex::live_disc::coverYieldsToRealAudio())
+                p.pts90k = lastPcmCoveredPts_;
+            ++diagSnaps_;
+            diagSnapTicks_ += p.pts90k - before;
+        }
 #endif
+        // Covers during a blocked read advance the sample clock by the wall
+        // wait. The PES that finally arrives still carries the pre-stall PTS.
+        // Playing it there is AUD_LATE and the HDMI hole reopens.
+        if (p.kind == MediaPacket::Kind::Audio &&
+            misterplex::live_disc::extinfCoverWakesBlockedRead() &&
+            lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k &&
+            p.pts90k != misterplex::live_disc::kNoPts90k &&
+            p.pts90k < lastPcmCoveredPts_) {
+            diagClampFwdTicks_ += lastPcmCoveredPts_ - p.pts90k;
+            if (misterplex::live_disc::coverYieldsToRealAudio()) {
+                // That span already went out as cover PCM. Drop it, keep the rest
+                // at its own PTS so the cover never turns into A lead over V.
+                const size_t head = misterplex::live_disc::coveredPcmHeadBytes(
+                    p.pts90k, lastPcmCoveredPts_, p.data.size());
+                // The wall-debt model still counts these bytes (as ef980632 did):
+                // the cover that played this span was the guess, this is the
+                // repayment. Without it every live-edge shortfall stays as debt and
+                // the read wake aborts the reconnect header (40c9 R/X: 13x Immediate exit).
+                if (wallAnchorMs_ > 0)
+                    emittedPcmBytes_ += static_cast<int64_t>(head);
+                if (head >= p.data.size()) {
+                    diagTrimmedBytes_ += static_cast<int64_t>(p.data.size());
+                    return popReadyByPts(p);
+                }
+                diagTrimmedBytes_ += static_cast<int64_t>(head);
+                p.data.erase(p.data.begin(), p.data.begin() + static_cast<std::ptrdiff_t>(head));
+                p.pts90k += static_cast<int64_t>(head / 4) * 90000 / 48000;
+            } else {
+                p.pts90k = lastPcmCoveredPts_;
+            }
+        }
         noteEmitted(p);
         return true;
     }
@@ -831,6 +1171,23 @@ private:
             err = "cancelled";
             return DemuxStep::Error;
         }
+#ifndef MUT_LIVE_DEFER_IGNORES_CANCEL
+        // reviewer review N1 (9b87e73d): while a fix6 late-audio defer is armed, av_read_frame keeps returning
+        // buffered video, so onInterrupt never polls the job's cancel / zap window and the attempt ran to the 6 s
+        // reject (r2 1067 gen=62: SELECT waited 4.9 s; an attempt could take ~29 s, not 15 + 8). Honour it here,
+        // only while the defer is armed (after a settle or reject lateAudioRejectAtMs_ is 0: playback untouched).
+        if (lateAudioRejectAtMs_ > 0 && cancelled_ && cancelled_()) {
+            err = "cancelled";
+            return DemuxStep::Error;
+        }
+#endif
+        if (lateAudioRejectDue(err))
+            return DemuxStep::Error;
+        // dfc960ee armed this only when demuxOne was entered already quiet, then
+        // av_read_frame blocked for the whole EXTINF fetch and the deadline
+        // never became visible. Arm here too so a read that starts quiet
+        // returns before the call. The poll inside the block is onInterrupt.
+        armExtinfCoverWake();
         if (fillDeadlineHit())
             return DemuxStep::FillTimeout;
         if (fmtA_) {
@@ -850,8 +1207,19 @@ private:
             return DemuxStep::Eof;
         }
         if (r < 0) {
-            if (fillDeadlineHit() || (r == AVERROR_EXIT && fillDeadlineMs_.load() > 0))
+            if (lateAudioExpired_ && lateAudioRejectDue(err))
+                return DemuxStep::Error;
+            // onInterrupt returns 1 to leave av_read_frame. libav stores that
+            // as pb->error and the following read is "Immediate exit requested"
+            // even after the fill deadline is cleared (abfe266e r1: one 200 ms
+            // cover, then SourceError, gens 9–11). Clear it before continuing.
+            if (fillDeadlineHit() || (r == AVERROR_EXIT && fillDeadlineMs_.load() > 0) ||
+                (r == AVERROR_EXIT && coverWakeExit_)) {
+                if (r == AVERROR_EXIT)
+                    clearCoverWakeAvioExit();
+                coverWakeExit_ = false;
                 return DemuxStep::FillTimeout;
+            }
             if (stallAbort_) {
                 stallAbort_ = false;
                 lastAvErr_ = misterplex::netresume::kStallAbortAv;
@@ -865,10 +1233,24 @@ private:
             return DemuxStep::Error;
         }
         noteByte();
+        // A cover-wake interrupt can land after a packet was already buffered.
+        // Leaving AVERROR_EXIT in pb->error makes the next read SourceError.
+        if (coverWakeExit_ || (fmt_ && fmt_->pb && fmt_->pb->error == AVERROR_EXIT))
+            clearCoverWakeAvioExit();
+        coverWakeExit_ = false;
+        if (firstSpawnPaced_ && misterplex::live_disc::extinfSampleClockCover())
+            fillDeadlineMs_.store(0);
         if (pkt_->stream_index == vidx_) {
             if (av_bsf_send_packet(bsf_, pkt_) == 0)
                 takeVideo();
         } else if (adec_ && pkt_->stream_index == aidx_) {
+#ifdef AV_PKT_FLAG_DISCONTINUITY
+            // Split audio HLS can tag EXT-X-DISCONTINUITY on the audio PID only.
+            // takeAudio used to pass discFlag=false, so a Vevo track splice with
+            // continuous video PTS never flushed AAC/SWR (glass 4beb780b r1).
+            if (pkt_->flags & AV_PKT_FLAG_DISCONTINUITY)
+                audioDiscPending_ = true;
+#endif
             if (avcodec_send_packet(adec_, pkt_) == 0)
                 takeAudio();
         } else if (sdec_ && pkt_->stream_index == sidx_) {
@@ -881,6 +1263,7 @@ private:
                 takeAudio();
         }
         av_packet_unref(pkt_);
+        noteLateAudioSettled();
         return DemuxStep::Ok;
     }
 
@@ -972,6 +1355,25 @@ private:
         readyDepth_.store(ready_.size());
     }
 
+    // Track/ad splice with no pts_jump: drain residual, then reopen AAC/SWR so
+    // the next clip's ASC is not decoded against the previous clip's state.
+    void recoverStaleAudioDecoder() {
+        drainSwrResidual();
+        if (adec_)
+            avcodec_flush_buffers(adec_);
+        swr_free(&swr_);
+        swrInRate_ = 0;
+        lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+        // Keep lastPcmCoveredPts_. The 9e6d1814 recover burst used to forget
+        // how much PCM had actually been delivered and then snap the next AU
+        // to the video PTS, opening another capture-floor hole.
+        audioDiscPending_ = false;
+        silentBumperActive_ = false;
+        silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+        silentBumperEscapedLatch_ = false;
+        std::fprintf(stderr, "misterplexd: live remux audio gap recover\n");
+    }
+
     // Push SWR leftover PCM into ready_ before a tagged-disc flush so the
     // ring reserve is not thrown away with swr_free (H mid-soak hole).
     void drainSwrResidual() {
@@ -1023,12 +1425,18 @@ private:
         if (kind == misterplex::live_disc::DiscKind::PtsJump &&
             misterplex::live_disc::keepPcmOnPtsJump()) {
             lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+            silentBumperActive_ = false;
+            silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+            silentBumperEscapedLatch_ = false;
         } else {
             drainSwrResidual();
             if (adec_)
                 avcodec_flush_buffers(adec_);
             swr_free(&swr_);
             lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+            silentBumperActive_ = false;
+            silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+            silentBumperEscapedLatch_ = false;
         }
 #else
         if (adec_)
@@ -1065,7 +1473,47 @@ private:
             ++videoFrames_;
             av_packet_unref(out_);
             if (!m.data.empty()) {
+#ifndef MUT_LIVE_NO_INBAND_SILENT_BUMPER_SKIP
+                // Glass ff11ef73: hold black bumper video while silent PCM is
+                // dropped so lastEmit stays pre-bumper and the next energetic
+                // AU is a pts_jump / snap, not a −60 dB HDMI hole.
+                // Glass 684967fa: do not hold forever — escape after the
+                // title-change window so a stuck State Farm bumper cannot
+                // starve the energetic-fill path (needs video in ready_).
+                if (silentBumperActive_ && splitLivePace_ && firstVideoDelivered_ &&
+                    !(silentBumperEscapedLatch_ &&
+                      misterplex::live_disc::silentBumperEscapeLatchesUntilEnergetic())) {
+                    const int64_t held =
+                        (silentBumperHoldPts_ != misterplex::live_disc::kNoPts90k &&
+                         m.pts90k != misterplex::live_disc::kNoPts90k)
+                            ? (m.pts90k - silentBumperHoldPts_)
+                            : 0;
+                    if (!misterplex::live_disc::silentBumperHoldExpired(held))
+                        continue;
+                    silentBumperActive_ = false;
+                    silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+                    if (misterplex::live_disc::silentBumperEscapeLatchesUntilEnergetic())
+                        silentBumperEscapedLatch_ = true;
+                }
+#endif
                 applyLiveDisc(m, discFlag);
+#ifndef MUT_LIVE_NO_AUDIO_GAP_RECOVER
+                if (splitLivePace_ && firstVideoDelivered_ &&
+                    misterplex::live_disc::audioGapNeedsRecover(m.pts90k, lastAudioEmitPts_)) {
+                    const int64_t lead = m.pts90k - lastAudioEmitPts_;
+                    // Glass 9e6d1814 tail: 98 "audio gap recover" lines in one
+                    // burst. Each flush drops in-flight AAC and clears the
+                    // bumper latch. A lead inside one 5 s EXTINF is missing
+                    // PCM; the sample-clock cover fills it. Flush stays for a
+                    // real splice (lead ≥ one segment) and for a rate change.
+                    const bool coverNotFlush =
+                        misterplex::live_disc::extinfSampleClockCover() &&
+                        lastPcmCoveredPts_ != misterplex::live_disc::kNoPts90k &&
+                        lead < misterplex::live_disc::kPlutoAudioSegTicks90k;
+                    if (!coverNotFlush)
+                        recoverStaleAudioDecoder();
+                }
+#endif
                 pushReady(std::move(m));
             }
         }
@@ -1075,6 +1523,11 @@ private:
     void takeAudio() {
         const AVRational tb = audioFmt()->streams[aidx_]->time_base;
         while (readyRoom() && adec_ && avcodec_receive_frame(adec_, frame_) == 0) {
+#ifndef MUT_LIVE_NO_AUDIO_GAP_RECOVER
+            if (swr_ && frame_->sample_rate > 0 && swrInRate_ > 0 &&
+                frame_->sample_rate != swrInRate_)
+                recoverStaleAudioDecoder();
+#endif
             if (!swr_ && !openSwr())
                 return;
             const int64_t ts = frame_->best_effort_timestamp;
@@ -1095,7 +1548,116 @@ private:
                 continue;
             m.data.resize(static_cast<size_t>(got) * 4u);
             m.pts90k = pts;
-            applyLiveDisc(m, false);
+#ifndef MUT_LIVE_NO_INBAND_SILENT_BUMPER_SKIP
+            if (splitLivePace_ && firstVideoDelivered_) {
+                const int peak = misterplex::live_disc::pcmPeakAbsS16(
+                    m.data.data(), m.data.size());
+                const int rms = misterplex::live_disc::pcmRmsAbsS16(
+                    m.data.data(), m.data.size());
+                if (misterplex::live_disc::skipInBandSilentPcm(peak, rms)) {
+                    // Glass d81e4826: HDMI-quiet AUs (RMS < 33, peak often ≥33)
+                    // never armed peak-only skip, so escape never logged.
+                    // Substitute last energetic PCM on the first quiet AU.
+                    const bool canFill =
+                        misterplex::live_disc::energeticPcmFillRepeatsAcrossStarve() &&
+                        !lastEnergeticPcm_.empty();
+                    const bool immediate =
+                        misterplex::live_disc::silentBumperEscapesImmediatelyOnQuiet() &&
+                        canFill;
+                    const bool latched =
+                        silentBumperEscapedLatch_ &&
+                        misterplex::live_disc::silentBumperEscapeLatchesUntilEnergetic() &&
+                        canFill;
+                    if (immediate || latched) {
+                        silentBumperActive_ = false;
+                        silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+                        if (misterplex::live_disc::silentBumperEscapeLatchesUntilEnergetic())
+                            silentBumperEscapedLatch_ = true;
+                        m.data = lastEnergeticPcm_;
+                        if (!silentBumperLogged_) {
+                            silentBumperLogged_ = true;
+                            std::fprintf(stderr,
+                                         "misterplexd: live remux skip in-band silent bumper "
+                                         "peak=%d rms=%d\n",
+                                         peak, rms);
+                        }
+                        if (!silentBumperEscapeLogged_) {
+                            silentBumperEscapeLogged_ = true;
+                            std::fprintf(stderr,
+                                         "misterplexd: live remux escape silent bumper "
+                                         "held_ticks=0 fill_bytes=%zu latch=%d peak=%d rms=%d\n",
+                                         lastEnergeticPcm_.size(),
+                                         silentBumperEscapedLatch_ ? 1 : 0, peak, rms);
+                        }
+                        // fall through: push energetic substitute
+                    } else if (silentBumperEscapedLatch_ &&
+                               misterplex::live_disc::silentBumperEscapeLatchesUntilEnergetic()) {
+                        continue;
+                    } else {
+                        silentBumperActive_ = true;
+                        if (silentBumperHoldPts_ == misterplex::live_disc::kNoPts90k)
+                            silentBumperHoldPts_ =
+                                (pts != h264stream::kNoPts90k) ? pts : lastVideoEmitPts_;
+                        if (!silentBumperLogged_) {
+                            silentBumperLogged_ = true;
+                            std::fprintf(stderr,
+                                         "misterplexd: live remux skip in-band silent bumper "
+                                         "peak=%d rms=%d\n",
+                                         peak, rms);
+                        }
+                        // Glass 684967fa: continuous silent AUs re-armed bumper and
+                        // held video for 261 s (State Farm) while host stayed loud.
+                        // Escape after the title-change window; substitute held
+                        // energetic PCM so HDMI cannot park mute.
+                        const int64_t held =
+                            (silentBumperHoldPts_ != misterplex::live_disc::kNoPts90k &&
+                             pts != h264stream::kNoPts90k)
+                                ? (pts - silentBumperHoldPts_)
+                                : 0;
+                        if (misterplex::live_disc::silentBumperHoldExpired(held) &&
+                            misterplex::live_disc::energeticPcmFillRepeatsAcrossStarve() &&
+                            !lastEnergeticPcm_.empty()) {
+                            silentBumperActive_ = false;
+                            silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+                            if (misterplex::live_disc::silentBumperEscapeLatchesUntilEnergetic())
+                                silentBumperEscapedLatch_ = true;
+                            m.data = lastEnergeticPcm_;
+                            if (!silentBumperEscapeLogged_) {
+                                silentBumperEscapeLogged_ = true;
+                                std::fprintf(stderr,
+                                             "misterplexd: live remux escape silent bumper "
+                                             "held_ticks=%lld fill_bytes=%zu latch=%d peak=%d rms=%d\n",
+                                             static_cast<long long>(held),
+                                             lastEnergeticPcm_.size(),
+                                             silentBumperEscapedLatch_ ? 1 : 0, peak, rms);
+                            }
+                            // fall through: push energetic substitute
+                        } else {
+                            continue;
+                        }
+                    }
+                } else {
+                    if (silentBumperActive_) {
+                        silentBumperActive_ = false;
+                        lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+                    }
+                    silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+                    // Non-silent AU clears the escape latch (GBE harden).
+                    silentBumperEscapedLatch_ = false;
+                    // GATE-V2 r2: keep last energetic AU so mid-soak audio starve /
+                    // video_stall+respawn can fill HDMI instead of −80 dBFS holes
+                    // while host-HLS stays loud. d81e4826 saved peak>=33, which
+                    // overwrote the loud buffer with hole PCM (peak 59–2892).
+                    if (misterplex::live_disc::holdEnergeticPcmAcrossAudioStarve() &&
+                        misterplex::live_disc::pcmIsEnergetic(rms)) {
+                        lastEnergeticPcm_ = m.data;
+                        lastEnergeticPeak_ = peak;
+                    }
+                }
+            }
+#endif
+            applyLiveDisc(m, audioDiscPending_);
+            audioDiscPending_ = false;
             if (liveRemux_)
                 misterplex::live_disc::notePcmBytes(disc_, m.data.size());
             if (splitLivePace_)
@@ -1135,12 +1697,14 @@ private:
         av_channel_layout_uninit(&inL);
         if (rc < 0 || swr_init(swr_) < 0) {
             swr_free(&swr_);
+            swrInRate_ = 0;
             if (liveRemux_)
                 return false;   // keep AAC decoder; retry on the next frame
             avcodec_free_context(&adec_);   // undecodable audio: play the video alone
             aidx_ = -1;
             return false;
         }
+        swrInRate_ = frame_->sample_rate;
         return true;
     }
 
@@ -1224,6 +1788,76 @@ private:
         }
     }
 
+    void noteExtinfCoverPaced() { lastByteMs_ = stallNow(); }
+
+    // Called from onInterrupt while av_read_frame is blocked in the HTTP
+    // poll (stop() every ≤100 ms). A deadline stored only at demuxOne entry
+    // is never observed during that wait: the read started with lastByteMs_
+    // just updated, so the old 150 ms / now+200 arm did not run, and the
+    // next demuxOne is the packet that ends the hole.
+    void armExtinfCoverWake() {
+        if (!misterplex::live_disc::extinfCoverWakesBlockedRead())
+            return;
+        if (!splitLivePace_ || !firstSpawnPaced_ || !firstVideoDelivered_)
+            return;
+        if (lastEnergeticPcm_.empty())
+            return;
+        if (audioLeadClock() == misterplex::live_disc::kNoPts90k)
+            return;
+        if (fillDeadlineMs_.load() != 0)
+            return;
+        if (stallNow() - lastByteMs_ < misterplex::live_disc::extinfCoverWakeQuietMs())
+            return;
+        // A normal relay burst gap is not a wedge: waking it aborts the read
+        // mid-PES (lavf flushes it) and the cover runs the sample clock ahead.
+        if (!hdmiAudioUnderrun())
+            return;
+        // 82b99128 / 40c9feb4: store(now) is already due on the poll that arms
+        // it, so av_read_frame is never entered and the video PID starves. Arm
+        // one poll ahead (30708c1a): a ready PES returns, a blocked read is covered.
+        fillDeadlineMs_.store(stallNow() + misterplex::live_disc::extinfWakeArmLeadMs());
+    }
+
+    // AVERROR_EXIT is sticky on AVIOContext. A cover wake that only returns 1
+    // from the interrupt callback ends the next read unless this is cleared.
+    void clearCoverWakeAvioExit() {
+        if (!misterplex::live_disc::extinfCoverResumesAfterAvExit())
+            return;
+        auto clearOne = [](AVFormatContext* fmt) {
+            if (!fmt || !fmt->pb || fmt->pb->error != AVERROR_EXIT)
+                return;
+            fmt->pb->error = 0;
+            fmt->pb->eof_reached = 0;
+        };
+        clearOne(fmt_);
+        clearOne(fmtA_);
+    }
+
+    // fix6 deferred zap4 reject: true (err set) once the late-audio budget ran
+    // out with no settled AAC rate. Clears the deadline once a rate settles.
+    bool noteLateAudioSettled() {
+        if (lateAudioRejectAtMs_ <= 0 || !adec_ || adec_->sample_rate <= 0)
+            return false;
+        std::fprintf(stderr, "misterplexd: live remux late audio settled rate=%d\n", adec_->sample_rate);
+        lateAudioRejectAtMs_ = 0;
+        lateAudioExpired_ = false;
+        return true;
+    }
+
+    bool lateAudioRejectDue(std::string& err) {
+        if (lateAudioRejectAtMs_ <= 0)
+            return false;
+        if (noteLateAudioSettled())
+            return false;
+        if (!lateAudioExpired_ && stallNow() < lateAudioRejectAtMs_)
+            return false;
+        lateAudioRejectAtMs_ = 0;
+        lateAudioExpired_ = false;
+        err = "live remux demux sample_rate=0";
+        std::fprintf(stderr, "misterplexd: live remux demux reject rate=0 (retry) after late-audio budget\n");
+        return true;
+    }
+
     int onInterrupt() {
         if (abort_.load())
             return 1;
@@ -1232,9 +1866,17 @@ private:
             openStopped_ = true;
             return 1;
         }
-        const int64_t fillDl = fillDeadlineMs_.load();
-        if (fillDl > 0 && stallNow() >= fillDl)
+        if (lateAudioRejectAtMs_ > 0 && !(adec_ && adec_->sample_rate > 0) &&
+            stallNow() >= lateAudioRejectAtMs_) {
+            lateAudioExpired_ = true;
             return 1;
+        }
+        armExtinfCoverWake();
+        const int64_t fillDl = fillDeadlineMs_.load();
+        if (fillDl > 0 && stallNow() >= fillDl) {
+            coverWakeExit_ = true;
+            return 1;
+        }
         const int64_t dl = openDeadlineMs_.load();
         if (dl > 0) {
             const int64_t extra = openExtraBudgetMs_
@@ -1512,9 +2154,37 @@ private:
     bool firstVideoDelivered_ = false;
     bool firstSpawnPaced_ = false;
     bool paceLogged_ = false;
+    bool closedShortFloorLogged_ = false;
+    bool silentBumperActive_ = false;
+    bool silentBumperLogged_ = false;
+    bool silentBumperEscapeLogged_ = false;
+    bool silentBumperEscapedLatch_ = false;
+    int64_t silentBumperHoldPts_ = misterplex::live_disc::kNoPts90k;
+    bool energeticFillLogged_ = false;
+    bool extinfCoverLogged_ = false;
+    bool coverWakeExit_ = false;
+    int64_t lateAudioRejectAtMs_ = 0;  // fix6 deferred rate=0 reject deadline (stallNow ms)
+    bool lateAudioExpired_ = false;
+    int lastEnergeticPeak_ = 0;
+    std::vector<uint8_t> lastEnergeticPcm_;
     int64_t pacedAudioBytes_ = 0;
     int64_t lastAudioEmitPts_ = misterplex::live_disc::kNoPts90k;
+    int64_t lastAudioEmitWallMs_ = 0;
+    int64_t wallAnchorMs_ = 0;
+    int64_t emittedPcmBytes_ = 0;
+    int64_t wallCoverBytesSinceVideo_ = 0;  // wall-clock cover PCM since the last video AU
+    int64_t coverCapHitMs_ = 0;             // when that cover reached kWallCoverNoVideoCapMs
+    int64_t diagAudioBytes_ = 0;      // fix5 diag: every emitted PCM byte
+    int64_t diagRealAudioBytes_ = 0;  // ... of which decoded (popped from ready_)
+    int64_t diagClampFwdTicks_ = 0;   // real audio moved forward onto the sample clock
+    int64_t diagSnapTicks_ = 0;       // first audio after key / pts_jump restamped
+    int diagSnaps_ = 0;
+    int64_t diagLastMs_ = 0;
+    int64_t diagTrimmedBytes_ = 0;    // real PCM dropped because a cover already played that span
+    int64_t lastPcmCoveredPts_ = misterplex::live_disc::kNoPts90k;
     int64_t lastVideoEmitPts_ = misterplex::live_disc::kNoPts90k;
+    int swrInRate_ = 0;
+    bool audioDiscPending_ = false;
     std::deque<MediaPacket> ready_;
     std::atomic<size_t> readyDepth_{0};
     unsigned probePackets_ = 0;

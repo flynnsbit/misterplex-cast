@@ -42,7 +42,7 @@ struct PrefetchLimits {
     std::function<bool()> extendOnProgress;
 };
 
-// Glass on lab must set MPX_SPELUNKR_STAGE=1 (or SPELUNKR_STAGE=1 / MPX_DEBUG=1)
+// Glass on  lab device must set MPX_SPELUNKR_STAGE=1 (or SPELUNKR_STAGE=1 / MPX_DEBUG=1)
 // so the prefetch open_ms / idr_ms split is logged. Default is silent (browse-lane #647 P2-6).
 inline bool spelunkrStageLogWanted() {
     auto on = [](const char* name) {

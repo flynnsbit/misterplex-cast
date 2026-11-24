@@ -540,7 +540,7 @@ set_global_assignment -name NUM_PARALLEL_PROCESSORS 4
 
 set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ADAPTIVE=1"
 set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"
-# TPLFIT Block A (Template.qsf:28-50 + ROUTER MAX), FPGA Bug 2026-10-17
+# TPLFIT Block A (Template.qsf:28-50 + ROUTER MAX), reviewer 2026-10-17
 set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"

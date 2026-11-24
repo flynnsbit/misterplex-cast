@@ -324,7 +324,7 @@ private:
     UiFocus focus_{};
     int focusAnim_ = 3;
     std::string status_;
-    std::string lastLoadErr_;   // reviewer: last 401/403 library error, shown in status
+    std::string lastLoadErr_;   // gwyden: last 401/403 library error, shown in status
     std::string queueLine_;
 
     std::vector<PlexServer> servers_;

@@ -2896,7 +2896,7 @@ void Companion::httpLoop() {
         return;
     }
 
-    // Per-request latency (FPGA Bug 03:24): recv time, path, header and handler ms, WARN at
+    // Per-request latency (reviewer 03:24): recv time, path, header and handler ms, WARN at
     // >= 1 s. This thread serves every request in turn, so one slow request delays all later ones.
     CompanionReqLog reqLog;
     const auto steadyMs = []() -> int64_t {
@@ -3096,7 +3096,7 @@ void Companion::httpLoop() {
             }
         }
 
-        // GET /misterplex/mast (MAST R5b follow-up, FPGA Bug 01:28/03:52): read-only status from
+        // GET /misterplex/mast (MAST R5b follow-up, reviewer 01:28/03:52): read-only status from
         // the tmpfs reload marker, answered before any other handling so it changes no state.
         // A 200 can carry marker=invalid (N1): read marker= first (mast_status_http.hpp).
         if (const auto mastStatus = mast::statusRequest(req)) {

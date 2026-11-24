@@ -3394,7 +3394,7 @@ void MediaPlayer::coreGateTick() {
                 fpgaAudioOutput_ = -1;
             }
         }
-        // MAST-WEDGE (FPGA Bug 21:14): once per open, before anything can play.
+        // MAST-WEDGE (reviewer 21:14): once per open, before anything can play.
         probeMastAtGateOpen();
         // Gate B HDMI audio-floor: FPGA vol_att resets mute until UIO_AUDVOL.
         // Once per CAPS open (boot/mode), never mid-play.
@@ -3496,7 +3496,7 @@ void MediaPlayer::probeMastAtGateOpen() {
     }
     const mast::Marker marker = mast::readMarker();
     if (probe.lane && marker.present && marker.state != "recovered") {
-        // FPGA Bug 23:53 R2: recovered only from attempted (a reload that ran).
+        // reviewer 23:53 R2: recovered only from attempted (a reload that ran).
         const int64_t now = static_cast<int64_t>(::time(nullptr));
         const mast::LiveAction act = mast::onLive(marker);
         const bool ok = act != mast::LiveAction::MarkRecovered ||
@@ -3593,7 +3593,7 @@ void MediaPlayer::paintIdle() {
         paintIdleR1(forceOnce);
     // F1 (idleBeatPlxl): the publish-only 240p core never presents a host-painted bank, so the
     // present-bank paint below (blitDisplayedBank, sendYuv420pFrameDdr and their PLXK kicks) is dead
-    // work there and never runs (FPGA Bug 01:05: the blit excluded on F1 builds).
+    // work there and never runs (reviewer 01:05: the blit excluded on F1 builds).
     const FpgaBuildInfo* idleRow = recognisedFpgaBuild(CoreGate::process().buildId());
     if (pairingPaint) {
         const FpgaBuildInfo* capsRow = recognisedFpgaBuild(CoreGate::process().lastCapsId());
@@ -4056,7 +4056,7 @@ bool MediaPlayer::r1IdleFbReady() {
     return r1Target_ != nullptr;
 }
 
-// F1 beat condition, lock-free (FPGA Bug 01:39 k1). plex_fb_en_hold (0x24F1A2C4) blanks HDMI
+// F1 beat condition, lock-free (reviewer 01:39 k1). plex_fb_en_hold (0x24F1A2C4) blanks HDMI
 // one second after PLXL stops changing, including during play, so that row keeps the beat
 // while the gate is open. Other rows stay idle-only.
 bool MediaPlayer::f1IdleOk() const {
@@ -4110,7 +4110,7 @@ bool MediaPlayer::r1EntryStreamClear(std::string* why) {
 
 // R1 idle/browse paint: the browse level (r1RenderModel) or the S0 idle screen (renderIdleRgb24)
 // through the planner. Flips go through the PLXH policy (refused from the PLAY request to the END,
-// FPGA Bug 06:57 D3), the F5 pacer and, at most once per entry, the entry stream clear. Bounded at
+// reviewer 06:57 D3), the F5 pacer and, at most once per entry, the entry stream clear. Bounded at
 // 400 ms; a flip still owed makes the idle thread retry within 250 ms (D1). The first paint after
 // each session END repaints in full and flips even an unchanged frame, and logs that it re-showed
 // the idle FB or why not (D2).
@@ -4209,7 +4209,7 @@ void MediaPlayer::paintIdleR1(bool forceOnce) {
             break;
         }
         if (plxhPolicy_.playRequestPending()) {
-            owe("a PLAY request is pending (FPGA Bug 06:57 D3)");
+            owe("a PLAY request is pending (reviewer 06:57 D3)");
             break;
         }
         const browse::PaintResult r = planner.pump(*r1Target_);
@@ -4296,7 +4296,7 @@ void MediaPlayer::startIdle() {
                 if (libraryListVisible_)
                     libVis = true;
             }
-            // D2 (FPGA Bug 06:57): paint after the PLXH session END, not between the play thread's
+            // D2 (reviewer 06:57): paint after the PLXH session END, not between the play thread's
             // session end and it (r1SessionEnds_ moves first); the R1 flip then re-shows the idle FB.
             const bool lastFrame =
                 idleMode() == IdleMode::LastFrame && !libVis && gateErrorText().empty() &&
@@ -4417,7 +4417,7 @@ bool MediaPlayer::setSourceAspect(const SourceAspect& aspect) {
     // through to makeDdrFrameGeometry(outW_, outH_) with coded == display and no
     // crop, which ddrFrameGeometryValid() rejects whenever outW_ isn't already a
     // multiple of 16 (e.g. a raw Spelunkr source size such as 424x320 or
-    // 426x240 — FPGA Bug: "source aspect DDR layout failed", heavy snow on
+    // 426x240 — reviewer: "source aspect DDR layout failed", heavy snow on
     // glass). Only in that already-invalid case, rebuild the geometry from the
     // decoder's real coded/source size (sourceMediaW_/H_ if set, else the
     // decode size itself) so the crop lands on a 16-aligned coded frame.
@@ -4721,7 +4721,7 @@ void MediaPlayer::shutdown() {
         fpgaAudioOutput_ = -1;
     }
     releaseFabricDirectAlloc(idleFabric_);
-    // R5f (FPGA Bug 01:19/01:25): every exit, 86 included, withdraws any outstanding audio command,
+    // R5f (reviewer 01:19/01:25): every exit, 86 included, withdraws any outstanding audio command,
     // so the DDR control page never carries a valid command into a reload. It runs after every
     // thread above has stopped, so nothing can publish another.
     {
@@ -5948,6 +5948,28 @@ void MediaPlayer::setSpelunkrTv(bool on) {
             ob_->setIdleHint("Open the Guide");  // GH#411: idleCfg_ must not stay Ready to cast
         }
     }
+#endif
+}
+
+void MediaPlayer::clearSpelunkrPictureForRecover() {
+#if defined(MPX_HAVE_OWENB_RING)
+    spelunkrHasPicture_.store(false);
+    withObUi([](owenb_osd::UiBus& ui) {
+        ui.update([](owenb_osd::UiModel& m) {
+            m.hadPicture = false;
+            m.presented = false;
+            m.pending = false;
+            m.pendingGen = 0;
+            m.pendingLabel.clear();
+            m.spelunkrTuning = false;
+            m.spelunkrTitle.clear();
+            m.error = owenb_osd::ErrorScreen::None;
+            m.errorDetail.clear();
+            m.errorUntilMs = 0;
+            m.surface.reset();
+        });
+    });
+    log("media: clearSpelunkrPictureForRecover: leftover picture cleared for terminal recover");
 #endif
 }
 
@@ -9270,17 +9292,17 @@ void MediaPlayer::fpgaAudioPump(MPX_AV_TRACE(std::shared_ptr<FpgaAvTrace> avTrac
 void MediaPlayer::fpgaThreadMain(std::string url, int64_t startMs, std::string headers,
                                  int64_t durationMs, uint64_t epoch, uint64_t generation,
                                  gate::GatePlayContext gateCtx) {
-    // R1 (FPGA Bug 19:16 (1)(c)): no PLXH en=1 from here (before BEGIN) to this session's END.
+    // R1 (reviewer 19:16 (1)(c)): no PLXH en=1 from here (before BEGIN) to this session's END.
     // The guard ends the session after the END/abort below has run, when the function returns;
     // endSession logs the Bug 20:08 (c) line when the session ran without the en=0 ACK. The enter
-    // takes over the PLAY-request hold of this play generation (FPGA Bug 07:30 C1), not a newer one.
+    // takes over the PLAY-request hold of this play generation (reviewer 07:30 C1), not a newer one.
     plxhPolicy_.setLog([this](const std::string& s) { log(s); });
     plxhPolicy_.enterSession(generation);
     struct PlxhSessionEnd {
         r1::PlxhSessionPolicy& policy;
         ~PlxhSessionEnd() { policy.endSession(); }
     } plxhSessionEnd{plxhPolicy_};
-    // R1 entry clear (FPGA Bug 20:18 (3)): an idle-entry stream clear that passed its session
+    // R1 entry clear (reviewer 20:18 (3)): an idle-entry stream clear that passed its session
     // check before enterSession above finishes before this session touches the ring. The entry
     // ends with this session (one clear per entry).
     { std::lock_guard<std::mutex> clearBarrier(r1ClearMu_); }
@@ -9676,7 +9698,7 @@ void MediaPlayer::fpgaThreadMain(std::string url, int64_t startMs, std::string h
             ttfpFirstPicMonotonicUs_.store(anchorMonoUs);
             anchorPausedUs = playbackPausedUs(std::chrono::steady_clock::now());
             fpgaVideoStartPauseUs_.store(anchorPausedUs);
-            // N1 (RESOAK2, FPGA Bug 14:34): the ACK the A/V anchor took, once per play. An
+            // N1 (RESOAK2, reviewer 14:34): the ACK the A/V anchor took, once per play. An
             // ACK covering more than one picture, or a late one, moves the anchor a picture.
             log("media: av anchor video: first ACK count=" +
                 std::to_string(picture.presentation_count) + " seq=" + std::to_string(picture.seq) +
@@ -9811,7 +9833,7 @@ void MediaPlayer::fpgaThreadMain(std::string url, int64_t startMs, std::string h
                         log("media: FPGA begin attempt " + std::to_string(attempt) +
                             "/5 failed: " + lastBeginErr);
 #ifndef MUT_MAST_BLIND_RETRY   // test-only mutant: keep retrying a stopped publisher
-                        // FPGA Bug 21:14: only a core reload restarts a stopped MAST
+                        // reviewer 21:14: only a core reload restarts a stopped MAST
                         // publisher; a begin retry re-runs the same check on the same FSM.
                         if (fpga_.lastBeginWedged()) {
                             beginWedged = true;
@@ -9892,7 +9914,7 @@ void MediaPlayer::fpgaThreadMain(std::string url, int64_t startMs, std::string h
                         }
                     }
                     fpga_.setNegotiatedBuild(&build);
-                    // R1 (FPGA Bug 19:16 (1)(c)): PLXH en=0 written and ACKed by PLXO before the
+                    // R1 (reviewer 19:16 (1)(c)): PLXH en=0 written and ACKed by PLXO before the
                     // first AU, so a mid-session generation_clear never selects the idle FB.
                     // Bug 20:08: with no FB_VBL (PLXO bit-identical over the wait and at the
                     // re-read) the session proceeds with en=0 armed; en=1 stays blocked to END.
@@ -10565,7 +10587,7 @@ retry_demux:
                             std::to_string(aspect.y) + " sent, metadata " +
                             std::to_string(sourceAspect_.x) + ":" +
                             std::to_string(sourceAspect_.y) +
-                            " not used (the transcoder's raster; FPGA Bug 19:24 L2)");
+                            " not used (the transcoder's raster; reviewer 19:24 L2)");
                     if (!aspect.valid) {
                         // Never CLOSED-STOP a live cast for missing DAR/ACK.
                         // 720x480 square is 3:2; 480i/480p banks want 4:3.
@@ -10726,7 +10748,7 @@ retry_demux:
                         accepted = true; break;
                     }
                     if (result != FpgaSpi::BitstreamPushResult::Full) {
-                        // T-DAEMON-MVPS (FPGA Bug 18:34): name the core's decode_error when MVPS already reports it.
+                        // T-DAEMON-MVPS (reviewer 18:34): name the core's decode_error when MVPS already reports it.
                         FpgaSpi::VideoPresentation fault{};
                         const std::string note = fpga_.readVideoPresentation(session, fault)
                             ? ddr_bitstream_ring::decodeErrorNote(fault) : std::string();

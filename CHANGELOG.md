@@ -2,6 +2,36 @@
 
 All notable changes to MiSTerPlex, written for people running it on a MiSTer.
 
+## v1.0.2 (pre-release, 23 November 2026)
+
+Build `6e55d1ce`. Checked on a real MiSTer.
+
+### Playback
+- **Live TV channels with no audio track (for example MTV on Pluto, channel 1062).** If a channel's stream has a picture but no audio, playback no longer stops. If audio appears later, the player picks it up.
+- **Live TV Vevo 80s (Pluto channel 1066) audio drop-outs.** In v1.0.1 the picture could keep playing while the sound dropped out for a while. This build covers those gaps and recovers more reliably. **Known leftover:** after you stop and resume this channel, it can take about a minute to start again if the next stream is slow to arrive.
+- **AirPlay 403 / 410.** When an AirPlay video URL expires, the player asks for a fresh one once and continues, instead of failing. **Known leftover:** if the same play is sent again, playback still restarts from the beginning.
+
+### Install
+- **One installer name:** `install-misterplex.sh`, run from the unpacked package folder (`sh install-misterplex.sh`). The v1.0.1 minimal package called it `install.sh`.
+- **The installer does the setup steps itself.** It adds the start-at-boot line to `/media/fat/linux/user-startup.sh` (once, with a timestamped backup), moves an old different core at `/media/fat/MiSTerPlex.rbf` into the backup folder, and writes a `restore.sh` that undoes the install. A run that changes nothing makes no backup folder. If old `PlexOB.rbf` files are present, they are saved first, so a re-run does make a backup folder. Your settings file is never changed. If a step fails, the installer stops, names the step, and prints the `restore.sh` command. `--dry-run` and `--no-boot-line` are available.
+- **Install docs match the package.** The README, `docs/INSTALL.md` and the package `README.txt` describe what the minimal package installs and where, how to undo with `restore.sh`, and the difference between the release tag and the build id the program reports.
+- **Same FPGA core as v1.0.1.** The v1.0.1 core (`MiSTerPlex.rbf`, md5 `042f86171b562a61694da46860b89d89`) is accepted, so you can install this over a v1.0.1 card.
+
+### Package
+This is still the minimal package: the FPGA core, the ARM program, the idle card, the boot script and the mode switcher. Source code and licences stay in the public repository and on the release page; they are not copied to the MiSTer. An existing install keeps AirPlay and YouTube helpers it already has; a new card still needs those extra files for AirPlay, YouTube and automatic restart.
+
+## v1.0.1 (pre-release, 23 November 2026)
+
+Build `eb6e7dbc`. A test release of the minimal install package.
+
+- **Title play from Browse.** Picking a title in Browse now starts the picture. Before, a background refresh could pull you back to the Servers list before playback began.
+- **Live TV channel zaps.** When a channel's stream reports an unknown format, the player retries instead of showing NO NEXT. The guide stays closed after the zap.
+- **Browse.** Library Browse, server picking and navigation timing improvements. Demo and placeholder rows use documentation addresses (192.0.2.x).
+- **Idle and boot.** Updated idle "Ready" card and boot hook: no colour bars at start-up, and Ready · AirPlay · YouTube shows after boot.
+- **Build.** The program is built reproducibly from pinned upstream sources and fully stripped.
+
+The v1.0.1 release notes listed a known issue with audio drop-outs on Vevo 80s (Pluto channel 1066). That is addressed in v1.0.2, with the leftover noted above.
+
 ## v1.0.0 (pre-release, 11 November 2026)
 
 Everything below is new since the **rc5** pre-release, published on the public repo (flynnsbit/misterplex-cast, 21 October 2026). It covers the merged PRs from #16 to #357. Some items have not been checked on a real TV yet; those are marked *(not yet TV-tested)*.

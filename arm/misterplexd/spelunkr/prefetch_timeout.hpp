@@ -93,6 +93,31 @@ inline int64_t spelunkrZapBudgetMsForPlay(bool plutoLiveHlsItem) {
 #endif
 }
 
+// v1.0.1 glass ( lab device 2026-11-23, eb6e7dbc): the "split" Pluto budget was not split. cancelled() measures ONE
+// 15 s window from the job start, so a slow metadata resolve (boot/master/variant probes/audio rendition) ate the
+// remux open's 8 s: 1063 zap "stage gen=3 attempt=1 name=timeout dur_ms=3116 t_ms=15062 reason=advance timeout"
+// (metadata ~11.9 s, the open got 3.1 s), and the 1066 resume after the Plex->Live TV switch (cold daemon: no
+// Pluto boot session, cold DNS/TLS, the first video_prepare of the process) hit "advance timeout" on all 3 opens ->
+// PREFETCH TIMEOUT. When a Pluto prefetch starts, the window is re-armed so it ends no sooner than
+// kSpelunkrPlutoRemuxOpenBudgetMs after that start. It never shortens the window, needs no zap-window restart
+// (kSpelunkrMaxZapWindowRestarts stays for warm partials / open retries), and the metadata stage itself is still
+// cancelled at 15 s, so one attempt is bounded by metadata 15 s + open 8 s. That bound also holds with a fix6
+// late-audio defer armed only because AvSource::demuxOne() honours cancelled() while the defer is armed
+// (review N1; test_1066_late_audio_defer_e2e C1/C2).
+#define MPX_PLUTO_REMUX_OPEN_REARM 1
+inline int64_t plutoRemuxOpenWindowStartMs(bool plutoLiveHlsItem, int64_t windowStartMs, int64_t prefetchStartMs) {
+#ifdef MUT_PLUTO_OPEN_BUDGET_FROM_JOB_START
+    (void)plutoLiveHlsItem;
+    (void)prefetchStartMs;
+    return windowStartMs;
+#else
+    if (!plutoLiveHlsItem)
+        return windowStartMs;
+    const int64_t floorStart = prefetchStartMs + kSpelunkrPlutoRemuxOpenBudgetMs - kSpelunkrPlutoZapBudgetMs;
+    return std::max(windowStartMs, floorStart);
+#endif
+}
+
 inline int64_t remainingZapBudgetMs(int64_t elapsedMs, int64_t budgetMs = kSpelunkrZapBudgetMs) {
     if (elapsedMs >= budgetMs)
         return 0;
@@ -113,7 +138,7 @@ inline int64_t spelunkrPrefetchBudgetMs(bool plutoLiveHlsItem, int64_t zapWindow
 #endif
 }
 
-// Chan-change regression (lab 1df5f4ae, 19:15-19:19 CT): the 8 s budget was one deadline for the
+// Chan-change regression ( lab device 1df5f4ae, 19:15-19:19 CT): the 8 s budget was one deadline for the
 // whole job. A first item whose header outran the 7 s prefetch slice (11-22 MB moov at ~3.7 MB/s)
 // left ~1 s for the next item, whose metadata/prefetch was then cancelled by the same job
 // deadline ("advance timeout ... terminal=1"), so every such zap burned two or more 8 s windows

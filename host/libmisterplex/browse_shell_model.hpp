@@ -566,7 +566,7 @@ inline void browseSortServers(std::vector<BrowseServerRow>& rows) {
 }
 
 // Select / refresh must not sit on a "…" or empty-base row when an OK neighbor exists
-// (glass 63332105 title-play: ENTER on lab-pms "…" never left Servers).
+// (glass 63332105 title-play: ENTER on plex-kube-plex "…" never left Servers).
 inline bool browseServerRowUsable(const BrowseServerRow& row) {
     return row.ok || !row.baseUrl.empty();
 }

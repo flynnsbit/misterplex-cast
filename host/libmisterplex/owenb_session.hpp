@@ -1084,6 +1084,7 @@ private:
     size_t videoInOut_ = 0;                     // video packets in out_
     size_t audioOffset_ = 0;                    // bytes of out_'s audio packet already written
     uint64_t drainStartUs_ = 0;                 // end of input: time since the core last made progress
+    int64_t audStatLastMs_ = 0;                 // fix5 diag: last AUDSTAT line
     uint64_t drainTotalUs_ = 0;                 // end of input: total time spent waiting (cap)
     uint32_t drainLevel_ = UINT32_MAX;          // end of input: ring level at the last poll
     int volume_ = 100;

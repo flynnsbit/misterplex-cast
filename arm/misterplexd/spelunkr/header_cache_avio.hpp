@@ -292,7 +292,7 @@ private:
         av_dict_set(&opts, "rw_timeout", std::to_string(misterplex::gcast::openRwTimeoutUs(key_.url)).c_str(), 0);
         // Open at the needed offset and keep the connection for later seeks (keyframe /
         // playback). Without this, ffmpeg's http protocol GETs at byte 0, then reconnects
-        // for the seek and again for the IDR (~0.9 s per setup on lab).
+        // for the seek and again for the IDR (~0.9 s per setup on  lab device).
         av_dict_set(&opts, "multiple_requests", "1", 0);
         const bool useOffset = allowOffset && pos_ > 0;
         if (useOffset)
