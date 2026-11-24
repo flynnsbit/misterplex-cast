@@ -18,9 +18,12 @@ GCAST_XCODE and other GCAST_* environment names are read-compat aliases for AIRP
       ffmpeg copy-remux (no re-encode). On 403/empty, cache invalidated for next play. Works standalone
       under /media/fat/misterplex/. Set AIRPLAY_XCODE (or the compat alias GCAST_XCODE) to use a helper on a computer instead.
 Only http(s) or yt:<11-char id> src is accepted; at most MAX_JOBS ffmpeg run at once (oldest killed).
+Time to first byte: /admit, /probe and /ladder.ts of one source share one HLS plan + probe (PLAN_TTL_S cache);
+a repeat /ladder.ts of the SAME stream (token path/query ignored, see stream_identity) adopts the running ffmpeg
+of an open its client dropped before the first byte (ADOPT_GRACE_S) instead of starting a second one.
 The on-card helper binds 127.0.0.1:18781. A computer helper uses --bind 0.0.0.0 --port 18780.
 """
-import argparse, hmac, ipaddress, json, os, re, signal, socket, ssl, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request
+import argparse, base64, calendar, copy, hashlib, hmac, ipaddress, json, os, re, select, signal, socket, ssl, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def _env(primary, legacy=None, default=None):
@@ -468,6 +471,26 @@ def _accept_probe(out):
     return parse_probe_json(j)
 
 
+_URL_IN_TEXT = re.compile(r"(?i)\b(https?)://([^/\s'\"?#]+)[^\s'\"]*")
+_LONG_TOKEN = re.compile(r"[A-Za-z0-9_%=+/~.-]{40,}")
+
+def redact_tool_stderr(raw, limit=200, nlines=2):
+    """Short, one-line, token-free tail of ffprobe/ffmpeg stderr for the log. A URL keeps only its scheme and
+    host (cast URLs carry signed tokens in the path and query); any other long token-like run is dropped.
+    AIRPLAY_MUT=rawstderr keeps the text as is (the unit test must fail)."""
+    if not raw:
+        return ""
+    s = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    if _mut("rawstderr"):
+        return s.strip()[-limit:]
+    lines = [ln.strip() for ln in s.replace("\r", "\n").split("\n") if ln.strip()]
+    s = " | ".join(lines[-nlines:])
+    s = _URL_IN_TEXT.sub(lambda m: "%s://%s/..." % (m.group(1).lower(), m.group(2)), s)
+    s = _LONG_TOKEN.sub("<redacted>", s)
+    s = "".join(c if 32 <= ord(c) < 127 else "?" for c in s)
+    return s[-limit:]
+
+
 def _run_ffprobe(cmd, timeout=25):
     """ffprobe in its own session. An iconv abort kills that process, not the helper."""
     try:
@@ -476,7 +499,8 @@ def _run_ffprobe(cmd, timeout=25):
         log("probe failed (%s)" % type(e).__name__)
         return None
     if proc.returncode != 0:
-        log("probe failed (rc=%s)" % proc.returncode)
+        tail = "" if _mut("noprobestderr") else redact_tool_stderr(proc.stderr)
+        log("probe failed (rc=%s)%s" % (proc.returncode, (" stderr: " + tail) if tail else ""))
         return None
     return _accept_probe(proc.stdout)
 
@@ -966,7 +990,7 @@ def refuse_kind(info):
     if _over_size_cap(w, h) or over_level:
         return "resolution"
     # 10-bit, a non-4:2:0 pix_fmt or a profile the core does not copy is format,
-    # even when the rate is also over (GBE #627 P3-3).
+    # even when the rate is also over (browse-lane #627 P3-3).
     try:
         bits = int(info.get("bits") or 0)
     except (TypeError, ValueError):
@@ -1169,7 +1193,9 @@ def _add_http_input_opts(cmd, url, hdr):
     if blob:
         cmd += ["-headers", blob]
 
-def build_cmd(ffmpeg, src, w, h, br, off_ms, remux, info, inputs=None, copy_audio=False):
+LIVE_HLS_COPY_INPUT_OPTS = ["-fflags", "+nobuffer", "-probesize", "1500000", "-analyzeduration", "1500000"]
+
+def build_cmd(ffmpeg, src, w, h, br, off_ms, remux, info, inputs=None, copy_audio=False, fast=True):
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
     audio_only = bool(info) and info.get("vcodec") == "none"
     if audio_only:
@@ -1200,6 +1226,16 @@ def build_cmd(ffmpeg, src, w, h, br, off_ms, remux, info, inputs=None, copy_audi
     for url, hdr in ([] if audio_only else inputs):
         if shallow:
             cmd += ["-probesize", "32768", "-analyzeduration", "0"]
+        elif remux and fast and hls_playlist_url(url) and not _mut("slowstart"):
+            # The variant's codecs are already known (probe or playlist), so ffmpeg does not need the default
+            # 5 s analyze: a TS with a stream that never carries parameters (SCTE-35 / timed metadata on SSAI
+            # live) held the first byte for that whole window. VOD copy gets the same short analyze; it only
+            # reads the PAT/PMT and the first GOP.
+            cmd += LIVE_HLS_COPY_INPUT_OPTS
+            # 2026-11-18  lab device (EIO): a source whose audio starts more than ~1.5 s after its first video packet
+            # (DAI / SSAI live) never gets its AAC sample rate inside this window; the copy muxer then dies with
+            # "sample rate not set" before the first byte. do_GET retries the SAME stream copy once with the full
+            # default probe (fast=False) and remembers the stream (_slowstart_*). Never a transcode.
         if url.startswith("http") and ".m3u8" not in url:
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
         _add_http_input_opts(cmd, url, hdr)
@@ -1274,6 +1310,315 @@ def kill(proc):
         try: os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError: pass
 
+def fast_probe_used(cmd):
+    """True when cmd carries the short live-HLS copy probe (LIVE_HLS_COPY_INPUT_OPTS)."""
+    o = LIVE_HLS_COPY_INPUT_OPTS
+    return any(cmd[i:i + len(o)] == o for i in range(len(cmd)))
+
+SLOWSTART_TTL_S = 900.0
+_SLOWSTART = {}
+def _slowstart_known(ident):
+    if _mut("noslowmemo"):
+        return False
+    with _PLAN_MU:
+        t = _SLOWSTART.get(ident)
+        if t is not None and t > _mono():
+            return True
+        _SLOWSTART.pop(ident, None)
+    return False
+def _slowstart_remember(ident):
+    with _PLAN_MU:
+        now = _mono()
+        for k in [k for k, t in _SLOWSTART.items() if t <= now]:
+            del _SLOWSTART[k]
+        while len(_SLOWSTART) >= PLAN_MAX:
+            _SLOWSTART.pop(next(iter(_SLOWSTART)))
+        _SLOWSTART[ident] = now + SLOWSTART_TTL_S
+
+# ---- Time to first byte (AirPlay video from a live HLS source) -------------------------------------------
+# 2026-11-18  lab device: /admit -> /probe -> /ladder.ts each re-fetched the master and re-ran ffprobe (~4 s), ffmpeg then
+# needed another ~6-7 s for its first byte, and the phone re-sent /play every 2-5 s; every new play dropped the open
+# in flight. The daemon now coalesces a repeat play of the same stream; this side (1) shares the plan + probe
+# between /admit, /probe and /ladder.ts and (2) lets a repeat /ladder.ts adopt the ffmpeg whose client went away
+# before the first byte, so the work already done is not thrown away.
+PLAN_TTL_S = 90.0
+PLAN_MAX = 32
+ADOPT_GRACE_S = 20.0      # an orphaned (client gone, no byte delivered) ffmpeg waits this long for a repeat open
+ADOPT_WAIT_S = 1.0        # a repeat open waits this long for the previous client of the same stream to be seen gone
+_VOLATILE_QS = frozenset((
+    "hdnts", "traceid", "hmac", "exp", "expires", "acl", "token", "sig", "signature", "sid", "session",
+    "sessionid", "wsid", "x-plex-token", "accesstoken", "auth", "policy", "key-pair-id", "nonce", "ts", "timestamp"))
+
+def _mono():
+    return time.monotonic()
+
+def _token_segment(seg):
+    """A path segment that is a signed token (base64-ish, 40+ chars, upper case and digits), e.g. the Fox
+    ZXhwPTE3OTUx... segment: it changes on every cast of the same channel."""
+    return (len(seg) >= 40 and re.fullmatch(r"[A-Za-z0-9_%=+.-]+", seg) is not None
+            and any(c.isdigit() for c in seg) and any(c.isupper() for c in seg))
+
+def stream_identity(url):
+    """The same stream under a different signature: scheme, host, path without token segments, query without
+    the volatile signing keys. Everything else (channel, rendition, item id) stays part of the identity.
+    AIRPLAY_MUT=exactid makes it the exact URL (the unit test must fail)."""
+    if _mut("exactid") or not (url.startswith("http://") or url.startswith("https://")):
+        return url
+    p = urllib.parse.urlsplit(url)
+    segs = [x for x in p.path.split("/") if not _token_segment(x)]
+    q = sorted((k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+               if k.lower() not in _VOLATILE_QS)
+    return "%s://%s%s?%s" % (p.scheme.lower(), p.netloc.lower(), "/".join(segs), urllib.parse.urlencode(q))
+
+_PLAN = {}
+_PLAN_MU = threading.Lock()
+_PLAN_KEYLOCKS = {}
+
+def plan_key(src, fwd_blob):
+    return hashlib.sha256(("%s\n%s" % (src, fwd_blob)).encode()).hexdigest()
+
+def plan_cache_get(key):
+    if _mut("noplancache"):
+        return None
+    with _PLAN_MU:
+        e = _PLAN.get(key)
+        if e and (e[0] > _mono() or _mut("nottl")):
+            return e[1]
+        _PLAN.pop(key, None)
+    return None
+
+# v1.0.1 glass (device, 2026-11-23, reviewer N4 on 990b3122): the plan is keyed by stream identity (signature stripped)
+# for PLAN_TTL_S, but its variant/audio URLs carry the FIRST play's signature. A Fox token that expired at 75 s gave
+# "plan cache hit /ladder.ts" -> ffmpeg "403 Forbidden" -> "open: Input/output error" x9 (78.7-88.2 s), even after a
+# fresh-URL replay at 70.1 s. Two guards: (1) a plan never outlives the earliest signed-URL expiry it carries
+# (exp/expires query keys, hdnts/hdntl "exp=", base64 Fox path tokens "exp=...", X-Amz-Date + X-Amz-Expires) minus
+# PLAN_EXP_MARGIN_S; (2) an upstream 403/410 before the first byte drops the plan and re-resolves ONCE from the
+# request's own URL, stream copy only (never x264: Shawn's AirPlay rule). AIRPLAY_MUT=noexpcap / noreplan / noflag / no4xx.
+PLAN_EXP_MARGIN_S = float(os.environ.get("AIRPLAY_PLAN_EXP_MARGIN_S", "10"))
+_EXP_QS_KEYS = frozenset(("exp", "expires", "expiry", "expiration", "x-expires", "e"))
+_EXP_IN_TEXT = re.compile(r"(?:^|[~&;,:/ ])exp(?:ires)?=(\d{9,11})(?:\D|$)")
+_WALL_FLOOR = 1000000000   # 2001: smaller numbers are durations or ids, not epoch seconds
+
+def _epoch_ok(v):
+    return _WALL_FLOOR < v < SANE_WALL_CEILING
+
+def _exp_from_text(text):
+    out = []
+    for m in _EXP_IN_TEXT.finditer(text):
+        v = int(m.group(1))
+        if _epoch_ok(v):
+            out.append(v)
+    return out
+
+def signed_url_expiry(url):
+    """Earliest expiry (epoch seconds) a signed URL carries, or None when it names none."""
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return None
+    try:
+        p = urllib.parse.urlsplit(url)
+        qs = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+    except ValueError:
+        return None
+    found = []
+    amz_date = amz_exp = None
+    for k, v in qs:
+        kl = k.lower()
+        if kl in _EXP_QS_KEYS and v.isdigit() and _epoch_ok(int(v)):
+            found.append(int(v))
+        elif kl == "x-amz-date":
+            amz_date = v
+        elif kl == "x-amz-expires" and v.isdigit():
+            amz_exp = int(v)
+        else:
+            found += _exp_from_text(urllib.parse.unquote(v))
+    if amz_date and amz_exp is not None:
+        try:
+            t = time.strptime(amz_date, "%Y%m%dT%H%M%SZ")
+            found.append(calendar.timegm(t) + amz_exp)
+        except ValueError:
+            pass
+    for seg in p.path.split("/"):
+        if not _token_segment(seg):
+            continue
+        raw = urllib.parse.unquote(seg)
+        try:
+            dec = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("latin-1")
+        except (ValueError, TypeError):
+            continue
+        found += _exp_from_text(dec)
+    return min(found) if found else None
+
+def log_src_tokenless(src):
+    """log_src with every signed path segment (Fox base64 / opaque token) replaced: for the expiry/re-resolve lines."""
+    if src.startswith("http://") or src.startswith("https://"):
+        p = urllib.parse.urlsplit(src)
+        path = "/".join("<tok>" if _token_segment(x) else x for x in p.path.split("/"))
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, path, "", ""))[:120]
+    return log_src(src)
+
+def plan_expiry(src, hls):
+    """Earliest signed-URL expiry over the source and the URLs the plan will hand to ffmpeg."""
+    urls = [src]
+    if hls:
+        urls += [hls.get("variant_url"), hls.get("audio_url")]
+    exps = [e for e in (signed_url_expiry(u) for u in urls if u) if e]
+    return min(exps) if exps else None
+
+def plan_ttl_s(exp_wall, now_wall=None):
+    """PLAN_TTL_S, capped so the plan is gone PLAN_EXP_MARGIN_S before its first signed URL expires (<= 0: don't cache)."""
+    if exp_wall is None or _mut("noexpcap"):
+        return PLAN_TTL_S
+    now_wall = time.time() if now_wall is None else now_wall
+    return min(PLAN_TTL_S, exp_wall - now_wall - PLAN_EXP_MARGIN_S)
+
+def plan_cache_drop(key):
+    with _PLAN_MU:
+        return _PLAN.pop(key, None) is not None
+
+def plan_cache_put(key, entry, ttl_s=None):
+    ttl_s = PLAN_TTL_S if ttl_s is None else ttl_s
+    if ttl_s <= 0:
+        return False
+    with _PLAN_MU:
+        now = _mono()
+        for k in [k for k, v in _PLAN.items() if v[0] <= now]:
+            del _PLAN[k]
+        while len(_PLAN) >= PLAN_MAX:
+            _PLAN.pop(next(iter(_PLAN)))
+        _PLAN[key] = (now + ttl_s, entry)
+    return True
+
+_UPSTREAM_DENIED = re.compile(r"(?:Server returned|HTTP error) (403|410)\b|\b(403 Forbidden|410 Gone)\b")
+# The shipped device ffmpeg (8.1.2, md5 80baac9d) at the helper's -loglevel error reports a 410 only as
+# "Server returned 4XX Client Error, but not one of 40{0,1,3,4}" (its "HTTP error 410 Gone" line is warning
+# level), so a 410 must match that generic 4XX line too. Broad on purpose: the re-resolve is once per open.
+# AIRPLAY_MUT=no4xx drops it (the unit test must fail).
+_UPSTREAM_DENIED_4XX = re.compile(r"Server returned 4XX Client Error")
+
+def upstream_denied(err):
+    """An ffmpeg stderr tail that says the upstream refused the (signed) URL: 403 Forbidden / 410 Gone, including
+    the device ffmpeg's generic "Server returned 4XX Client Error" line for a 410."""
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", "replace")
+    err = err or ""
+    if _UPSTREAM_DENIED.search(err):
+        return True
+    return not _mut("no4xx") and bool(_UPSTREAM_DENIED_4XX.search(err))
+
+class _PlanLock:
+    """One computation per source at a time: a second request for the same source waits and then hits the cache."""
+    def __init__(self, key): self.key = key
+    def __enter__(self):
+        with _PLAN_MU:
+            ent = _PLAN_KEYLOCKS.setdefault(self.key, [threading.Lock(), 0])
+            ent[1] += 1
+        self.lock = ent[0]
+        self.lock.acquire()
+    def __exit__(self, *exc):
+        self.lock.release()
+        with _PLAN_MU:
+            ent = _PLAN_KEYLOCKS.get(self.key)
+            if ent:
+                ent[1] -= 1
+                if ent[1] <= 0:
+                    del _PLAN_KEYLOCKS[self.key]
+
+class LadderJob:
+    """A running /ladder.ts ffmpeg. claimed: a client handler owns it. sent: bytes delivered to any client."""
+    def __init__(self, key, proc):
+        self.key, self.proc = key, proc
+        self.claimed, self.sent, self.head, self.timer = True, 0, b"", None
+        self.retried = False   # the fast-probe start already failed once and was redone with the full probe
+        self.replanned = False # an upstream 403/410 before the first byte already dropped the plan and re-resolved
+
+LADDER = {}
+LADDER_MU = threading.Lock()
+
+def ladder_job_key(src, w, h, br, off_ms, remux):
+    return hashlib.sha256(("%s|%d|%d|%d|%d|%d" % (stream_identity(src), w, h, br, off_ms, int(bool(remux)))).encode()).hexdigest()
+
+def ladder_register(job):
+    with LADDER_MU:
+        LADDER[job.key] = job
+
+def ladder_forget(job):
+    with LADDER_MU:
+        if LADDER.get(job.key) is job:
+            del LADDER[job.key]
+        if job.timer:
+            job.timer.cancel()
+
+def _ladder_expire(job):
+    with LADDER_MU:
+        if job.claimed or LADDER.get(job.key) is not job:
+            return
+        del LADDER[job.key]
+    log("xcode orphan expired after %ds, no repeat open: killing pid %d" % (ADOPT_GRACE_S, job.proc.pid))
+    _reap_orphan(job)
+
+def ladder_orphan(job, head=b""):
+    """The client dropped before the first byte: keep ffmpeg (and the chunk that failed to write) for a repeat open."""
+    with LADDER_MU:
+        job.head, job.claimed = head, False
+        t = threading.Timer(ADOPT_GRACE_S, _ladder_expire, args=(job,))
+        t.daemon = True
+        job.timer = t
+        t.start()
+
+def ladder_adopt(key, wait_s=ADOPT_WAIT_S):
+    """The orphaned job of the same stream, claimed for the caller, or None. Another stream's orphans are killed:
+    a different stream still preempts. A job whose client is still attached waits up to wait_s to be seen gone."""
+    if _mut("noadopt"):
+        return None
+    deadline = _mono() + wait_s
+    while True:
+        dead = []
+        with LADDER_MU:
+            job = LADDER.get(key)
+            for k, j in list(LADDER.items()):
+                if k != key and not j.claimed and not _mut("nopreempt"):
+                    del LADDER[k]
+                    dead.append(j)
+            if job is not None and (not job.claimed or _mut("steal")):
+                if job.proc.poll() not in (None, 0) and not job.head:
+                    del LADDER[key]
+                    dead.append(job)
+                    job = None
+                else:
+                    job.claimed = True
+                    if job.timer:
+                        job.timer.cancel()
+                    for j in dead:
+                        _ladder_kill_later(j)
+                    return job
+            waiting = job is not None and job.sent == 0
+        for j in dead:
+            _ladder_kill_later(j)
+        if not waiting or _mono() >= deadline:
+            return None
+        time.sleep(0.05)
+
+def _ladder_kill_later(job):
+    if job.timer:
+        job.timer.cancel()
+    log("xcode orphan of another stream preempted: killing pid %d" % job.proc.pid)
+    _reap_orphan(job)
+
+def _reap_orphan(job):
+    _reap_proc(job.proc)
+
+def _reap_proc(proc):
+    kill(proc)
+    with JOBS_MU:
+        if proc in JOBS:
+            JOBS.remove(proc)
+    for f in (proc.stdout, proc.stderr):
+        try:
+            f.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # LAN_AUTH (#62/#63, supersedes #140). Default off: nothing is checked.
 # On (env MPX_LAN_AUTH / LAN_AUTH, else LAN_AUTH= in misterplex.conf): a request
 # from a non-loopback peer must send X-MPX-Auth with the shared secret
@@ -1327,6 +1672,10 @@ def lan_auth_verdict(peer, header):
         return 403
     return 0
 
+class _NullCtx:
+    def __enter__(self): return self
+    def __exit__(self, *exc): return False
+
 class H(BaseHTTPRequestHandler):
     server_version = "airplay-xcode/2-standalone"
     def log_message(self, fmt, *a): log("%s %s" % (self.client_address[0], fmt % a))
@@ -1348,6 +1697,53 @@ class H(BaseHTTPRequestHandler):
         if prober:
             return prober(url)
         return probe(url, self.server.ffprobe, budget_s=budget_s, headers=headers)
+    def _plan_and_probe(self, src, fwd, yt, admit, budget):
+        """(hls, plan, info, drm, trusted_used): the HLS master plan and the probe of the source."""
+        hls = None
+        plan = None
+        trusted_used = False
+        if not yt and hls_playlist_url(src):
+            got = fetch_playlist(src, timeout_s=4 if admit else 15, headers=fwd)
+            if got and detect_drm(got[0]):
+                return None, None, None, True, False
+            plan = plan_hls_master(got[0], got[1]) if got else None
+            if plan:
+                hls = choose_hls(plan, lambda url: self._probe_url(url, budget, headers=fwd))
+                if admit and (not hls or (not hls.get("copy") and not hls.get("refused"))):
+                    trusted = choose_hls_playlist_trust(plan)
+                    if trusted:
+                        hls = trusted
+                        trusted_used = True
+            if hls and hls.get("refused"):
+                pass
+            elif not hls or not hls.get("info"):
+                hls = None
+        if yt:
+            info = yt_probe(src[3:])
+        elif hls and hls.get("info"):
+            info = hls["info"]
+        elif hls and hls.get("refused"):
+            info = None
+        else:
+            info = self._probe_url(src, budget, headers=fwd)
+        return hls, plan, info, False, trusted_used
+    def _replan_copy_cmd(self, src, fwd, fwd_blob, cache_key, w, h, br, off):
+        """v1.0.1 403: a fresh plan + probe from the request's own URL and its stream-copy ffmpeg command, or None.
+        Never an x264 command: a source that is not stream-copyable now ends the open (Shawn's AirPlay rule)."""
+        hls, plan, info, drm, trusted_used = self._plan_and_probe(src, fwd, None, False, 25)
+        if drm or not hls or not info or hls.get("refused"):
+            return None
+        remux = bool(hls.get("copy")) and stream_copy_ok(info)
+        if not remux:
+            return None
+        if cache_key and not trusted_used and not info.get("probe_failed"):
+            plan_cache_put(cache_key, {"hls": hls, "plan": plan, "info": info}, plan_ttl_s(plan_expiry(src, hls)))
+        inputs = [(hls["variant_url"], fwd_blob)]
+        if hls.get("audio_url"):
+            inputs.append((hls["audio_url"], fwd_blob))
+        log("xcode re-resolved %s: %s" % (log_src_tokenless(src), hls_log_line(dict(hls, copy=True))))
+        return build_cmd(self.server.ffmpeg, hls["variant_url"], w, h, br, off, True, info, inputs,
+                         copy_audio=bool(hls.get("copy_audio")), fast=False)
     def _refuse(self, kind):
         if kind not in _REFUSE_KINDS:
             kind = "format"
@@ -1381,114 +1777,236 @@ class H(BaseHTTPRequestHandler):
         fwd_blob = _headers_blob(fwd)
         yt = yt_resolve(src[3:], self.server.ytdlp) if src.startswith("yt:") else None
         if src.startswith("yt:") and not yt: return self.text(502, "youtube resolve failed\n")
-        hls = None
-        plan = None
         admit = u.path == "/admit"
         budget = 6 if admit else 25
-        if not yt and hls_playlist_url(src):
-            got = fetch_playlist(src, timeout_s=4 if admit else 15, headers=fwd)
-            if got and detect_drm(got[0]):
-                return self._refuse("drm")
-            plan = plan_hls_master(got[0], got[1]) if got else None
-            if plan:
-                hls = choose_hls(plan, lambda url: self._probe_url(url, budget, headers=fwd))
-                if admit and (not hls or (not hls.get("copy") and not hls.get("refused"))):
-                    trusted = choose_hls_playlist_trust(plan)
-                    if trusted:
-                        hls = trusted
-            if hls and hls.get("refused"):
-                pass
-            elif not hls or not hls.get("info"):
-                hls = None
-        if yt:
-            info = yt_probe(src[3:])
-        elif hls and hls.get("info"):
-            info = hls["info"]
-        elif hls and hls.get("refused"):
-            info = None
-        else:
-            info = self._probe_url(src, budget, headers=fwd)
-        # A probe crash is still a failure of that probe. /probe may answer 200 from
-        # the playlist size. /ladder.ts and /admit refuse video that is not a copy.
-        if not info:
-            info = playlist_probe_fallback(plan)
-        if u.path == "/probe":
-            if not info: return self.text(502, "probe failed\n")
-            return self.text(200, "".join("%s=%s\n" % kv for kv in info.items()))
-        if u.path != "/yt.ts" and not (src.startswith("yt:") and yt):
-            dec = playback_decision(src, info, hls, plan)
-            if u.path == "/admit":
+        # /admit, /probe and /ladder.ts of one source share one plan + probe (PLAN_TTL_S). A request for a source
+        # that is being planned right now waits for it and then hits the cache.
+        cache_key = None if (yt or src.startswith("yt:")) else plan_key(stream_identity(src), fwd_blob)
+        held = _PlanLock(cache_key) if cache_key else None
+        if held: held.__enter__()
+        try:  # held until the ffmpeg is started and registered: a repeat open of the same stream queues behind it
+            hit = plan_cache_get(cache_key) if cache_key else None
+            if hit is not None:
+                log("plan cache hit %s (%s)" % (u.path, log_src(src)))
+                if hit.get("drm"):
+                    return self._refuse("drm")
+                hls, plan, info = copy.deepcopy((hit["hls"], hit["plan"], hit["info"]))
+            else:
+                hls, plan, info, drm, trusted_used = self._plan_and_probe(src, fwd, yt, admit, budget)
+                if drm:
+                    if cache_key:
+                        plan_cache_put(cache_key, {"drm": True})
+                    return self._refuse("drm")
+                # A trusted-by-playlist /admit answer and a failed probe (playlist fallback) are not a probe result:
+                # they are not shared, the next request probes for real.
+                if cache_key and (info or (hls and hls.get("refused"))) and \
+                        (not trusted_used or _mut("plantrusted")) and not (info or {}).get("probe_failed"):
+                    ttl = plan_ttl_s(plan_expiry(src, hls))
+                    if not plan_cache_put(cache_key, {"hls": hls, "plan": plan, "info": info}, ttl):
+                        log("plan not cached: its signed URL expires in %.0fs (margin %.0fs)" % (
+                            ttl + PLAN_EXP_MARGIN_S, PLAN_EXP_MARGIN_S))
+            if not info:
+                info = playlist_probe_fallback(plan)
+            if u.path == "/probe":
+                if not info: return self.text(502, "probe failed\n")
+                return self.text(200, "".join("%s=%s\n" % kv for kv in info.items()))
+            if u.path != "/yt.ts" and not (src.startswith("yt:") and yt):
+                dec = playback_decision(src, info, hls, plan)
+                if u.path == "/admit":
+                    if dec["action"] == "refuse":
+                        return self._refuse(dec["reason"])
+                    if dec["action"] == "audio":
+                        return self.text(200, "audio\n")
+                    if dec["action"] == "copy":
+                        return self.text(200, "copy\n")
+                    return self.text(200, "x264\n")
                 if dec["action"] == "refuse":
                     return self._refuse(dec["reason"])
-                if dec["action"] == "audio":
-                    return self.text(200, "audio\n")
-                if dec["action"] == "copy":
-                    return self.text(200, "copy\n")
-                return self.text(200, "x264\n")
-            if dec["action"] == "refuse":
-                return self._refuse(dec["reason"])
-            # A RAOP probe that returned nothing is still the spectrum frame, not the video ladder.
-            if dec["action"] == "audio" and not (info and info.get("vcodec") == "none"):
-                info = {"vcodec": "none", "audio": 1, "w": 1280, "h": 720, "fps_n": 1, "fps_d": 1}
-        try:
-            w = max(64, min(1920, int(g("w", "1280")))); h = max(64, min(1080, int(g("h", "720"))))
-            br = max(200, min(8000, int(g("br", "3000"))))
-            off = max(0, int(g("start_ms" if u.path == "/yt.ts" else "offset_ms", "0")))
-        except ValueError:
-            return self.text(400, "bad w/h/br/offset_ms\n")
-        pipe_env = ca_env()
-        if u.path == "/yt.ts" or (src.startswith("yt:") and yt):
-            itags = yt.get("itags") or ["best"]
-            if isinstance(itags, str): itags = [x for x in itags.split("+") if x]
-            cmd, pipe_env = build_yt_pipe_cmd(self.server.ffmpeg, self.server.ytdlp, src[3:], itags, off)
-            remux = True
-            log("xcode /yt.ts pipe itags=%s off=%d" % ("+".join(itags), off))
-        else:
-            # In-spec H.264 (including an HLS variant chosen from the master) is remuxed.
-            # Out-of-spec video already returned 415. This x264 branch is the
-            # GCAST_MUT=videofallback path, RAOP spectrum, and probe-miss x264 attempt.
-            if hls:
-                play = hls["variant_url"]
-                inputs = [(play, fwd_blob)]
-                if hls.get("audio_url"):
-                    inputs.append((hls["audio_url"], fwd_blob))
-                remux = bool(hls.get("copy")) and stream_copy_ok(info)
-                copy_audio = bool(remux and hls.get("copy_audio"))
-                cmd = build_cmd(self.server.ffmpeg, play, w, h, br, off, remux, info, inputs, copy_audio=copy_audio)
-                shown = dict(hls)
-                shown["copy"] = remux
-                log(hls_log_line(shown))
+                # A RAOP probe that returned nothing is still the spectrum frame, not the video ladder.
+                if dec["action"] == "audio" and not (info and info.get("vcodec") == "none"):
+                    info = {"vcodec": "none", "audio": 1, "w": 1280, "h": 720, "fps_n": 1, "fps_d": 1}
+            try:
+                w = max(64, min(1920, int(g("w", "1280")))); h = max(64, min(1080, int(g("h", "720"))))
+                br = max(200, min(8000, int(g("br", "3000"))))
+                off = max(0, int(g("start_ms" if u.path == "/yt.ts" else "offset_ms", "0")))
+            except ValueError:
+                return self.text(400, "bad w/h/br/offset_ms\n")
+            pipe_env = ca_env()
+            retry_cmd = retry_cmd_saved = None
+            if u.path == "/yt.ts" or (src.startswith("yt:") and yt):
+                itags = yt.get("itags") or ["best"]
+                if isinstance(itags, str): itags = [x for x in itags.split("+") if x]
+                cmd, pipe_env = build_yt_pipe_cmd(self.server.ffmpeg, self.server.ytdlp, src[3:], itags, off)
+                remux = True
+                log("xcode /yt.ts pipe itags=%s off=%d" % ("+".join(itags), off))
             else:
-                remux = stream_copy_ok(info)
-                copy_audio = remux and (info or {}).get("acodec") == "aac"
-                inputs = [(src, fwd_blob)] if fwd_blob else None
-                cmd = build_cmd(self.server.ffmpeg, src, w, h, br, off, remux, info, inputs, copy_audio=copy_audio)
-                log(direct_log_line(info, remux))
-            log("xcode %s %dx%d %dk off=%d copy=%d src=%s" % (u.path, w, h, br, off, int(remux), log_src(src)))
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid, env=pipe_env)
-        with JOBS_MU:
-            JOBS.append(proc)
-            while len(JOBS) > MAX_JOBS:
-                old = JOBS.pop(0); log("job cap: killing pid %d" % old.pid); kill(old)
-        self.send_response(200); self.send_header("Content-Type", "video/mp2t")
-        self.send_header("Cache-Control", "no-store"); self.send_header("Connection", "close"); self.end_headers()
+                # In-spec H.264 (including an HLS variant chosen from the master) is remuxed.
+                # Out-of-spec video already returned 415. This x264 branch is the
+                # GCAST_MUT=videofallback path, RAOP spectrum, and probe-miss x264 attempt.
+                if hls:
+                    play = hls["variant_url"]
+                    inputs = [(play, fwd_blob)]
+                    if hls.get("audio_url"):
+                        inputs.append((hls["audio_url"], fwd_blob))
+                    remux = bool(hls.get("copy")) and stream_copy_ok(info)
+                    copy_audio = bool(remux and hls.get("copy_audio"))
+                    slow_known = _slowstart_known(stream_identity(src))
+                    cmd = build_cmd(self.server.ffmpeg, play, w, h, br, off, remux, info, inputs, copy_audio=copy_audio,
+                                    fast=not slow_known)
+                    if fast_probe_used(cmd) and not _mut("noretry"):
+                        # AIRPLAY_MUT=x264retry / retryfast: a transcode / the same fast probe again (the test must fail)
+                        retry_cmd = retry_cmd_saved = build_cmd(self.server.ffmpeg, play, w, h, br, off,
+                                                                remux and not _mut("x264retry"), info, inputs,
+                                                                copy_audio=copy_audio, fast=_mut("retryfast"))
+                    shown = dict(hls)
+                    shown["copy"] = remux
+                    log(hls_log_line(shown))
+                else:
+                    remux = stream_copy_ok(info)
+                    copy_audio = remux and (info or {}).get("acodec") == "aac"
+                    inputs = [(src, fwd_blob)] if fwd_blob else None
+                    cmd = build_cmd(self.server.ffmpeg, src, w, h, br, off, remux, info, inputs, copy_audio=copy_audio)
+                    log(direct_log_line(info, remux))
+                log("xcode %s %dx%d %dk off=%d copy=%d src=%s" % (u.path, w, h, br, off, int(remux), log_src(src)))
+            # A repeat open of the SAME stream adopts the ffmpeg of an open whose client dropped before the first byte.
+            adoptable = (u.path == "/ladder.ts" and not src.startswith("yt:")
+                         and not (info and info.get("vcodec") == "none"))
+            job = ladder_adopt(ladder_job_key(src, w, h, br, off, remux)) if adoptable else None
+            if job:
+                proc = job.proc
+                log("xcode adopt /ladder.ts: repeat open of the same stream joins the running ffmpeg pid %d "
+                    "(orphan head=%d bytes)" % (proc.pid, len(job.head)))
+            else:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid, env=pipe_env)
+                job = LadderJob(ladder_job_key(src, w, h, br, off, remux) if adoptable else "", proc)
+                with JOBS_MU:
+                    JOBS.append(proc)
+                    while len(JOBS) > MAX_JOBS:
+                        old = JOBS.pop(0); log("job cap: killing pid %d" % old.pid); kill(old)
+                if adoptable:
+                    ladder_register(job)
+        finally:
+            if held: held.__exit__(None, None, None)
         sent = 0
+        kept = False
+        out_fd, conn = proc.stdout.fileno(), self.connection
+        watch_conn = adoptable
         try:
+            try:
+                self.send_response(200); self.send_header("Content-Type", "video/mp2t")
+                self.send_header("Cache-Control", "no-store"); self.send_header("Connection", "close"); self.end_headers()
+            except (BrokenPipeError, ConnectionResetError):
+                # The client left while the plan/probe/ffmpeg start was running (the daemon dropped the open).
+                if adoptable:
+                    ladder_orphan(job)
+                    kept = True
+                raise
+            pending, job.head = job.head, b""
+            if pending:
+                try:
+                    self.wfile.write(pending)
+                except (BrokenPipeError, ConnectionResetError):
+                    ladder_orphan(job, head=pending)   # the next repeat open still gets that chunk
+                    kept = True
+                    raise
+                sent += len(pending); job.sent += len(pending)
             while True:
-                chunk = proc.stdout.read1(64 * 1024)  # what is there now: low-rate live streams
-                if not chunk: break
-                self.wfile.write(chunk); sent += len(chunk)
+                if watch_conn and job.sent == 0:
+                    # Before the first byte: see the client leave (the daemon dropped this open) instead of
+                    # finding out at the first write ~10 s later.
+                    r, _, _ = select.select([out_fd, conn], [], [], 0.2)
+                    if conn in r:
+                        try:
+                            gone = conn.recv(1, socket.MSG_PEEK) == b""
+                        except BlockingIOError:
+                            gone = False
+                        except OSError:
+                            gone = True
+                        if gone:
+                            ladder_orphan(job)
+                            kept = True
+                            break
+                        watch_conn = False   # the client sent more bytes: stop watching, rely on write errors
+                    if out_fd not in r:
+                        continue
+                chunk = os.read(out_fd, 64 * 1024)  # what is there now: low-rate live streams
+                if not chunk:
+                    early_err, early_rc = None, None
+                    if sent == 0 and job.sent == 0 and (retry_cmd or (cache_key and not job.replanned)):
+                        try:
+                            early_rc = proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            early_rc = None
+                        if early_rc not in (0, None):
+                            early_err = (proc.stderr.read() or b"")[-600:]
+                    if (early_err is not None and cache_key and not job.replanned and not _mut("noreplan")
+                            and upstream_denied(early_err)):
+                        # v1.0.1 403: the cached plan's signed variant URL is dead. Drop the plan and re-resolve ONCE
+                        # from this request's own URL; same stream copy, never a transcode.
+                        job.replanned = not _mut("noflag")   # AIRPLAY_MUT=noflag: no once-guard (test must fail)
+                        plan_cache_drop(cache_key)
+                        log("xcode upstream refused the cached plan's URL rc=%s before the first byte (%s): plan "
+                            "invalidated, re-resolving %s once (stream copy)" % (
+                                early_rc, redact_tool_stderr(early_err, 260, 3), log_src_tokenless(src)))
+                        new_cmd = self._replan_copy_cmd(src, fwd, fwd_blob, cache_key, w, h, br, off)
+                        if new_cmd:
+                            retry_cmd = None
+                            _reap_proc(proc)
+                            proc = subprocess.Popen(new_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                    preexec_fn=os.setsid, env=pipe_env)
+                            job.proc = proc
+                            with JOBS_MU:
+                                JOBS.append(proc)
+                                while len(JOBS) > MAX_JOBS:
+                                    o2 = JOBS.pop(0); log("job cap: killing pid %d" % o2.pid); kill(o2)
+                            out_fd = proc.stdout.fileno()
+                            continue
+                        log("xcode re-resolve after the upstream refusal found no stream copy: ending the open")
+                        break
+                    if retry_cmd and sent == 0 and job.sent == 0 and not job.retried:
+                        # The fast copy start died before any byte (e.g. "sample rate not set": late audio).
+                        # One retry of the SAME stream copy with the old, full probe; never a transcode.
+                        old, retry_cmd = proc, None
+                        rc = early_rc
+                        if rc not in (0, None):
+                            log("xcode fast start failed rc=%s before the first byte (%s): retrying the same stream copy "
+                                "with the full probe" % (rc, redact_tool_stderr(early_err or b"", 260, 3)))
+                            _slowstart_remember(stream_identity(src))
+                            job.retried = True
+                            _reap_proc(old)
+                            proc = subprocess.Popen(retry_cmd_saved, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                    preexec_fn=os.setsid, env=pipe_env)
+                            job.proc = proc
+                            with JOBS_MU:
+                                JOBS.append(proc)
+                                while len(JOBS) > MAX_JOBS:
+                                    o2 = JOBS.pop(0); log("job cap: killing pid %d" % o2.pid); kill(o2)
+                            out_fd = proc.stdout.fileno()
+                            continue
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    if adoptable and job.sent == 0:
+                        ladder_orphan(job, head=chunk)
+                        kept = True
+                    break
+                sent += len(chunk); job.sent += len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            kill(proc)
-            with JOBS_MU:
-                if proc in JOBS: JOBS.remove(proc)
-            err_b = (proc.stderr.read() or b"")[-400:]
-            err = err_b.decode("utf-8", "replace").strip()
-            log("xcode done bytes=%d rc=%s %s" % (sent, proc.returncode, err))
-            if src.startswith("yt:") and (sent == 0 or b"403" in err_b or "403" in err):   # F1: cached googlevideo URLs went 403
-                yt_evict(src[3:])
+            if kept:
+                log("xcode orphaned bytes=0 pid=%d kept %ds for a repeat open of the same stream" % (proc.pid, ADOPT_GRACE_S))
+            else:
+                ladder_forget(job)
+                kill(proc)
+                with JOBS_MU:
+                    if proc in JOBS: JOBS.remove(proc)
+                err_b = (proc.stderr.read() or b"")[-400:]
+                err = err_b.decode("utf-8", "replace").strip()
+                log("xcode done bytes=%d rc=%s %s" % (sent, proc.returncode, err))
+                if src.startswith("yt:") and (sent == 0 or b"403" in err_b or "403" in err):   # F1: cached googlevideo URLs went 403
+                    yt_evict(src[3:])
 
 def main():
     ap = argparse.ArgumentParser()

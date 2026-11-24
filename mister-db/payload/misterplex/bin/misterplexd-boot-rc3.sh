@@ -84,7 +84,20 @@
 # YTDLP_SELF_UPDATE.
 
 ROOT="${ROOT:-}"
-export MPX_CORE_MANUAL_ONLY="${MPX_CORE_MANUAL_ONLY:-1}"
+# Distinguish an operator-set policy from the hook default.
+# Default 1: do not yank a user-selected core. MENU/empty after reboot is the
+# FPGA fallback, not a user core — load PlexOB so CoreGate can open and Ready
+# can paint without a play (BOOTFIX-1023 / GH cold-boot 1121). Explicit
+# MPX_CORE_MANUAL_ONLY=1 (mode.sh / configure-misterplex bounce) still leaves
+# the loaded core alone.
+if [ -z "${MPX_CORE_MANUAL_ONLY:-}" ]; then
+  MPX_CORE_MANUAL_ONLY=1
+  MPX_CORE_MANUAL_DEFAULTED=1
+else
+  MPX_CORE_MANUAL_DEFAULTED=0
+fi
+export MPX_CORE_MANUAL_ONLY
+export MPX_CORE_MANUAL_DEFAULTED
 CORENAME_FILE="${CORENAME_FILE:-$ROOT/tmp/CORENAME}"
 MISTER_CMD="${MISTER_CMD:-/dev/MiSTer_cmd}"
 FAT="$ROOT/media/fat"
@@ -180,11 +193,13 @@ stop_supervisor() {
         kill -TERM "$spid" 2>/dev/null || true
         i=0
         # sh runs a trapped TERM only after a foreground sleep ends (<= 60 s
-        # backoff), so give it a few seconds and then KILL it.
-        while [ "$i" -lt 5 ]; do
+        # backoff), so give it a few seconds and then KILL it. Poll every
+        # 0.2 s (same 5 s budget): the supervisor normally exits in well
+        # under a second and a whole-second poll was the floor of every stop.
+        while [ "$i" -lt 25 ]; do
           kill -0 "$spid" 2>/dev/null || break
           i=$((i + 1))
-          sleep 1
+          sleep 0.2
         done
         if kill -0 "$spid" 2>/dev/null; then
           log "stop: supervisor KILL pid=$spid"
@@ -209,10 +224,10 @@ stop_daemon() {
           log "stop: INT pid=$pid"
           kill -INT "$pid" 2>/dev/null || true
           i=0
-          while [ "$i" -lt 5 ]; do
+          while [ "$i" -lt 25 ]; do
             kill -0 "$pid" 2>/dev/null || break
             i=$((i + 1))
-            sleep 1
+            sleep 0.2
           done
           if kill -0 "$pid" 2>/dev/null; then
             log "stop: KILL pid=$pid"
@@ -223,7 +238,13 @@ stop_daemon() {
     esac
     rm -f "$pidfile"
   fi
-  stop_gcast_helper
+  # BOOT_KEEP_HELPER=1 (set by misterplex_mode.sh for an OSD service switch):
+  # the AirPlay transcode helper serves both services, so leave it running.
+  if [ "${BOOT_KEEP_HELPER:-0}" = 1 ]; then
+    log "stop: keeping airplay helper across service switch"
+  else
+    stop_gcast_helper
+  fi
 }
 
 # On-card AirPlay helper (airplay_xcode.py; gcast_xcode.py is the compat name).
@@ -244,10 +265,10 @@ _stop_helper_pid() {
     log "airplay helper: stop pid=$pid"
     kill -INT "$pid" 2>/dev/null || true
     i=0
-    while [ "$i" -lt 3 ]; do
+    while [ "$i" -lt 15 ]; do
       kill -0 "$pid" 2>/dev/null || break
       i=$((i + 1))
-      sleep 1
+      sleep 0.2
     done
     if kill -0 "$pid" 2>/dev/null; then
       kill -KILL "$pid" 2>/dev/null || true
@@ -271,7 +292,38 @@ _helper_has_py() {
   [ -f "$1/airplay_xcode.py" ] || [ -f "$1/gcast_xcode.py" ]
 }
 
+# Copy only when the destination is missing or differs. Small files are
+# compared byte for byte; large binaries (ffmpeg) by size and mtime, because
+# re-copying them to the SD on every start cost 2-12 s of a service switch.
+_cp_if_changed() {
+  s=$1
+  d=$2
+  if [ -f "$d" ]; then
+    ssz=$(stat -c %s "$s" 2>/dev/null || true)
+    dsz=$(stat -c %s "$d" 2>/dev/null || true)
+    if [ -n "$ssz" ] && [ "$ssz" = "$dsz" ]; then
+      if [ "$ssz" -lt 1048576 ]; then
+        cmp -s "$s" "$d" && return 0
+      elif [ ! "$s" -nt "$d" ]; then
+        return 0
+      fi
+    fi
+  fi
+  cp -f "$s" "$d"
+}
+
 start_airplay_helper() {
+  if [ "${BOOT_KEEP_HELPER:-0}" = 1 ]; then
+    for kp in "$AIRPLAY_HELPER_PID" "$GCAST_HELPER_PID"; do
+      [ -f "$kp" ] || continue
+      kold=$(cat "$kp" 2>/dev/null || true)
+      case "$kold" in ''|*[!0-9]*) continue ;; esac
+      if kill -0 "$kold" 2>/dev/null; then
+        log "airplay helper: already running pid=$kold (kept across service switch)"
+        return 0
+      fi
+    done
+  fi
   if [ -n "${BOOT_AIRPLAY_DIR:-${BOOT_GCAST_DIR:-}}" ]; then
     src="${BOOT_AIRPLAY_DIR:-$BOOT_GCAST_DIR}"
     if ! _helper_has_py "$src" && _helper_has_py "$src/airplay"; then
@@ -299,35 +351,35 @@ start_airplay_helper() {
   mkdir -p "$dest" "$(dirname "$AIRPLAY_HELPER_PID")" "$(dirname "$GCAST_HELPER_PID")" 2>/dev/null || true
   if _helper_has_py "$src"; then
     if [ -f "$src/airplay_xcode.py" ]; then
-      cp -f "$src/airplay_xcode.py" "$dest/airplay_xcode.py"
-      cp -f "$src/airplay_xcode.py" "$dest/gcast_xcode.py"
+      _cp_if_changed "$src/airplay_xcode.py" "$dest/airplay_xcode.py"
+      _cp_if_changed "$src/airplay_xcode.py" "$dest/gcast_xcode.py"
     else
-      cp -f "$src/gcast_xcode.py" "$dest/airplay_xcode.py"
-      cp -f "$src/gcast_xcode.py" "$dest/gcast_xcode.py"
+      _cp_if_changed "$src/gcast_xcode.py" "$dest/airplay_xcode.py"
+      _cp_if_changed "$src/gcast_xcode.py" "$dest/gcast_xcode.py"
     fi
     if [ -f "$src/run-airplay-xcode.sh" ]; then
-      cp -f "$src/run-airplay-xcode.sh" "$dest/run-airplay-xcode.sh"
+      _cp_if_changed "$src/run-airplay-xcode.sh" "$dest/run-airplay-xcode.sh"
       chmod +x "$dest/run-airplay-xcode.sh" 2>/dev/null || true
     fi
     if [ -f "$src/run-gcast-xcode.sh" ]; then
-      cp -f "$src/run-gcast-xcode.sh" "$dest/run-gcast-xcode.sh"
+      _cp_if_changed "$src/run-gcast-xcode.sh" "$dest/run-gcast-xcode.sh"
       chmod +x "$dest/run-gcast-xcode.sh" 2>/dev/null || true
     fi
     if [ -f "$src/ffmpeg" ]; then
       mkdir -p "$dest/bin"
-      cp -f "$src/ffmpeg" "$dest/bin/ffmpeg"
+      _cp_if_changed "$src/ffmpeg" "$dest/bin/ffmpeg"
       chmod +x "$dest/bin/ffmpeg" 2>/dev/null || true
     fi
     if [ -f "$src/ffprobe" ]; then
       mkdir -p "$dest/bin"
-      cp -f "$src/ffprobe" "$dest/bin/ffprobe"
+      _cp_if_changed "$src/ffprobe" "$dest/bin/ffprobe"
       chmod +x "$dest/bin/ffprobe" 2>/dev/null || true
     fi
   fi
   ca_src="${BOOT_CA_BUNDLE:-$FAT/linux/misterplex-cacert.pem}"
   if [ -s "$ca_src" ]; then
     mkdir -p "$dest/ca"
-    cp -f "$ca_src" "$dest/ca/misterplex-cacert.pem"
+    _cp_if_changed "$ca_src" "$dest/ca/misterplex-cacert.pem"
   fi
   ff="${AIRPLAY_FFMPEG:-${GCAST_FFMPEG:-}}"
   if [ -z "$ff" ] && [ -x "$dest/bin/ffmpeg" ]; then
@@ -548,14 +600,36 @@ if [ "$MPX_CORE_MANUAL_ONLY" != 1 ]; then
 fi
 pick_rbf
 name=$(cat "$CORENAME_FILE" 2>/dev/null || true)
+should_load=0
 case "$name" in
   Plex|PLEX|PlexOB|PLEXOB)
     log "core already $name"
     ;;
   *)
     if [ "$MPX_CORE_MANUAL_ONLY" = 1 ]; then
-      log "manual-only: leaving core '${name:-empty}' loaded; companion only"
+      case "$name" in
+        MENU|Menu|menu|'')
+          # Defaulted policy + MENU is a Plex cold boot (FPGA fallback), not a
+          # user-selected core. Do not take this path under SPELUNKR — channel
+          # play loads the core — or when the operator set MANUAL_ONLY=1
+          # (mode.sh / configure-misterplex bounce; test_service_switch_script).
+          if [ "${MPX_CORE_MANUAL_DEFAULTED:-0}" = 1 ] && [ "${SPELUNKR:-0}" != 1 ]; then
+            log "manual-only default: core is '${name:-empty}' (not a user core); loading PlexOB for Plex boot"
+            should_load=1
+          else
+            log "manual-only: leaving core '${name:-empty}' loaded; companion only"
+          fi
+          ;;
+        *)
+          log "manual-only: leaving core '${name:-empty}' loaded; companion only"
+          ;;
+      esac
     else
+      should_load=1
+    fi
+    ;;
+esac
+if [ "$should_load" = 1 ]; then
     log "load_core $RBF (CORENAME='${name:-empty}' prefix=$PREFIX)"
     if [ ! -e "$MISTER_CMD" ] && [ ! -c "$MISTER_CMD" ]; then
       # A test file may not exist yet. On the device /dev/MiSTer_cmd does.
@@ -581,13 +655,21 @@ case "$name" in
         exit 1
         ;;
     esac
-    fi
-    ;;
-esac
+fi
 
 install_plexui_fonts() {
   dest="$FAT/misterplex/plexui"
   mkdir -p "$dest" 2>/dev/null || true
+  # N14: the Pluto ad-break stand-by card (best effort; the daemon shows a plain black field without it).
+  if [ ! -s "$dest/misterplex-ad-break.jpg" ]; then
+    self_dir0=$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)
+    for src in "$FAT/linux/misterplex/plexui" "$self_dir0/../plexui"; do
+      if [ -n "$src" ] && [ -s "$src/misterplex-ad-break.jpg" ]; then
+        cp -f "$src/misterplex-ad-break.jpg" "$dest/" 2>/dev/null || true
+        break
+      fi
+    done
+  fi
   if [ -s "$dest/Roboto-Regular.ttf" ] && [ -s "$dest/Roboto-Bold.ttf" ]; then
     return 0
   fi
@@ -623,6 +705,8 @@ if [ -x "$IDLE_CARD" ]; then
     log "idle card: $IDLE_CARD --card down"
     "$IDLE_CARD" --card down </dev/null >/dev/null 2>&1 &
   fi
+else
+  log "idle card: missing or not executable: $IDLE_CARD (colorbars risk until daemon Ready)"
 fi
 
 if [ ! -x "$BIN" ]; then
