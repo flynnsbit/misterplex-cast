@@ -46,11 +46,6 @@ struct CoreStatus {
     uint32_t ringLevel = 0;    // bytes written and not yet released by the core
     unsigned refusedCode = 0;  // FE_REFUSED_CODE: the last stream refusal (h264ring_refusal_name)
     uint32_t picsReconstructed = 0;  // RC_PIC: pictures reconstructed (#207 first-picture truth)
-    // fix5 diag: the paced audio gate (aud_play.sv), words 40-43.
-    unsigned audState = 0;     // 0 idle, 1 armed, 2 playing
-    unsigned audLowLatency = 0;
-    uint32_t audQRec = 0, audQSamples = 0, audPlayed = 0, audRecords = 0, audGap = 0, audLate = 0;
-    uint32_t audUnderruns = 0, audAnchor = 0;
 };
 
 // Converts a timestamp in time base num/den seconds to 90 kHz, wrapped to 33 bits like the

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 namespace misterplex {
 namespace {
@@ -178,6 +179,37 @@ void BrowseShellController::enqueue(Job j) {
         logLine("browse-shell: input queue full; key rejected");
     else
         qCv_.notify_one();
+}
+
+// Caller holds mu_ and model_ is not Search. Saves searchOrigin_ for Back.
+void BrowseShellController::enterSearchLocked() {
+    if (!model_.searchResults) {
+        searchOrigin_ = std::move(model_);
+        model_ = {};
+        model_.w = canvasW_;
+        model_.h = canvasH_;
+        model_.view = searchOrigin_.view;
+    }
+    if (searchOrigin_.screen == BrowseShellScreen::Servers && !searchOrigin_.servers.empty()) {
+        const auto& row = searchOrigin_.servers[static_cast<std::size_t>(
+            browseClampIndex(searchOrigin_.focus, static_cast<int>(searchOrigin_.servers.size())))];
+        server_.baseUrl = row.baseUrl;
+        server_.accessToken = row.token;
+        server_.machineIdentifier = row.id;
+        server_.name = row.name;
+    }
+    model_.searchResults = false;
+    model_.header = "SEARCH";
+    model_.headerRight.clear();
+    model_.search.keys = browseSearchKeys(layout_);
+    model_.search.query.reserve(64);
+    if (searchOrigin_.screen == BrowseShellScreen::Titles)
+        model_.search.sectionId = section_.key;
+    else
+        model_.search.sectionId.clear();
+    model_.search.scopeLabel = model_.search.sectionId.empty() ? "All libraries" : section_.title;
+    model_.screen = BrowseShellScreen::Search;
+    model_.search.region = BrowseSearchUi::Region::Field;
 }
 
 void BrowseShellController::requestRepaint(bool contentChanged) {
@@ -560,6 +592,10 @@ void BrowseShellController::run() {
                 }
             }
         }
+        // Visible posters first (review #3), then catalog pages, then thumbs
+        // for the pages that just arrived / the next viewport.
+        if (!cancelFor(g)())
+            prefetchThumbs(g);
         while (!cancelFor(g)() && prefetchNext(g)) {}
         if (!cancelFor(g)())
             prefetchThumbs(g);
@@ -582,33 +618,7 @@ void BrowseShellController::handle(const Job& j) {
             visible_ = true;
             if (model_.screen == BrowseShellScreen::Search)
                 return;
-            if (!model_.searchResults) {
-                searchOrigin_ = std::move(model_);
-                model_ = {};
-                model_.w = canvasW_;
-                model_.h = canvasH_;
-                model_.view = searchOrigin_.view;
-            }
-            if (searchOrigin_.screen == BrowseShellScreen::Servers && !searchOrigin_.servers.empty()) {
-                const auto& row = searchOrigin_.servers[static_cast<std::size_t>(
-                    browseClampIndex(searchOrigin_.focus, static_cast<int>(searchOrigin_.servers.size())))];
-                server_.baseUrl = row.baseUrl;
-                server_.accessToken = row.token;
-                server_.machineIdentifier = row.id;
-                server_.name = row.name;
-            }
-            model_.searchResults = false;
-            model_.header = "SEARCH";
-            model_.headerRight.clear();
-            model_.search.keys = browseSearchKeys(layout_);
-            model_.search.query.reserve(64);
-            if (searchOrigin_.screen == BrowseShellScreen::Titles)
-                model_.search.sectionId = section_.key;
-            else
-                model_.search.sectionId.clear();
-            model_.search.scopeLabel = model_.search.sectionId.empty() ? "All libraries" : section_.title;
-            model_.screen = BrowseShellScreen::Search;
-            model_.search.region = BrowseSearchUi::Region::Field;
+            enterSearchLocked();
         }
         requestRepaint();
         logMs("search_key", t0);
@@ -626,9 +636,15 @@ void BrowseShellController::handle(const Job& j) {
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (model_.screen != BrowseShellScreen::Search) {
+                // Typing opens Search like the Search key: save searchOrigin_ so
+                // Back returns to the screen we came from (review #5).
+#ifdef MUT_BROWSE_TEXT_NO_ORIGIN
                 model_.screen = BrowseShellScreen::Search;
                 model_.search.keys = browseSearchKeys(layout_);
                 model_.search.query.reserve(64);
+#else
+                enterSearchLocked();
+#endif
                 ++contentEpoch_;
             }
             const auto oldResults = model_.search.results.size();
@@ -1251,14 +1267,10 @@ void BrowseShellController::openTitles(uint64_t gen) {
     }
     int total = gridPageTotalSize(r0.body);
     auto items = plexui::parseLibraryAll(r0.body);
+#ifdef MUT_BROWSE_BLOCKING_CATALOG
     const int want = browsePrefetchCount(vp, total);
     int start = static_cast<int>(items.size());
     while (start < want && (total < 0 || start < total) && !cancel()) {
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            model_.loadingPct = 30 + std::min(60, want > 0 ? start * 60 / want : 0);
-        }
-        requestRepaint();
         const int chunk = std::min(200, want - start);
         path = "/library/sections/" + sec.key +
                "/all?sort=titleSort&X-Plex-Container-Start=" + std::to_string(start) +
@@ -1266,18 +1278,16 @@ void BrowseShellController::openTitles(uint64_t gen) {
         fetchCount_.fetch_add(1);
         const auto r = hooks_.get(plexui::appendToken(urlNoToken(srv.baseUrl, path), srv.accessToken), 4000, 20000,
                                   cancel);
-        if (cancel() || !r.ok()) {
-            std::lock_guard<std::mutex> lk(mu_);
-            model_.screen = BrowseShellScreen::Libraries;
-            model_.status = cancel() ? "" : "Title prefetch failed";
-            return;
-        }
-        auto more = plexui::parseLibraryAll(r.body);
+        auto more = r.ok() ? plexui::parseLibraryAll(r.body) : std::vector<plexui::PlexItem>{};
         if (more.empty())
             break;
         start += static_cast<int>(more.size());
         items.insert(items.end(), more.begin(), more.end());
     }
+#endif
+    // Review #3: only the first page blocks the Titles screen. The rest of the
+    // catalog (<= kBrowseShellPrefetchAllMax) pages in from run() after the
+    // visible posters, so the worker is free for thumbnails and keys.
     std::vector<BrowseTitleRow> titles;
     titles.reserve(items.size());
     for (const auto& it : items)
@@ -1356,8 +1366,11 @@ bool BrowseShellController::prefetchNext(uint64_t gen, int target) {
             model_.searchResults || model_.titles.size() >= static_cast<std::size_t>(model_.totalTitles))
             return false;
         start = static_cast<int>(model_.titles.size());
-        // Keep two viewports ahead. Large libraries do not delay the first paint.
-        if (target < 0 && start > model_.focus + std::max(60, 2 * browseViewportCount(layout_, model_.view)))
+        // Keep two viewports ahead; catalogs <= kBrowseShellPrefetchAllMax fill
+        // completely in the background (after the visible posters).
+        const int vp = browseViewportCount(layout_, model_.view);
+        if (target < 0 && start > model_.focus + std::max(60, 2 * vp) &&
+            start >= browsePrefetchCount(vp, model_.totalTitles))
             return false;
         srv = server_;
         sectionKey = section_.key;
@@ -1391,7 +1404,10 @@ bool BrowseShellController::prefetchNext(uint64_t gen, int target) {
             prepareTitleLocked(row);
             model_.titles.push_back(std::move(row));
         }
-        ++contentEpoch_;
+        // Background catalog pages below the screen must not force a full
+        // repaint of the next nav frame; only bump when the page is on screen.
+        if (start < model_.scroll + browseViewportCount(layout_, model_.view) + 1)
+            ++contentEpoch_;
     }
     return true;
 }
@@ -1402,7 +1418,14 @@ void BrowseShellController::prefetchThumbs(uint64_t gen) {
     plexui::PlexServer srv;
     BrowseShellScreen screen;
     BrowseViewMode view;
-    int tw, th, start, count;
+    int tw, th, start, count, visibleEnd;
+    struct Want {
+        int index = 0;
+        BrowseTitleRow row;
+        std::string key;
+        BrowseHttpResult r;
+    };
+    std::vector<Want> want;
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (!visible_ || (model_.screen != BrowseShellScreen::Titles &&
@@ -1425,28 +1448,55 @@ void BrowseShellController::prefetchThumbs(uint64_t gen) {
             start = model_.focus;
         if (screen != BrowseShellScreen::Detail)
             count = std::max(0, std::min(count, static_cast<int>(model_.titles.size()) - start));
+        visibleEnd = start + browseViewportCount(L, view);
+        if (tw <= 0 || th <= 0 || srv.baseUrl.empty())
+            return;
+        // Ordered by index: the visible viewport comes first, lookahead after.
+        for (int i = start; i < start + count; ++i) {
+            const auto& t = screen == BrowseShellScreen::Detail ? model_.detail.item :
+                            model_.titles[static_cast<std::size_t>(i)];
+            if (t.thumb.empty() || t.ratingKey.empty())
+                continue;
+            Want w;
+            w.index = i;
+            w.row = t;
+            w.key = browseThumbKey(srv.machineIdentifier, t.ratingKey, tw, th);
+            want.push_back(std::move(w));
+        }
     }
-    if (tw <= 0 || th <= 0 || srv.baseUrl.empty())
-        return;
     const auto cancel = cancelFor(gen);
-    for (int i = start; i < start + count; ++i) {
+    auto stillCurrent = [&] {
+        std::lock_guard<std::mutex> lk(mu_);
+        return model_.screen == screen && model_.view == view && !cancel();
+    };
+    auto retry = [&](const std::string& key, bool permanent) {
+        const auto at = browseShellNowMs() + (permanent ? 60000 : 1000);
+        if (failedThumbs_.size() >= 128) {
+            // P3 N2: drop nearest-deadline entry (earliest retry), not arbitrary begin().
+            auto victim = failedThumbs_.begin();
+            for (auto it = failedThumbs_.begin(); it != failedThumbs_.end(); ++it) {
+                if (it->second < victim->second)
+                    victim = it;
+            }
+            failedThumbs_.erase(victim);
+        }
+        failedThumbs_[key] = at;
+        if (!thumbRetryAt_ || at < thumbRetryAt_)
+            thumbRetryAt_ = at;
+    };
+    auto publish = [&](const Want& w, BrowseThumb&& thumb) {
+        ram_.put(w.key, std::move(thumb));
+        if (w.index < visibleEnd)
+            thumbRepaint(w.row.ratingKey, tw, th);
+    };
+    // RAM / back-off / disk first: no network, cheap, in index order.
+    std::vector<Want> net;
+    for (auto& w : want) {
         if (cancel())
             return;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            if (model_.screen != screen || model_.view != view || cancel())
-                return;
-            thumbItem_ = screen == BrowseShellScreen::Detail ? model_.detail.item :
-                         model_.titles[static_cast<std::size_t>(i)];
-        }
-        const auto& t = thumbItem_;
-        if (t.thumb.empty() || t.ratingKey.empty())
+        if (ram_.contains(w.key))
             continue;
-        const std::string key = browseThumbKey(srv.machineIdentifier, t.ratingKey, tw, th);
-        BrowseThumb thumb;
-        if (ram_.contains(key))
-            continue;
-        const auto failed = failedThumbs_.find(key);
+        const auto failed = failedThumbs_.find(w.key);
         if (failed != failedThumbs_.end()) {
             if (failed->second > browseShellNowMs()) {
                 if (!thumbRetryAt_ || failed->second < thumbRetryAt_)
@@ -1455,42 +1505,59 @@ void BrowseShellController::prefetchThumbs(uint64_t gen) {
             }
             failedThumbs_.erase(failed);
         }
-        auto retry = [&](bool permanent) {
-            const auto at = browseShellNowMs() + (permanent ? 60000 : 1000);
-            if (failedThumbs_.size() >= 128) {
-                // P3 N2: drop nearest-deadline entry (earliest retry), not arbitrary begin().
-                auto victim = failedThumbs_.begin();
-                for (auto it = failedThumbs_.begin(); it != failedThumbs_.end(); ++it) {
-                    if (it->second < victim->second)
-                        victim = it;
-                }
-                failedThumbs_.erase(victim);
-            }
-            failedThumbs_[key] = at;
-            if (!thumbRetryAt_ || at < thumbRetryAt_)
-                thumbRetryAt_ = at;
+        BrowseThumb thumb;
+        if (disk_.loadThumb(srv.machineIdentifier, w.row.ratingKey, tw, th, thumb)) {
+            publish(w, std::move(thumb));
+            continue;
+        }
+        net.push_back(std::move(w));
+    }
+    // Network: waves of kBrowseShellThumbConcurrency GETs in flight (curl
+    // processes; bounded for the ARM board), visible tiles in the first waves.
+#ifdef MUT_BROWSE_THUMBS_SERIAL
+    const std::size_t par = 1;
+#else
+    const std::size_t par = static_cast<std::size_t>(kBrowseShellThumbConcurrency);
+#endif
+    for (std::size_t w0 = 0; w0 < net.size(); w0 += par) {
+        if (!stillCurrent())
+            return;
+        const std::size_t w1 = std::min(net.size(), w0 + par);
+        auto fetch = [&](std::size_t k) {
+            net[k].r = hooks_.get(plexui::photoTranscodeUrl(srv.baseUrl, net[k].row.thumb, srv.accessToken, tw, th),
+                                  1000, 4000, cancel);
         };
-        if (!disk_.loadThumb(srv.machineIdentifier, t.ratingKey, tw, th, thumb)) {
-            ++fetchCount_;
-            const auto r = hooks_.get(plexui::photoTranscodeUrl(srv.baseUrl, t.thumb, srv.accessToken, tw, th),
-                                      1000, 4000, cancel);
-            if (cancel())
-                return;
+        std::vector<std::thread> helpers;
+        helpers.reserve(w1 - w0);
+        for (std::size_t k = w0 + 1; k < w1; ++k) {
+            fetchCount_.fetch_add(1);
+            helpers.emplace_back(fetch, k);
+        }
+        fetchCount_.fetch_add(1);
+        fetch(w0);
+        for (auto& t : helpers)
+            t.join();
+        if (cancel())
+            return;
+        for (std::size_t k = w0; k < w1; ++k) {
+            const auto& r = net[k].r;
+            const std::string& key = net[k].key;
             int iw = 0, ih = 0, comp = 0;
             const auto* data = reinterpret_cast<const stbi_uc*>(r.body.data());
             const int len = static_cast<int>(r.body.size());
             if (!r.ok() || !stbi_info_from_memory(data, len, &iw, &ih, &comp) ||
                 iw <= 0 || ih <= 0 || static_cast<int64_t>(iw) * ih > 512LL * 768) {
-                retry(r.ok() || (r.status >= 400 && r.status < 500 && r.status != 408 && r.status != 429));
+                retry(key, r.ok() || (r.status >= 400 && r.status < 500 && r.status != 408 && r.status != 429));
                 logLine("browse-shell: thumbnail unavailable or wrong dimensions");
                 continue;
             }
             stbi_uc* decoded = stbi_load_from_memory(data, len, &iw, &ih, &comp, 3);
             if (!decoded) {
-                retry(true);
+                retry(key, true);
                 logLine("browse-shell: thumbnail decode failed");
                 continue;
             }
+            BrowseThumb thumb;
             thumb.w = tw;
             thumb.h = th;
             thumb.rgb.resize(static_cast<std::size_t>(tw) * th * 3u);
@@ -1498,19 +1565,17 @@ void BrowseShellController::prefetchThumbs(uint64_t gen) {
                 std::memcpy(thumb.rgb.data(), decoded, thumb.rgb.size());
             else if (!stbir_resize_uint8_linear(decoded, iw, ih, 0, thumb.rgb.data(), tw, th, 0, STBIR_RGB)) {
                 stbi_image_free(decoded);
-                retry(true);
+                retry(key, true);
                 logLine("browse-shell: thumbnail resize failed");
                 continue;
             }
             stbi_image_free(decoded);
             if (cancel())
                 return;
-            if (!disk_.saveThumb(srv.machineIdentifier, t.ratingKey, tw, th, thumb))
+            if (!disk_.saveThumb(srv.machineIdentifier, net[k].row.ratingKey, tw, th, thumb))
                 logLine("browse-shell: cannot save thumbnail cache");
+            publish(net[k], std::move(thumb));
         }
-        ram_.put(key, std::move(thumb));
-        if (i < start + browseViewportCount(L, view))
-            thumbRepaint(t.ratingKey, tw, th);
     }
 }
 

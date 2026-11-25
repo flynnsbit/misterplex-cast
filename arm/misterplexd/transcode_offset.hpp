@@ -4,7 +4,7 @@
 // FFmpeg -ss). Shared by MediaPlayer (seek restarts) and doPlay (continue-watching start) so
 // both bake the start into the URL the same way; the FPGA demuxer cannot seek a live TS.
 // Moved verbatim from media_player.cpp (dbcc42fa), then the ladder retarget fix below.
-// Review follow-up (reviewer, c65b6078): doPlay start bounds (clampStartMs), overflow-free
+// Review follow-up (FPGA Bug, c65b6078): doPlay start bounds (clampStartMs), overflow-free
 // whole-second rounding, and an offset reader that agrees with the lab proxy's parse_int on
 // duplicate, blank and malformed values.
 #include <cstdint>

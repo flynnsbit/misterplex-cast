@@ -50,15 +50,21 @@ inline constexpr uint32_t kBuild240p1101 = 0x0B1101C5u;
 inline constexpr uint32_t kBuild240p110715 = 0x0B110715u;
 inline constexpr uint32_t kBuild240p110724 = 0x0B110724u;
 inline constexpr uint32_t kBuild240p111401 = 0x0B111401u;
+inline constexpr uint32_t kBuild240p112501 = 0x0B112501u;
 inline constexpr unsigned kW87P240Requested = 8u, kW87P240Active = 9u;
 inline bool coreSupports240p(uint32_t buildId) {
 #ifdef MUT_RASTER_ANY_CORE
     return buildId != 0;
 #elif defined(MUT_RASTER_NO_1101)
     return buildId == kBuild240p;
-#else
+#elif defined(MUT_NO_112501)
+    // Mutant: drop seed-14. ANALOG_RASTER=240p is ignored on 0x0B112501.
     return buildId == kBuild240p || buildId == kBuild240p1101 || buildId == kBuild240p110715 ||
            buildId == kBuild240p110724 || buildId == kBuild240p111401;
+#else
+    return buildId == kBuild240p || buildId == kBuild240p1101 || buildId == kBuild240p110715 ||
+           buildId == kBuild240p110724 || buildId == kBuild240p111401 ||
+           buildId == kBuild240p112501;
 #endif
 }
 inline bool w87Requested(uint64_t w87) { return ((w87 >> kW87P240Requested) & 1u) != 0; }

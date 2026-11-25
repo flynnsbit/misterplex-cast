@@ -8,6 +8,7 @@
 #include <ctime>
 #include <optional>
 #include <string>
+#include <vector>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -464,4 +465,58 @@ private:
     uint64_t generation_ = UINT64_MAX;
     bool synced_ = false, sent_ = false;
 };
+
+// Sanitise the environment passed across fork/exec into misterplex_mode.sh.
+// misterplexd populates ~25+ MPX_* and helper defaults into its own environ via setenv();
+// without stripping them before exec, the launched daemon inherits stale MPX_* keys from
+// the previous mode instead of a clean cold-mode environment (10 MPX_* keys).
+inline bool serviceSwitchPreservesEnvEntry(const char* entry) {
+#ifdef MUT_SERVICE_SWITCH_INHERITS_MPX_ENV
+    (void)entry;
+    return true;
+#else
+    if (!entry || !entry[0])
+        return false;
+    const char* eq = std::strchr(entry, '=');
+    if (!eq || eq == entry)
+        return false;
+    const size_t klen = static_cast<size_t>(eq - entry);
+    auto keyIs = [entry, klen](const char* name) {
+        const size_t nlen = std::strlen(name);
+        return klen == nlen && std::strncmp(entry, name, klen) == 0;
+    };
+    if (klen >= 4 && std::strncmp(entry, "MPX_", 4) == 0) {
+        return keyIs("MPX_SERVICE_REQUEST_DIR") ||
+               keyIs("MPX_MODE_SWITCH_LOCK_PATH") ||
+               keyIs("MPX_MENU_LOG");
+    }
+    if (keyIs("SPELUNKR") || keyIs("NET_RESUME") ||
+        keyIs("AIRPLAY_XCODE") || keyIs("GCAST_XCODE") ||
+        keyIs("OPENSUBTITLES_API_KEY") || keyIs("OPENSUBTITLES_USERNAME") ||
+        keyIs("OPENSUBTITLES_PASSWORD")) {
+        return false;
+    }
+    return true;
+#endif
+}
+
+inline std::vector<std::string> buildServiceSwitchChildEnv(const char* const* srcEnviron) {
+    std::vector<std::string> out;
+    if (!srcEnviron)
+        return out;
+    for (const char* const* p = srcEnviron; *p; ++p) {
+        if (serviceSwitchPreservesEnvEntry(*p))
+            out.emplace_back(*p);
+    }
+    return out;
+}
+
+inline std::vector<char*> envPointers(std::vector<std::string>& storage) {
+    std::vector<char*> ptrs;
+    ptrs.reserve(storage.size() + 1);
+    for (auto& s : storage)
+        ptrs.push_back(const_cast<char*>(s.c_str()));
+    ptrs.push_back(nullptr);
+    return ptrs;
+}
 } // namespace misterplex::service

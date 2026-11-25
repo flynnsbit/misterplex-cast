@@ -1,6 +1,6 @@
 #pragma once
 // Per-resolution constant tables for the Library Browse shell.
-// 240p (320x240), 480p (640x480), HDMI (1280x720, s = h/480). One code path.
+// 240p (320x240), 480p (640x480), Native 480 (960x480), HDMI (1280x720). One code path.
 
 #include <algorithm>
 #include <array>
@@ -34,6 +34,12 @@ struct BrowseShellLayout {
     int btnW = 140;
     int kbCell = 28;
     bool compact = false; // 240p: no list poster, title in footer for grid
+    // 2x MiSTerPlex logo bar (plexui kLogoTextPx): 40px on 480p, 60px on 1280x720.
+    // 0 on 240p / compact: no logo, historic header.
+    int logoPx = 0;
+    int logoMarkW = 0;
+    int logoMarkHalfH = 0;
+    int logoMarkGap = 0;
     std::array<int, 24> rowY{};
     std::array<int, 21> tileX{}, tileY{};
     std::array<int, 40> keyX{}, keyY{};
@@ -94,26 +100,30 @@ inline BrowseShellLayout browseLayout480() {
     L.w = 640;
     L.h = 480;
     L.margin = 16;
-    L.headerH = 36;
-    L.footerH = 28;
-    L.rowH = 24;
-    L.listRows = 15;
-    L.fontSm = 12;
-    L.fontMd = 14;
-    L.fontLg = 18;
-    L.fontXl = 22;
+    L.headerH = 60;
+    L.footerH = 34;
+    L.rowH = 36;
+    L.listRows = 10;
+    L.fontSm = 20;
+    L.fontMd = 24;
+    L.fontLg = 30;
+    L.fontXl = 36;
+    L.logoPx = 40;
+    L.logoMarkW = 14;
+    L.logoMarkHalfH = 12;
+    L.logoMarkGap = 8;
     L.posterW = 140;
     L.posterH = 210;
     L.gridCols = 5;
     L.gridRows = 2;
-    L.tileW = 100;
-    L.tileH = 148;
+    L.tileW = 104;
+    L.tileH = 156;
     L.tileGap = 10;
     L.titleUnder = true;
     L.focusRing = 2;
-    L.btnH = 32;
-    L.btnW = 140;
-    L.kbCell = 28;
+    L.btnH = 40;
+    L.btnW = 170;
+    L.kbCell = 36;
     browseBakeLayout(L);
     return L;
 }
@@ -123,34 +133,67 @@ inline BrowseShellLayout browseLayoutHdmi() {
     L.w = 1280;
     L.h = 720;
     L.margin = 28;
-    L.headerH = 48;
-    L.footerH = 36;
-    L.rowH = 28;
-    L.listRows = 18;
-    L.fontSm = 16;
-    L.fontMd = 18;
-    L.fontLg = 24;
-    L.fontXl = 30;
+    L.headerH = 76;
+    L.footerH = 44;
+    L.rowH = 50;
+    L.listRows = 11;
+    L.fontSm = 28;
+    L.fontMd = 36;
+    L.fontLg = 42;
+    L.fontXl = 48;
+    L.logoPx = 60;
+    L.logoMarkW = 21;
+    L.logoMarkHalfH = 18;
+    L.logoMarkGap = 12;
     L.posterW = 180;
     L.posterH = 270;
-    L.gridCols = 7;
-    L.gridRows = 3;
-    L.tileW = 112;
-    L.tileH = 168;
-    L.tileGap = 12;
+    L.gridCols = 5;
+    L.gridRows = 2;
+    L.tileW = 168;
+    L.tileH = 252;
+    L.tileGap = 16;
     L.titleUnder = true;
     L.focusRing = 2;
-    L.btnH = 40;
-    L.btnW = 180;
-    L.kbCell = 36;
+    L.btnH = 54;
+    L.btnW = 240;
+    L.kbCell = 56;
     browseBakeLayout(L);
     return L;
 }
 
-// Pick the table from the paint canvas. 15 kHz / 240p uses the compact table.
+// HDMI Native 960x480 (and any >=896-wide 480-line raster): same 2x fonts/logo
+// as 480p, but the grid gets as many 104x156 columns as fit instead of a
+// 640-wide island in the middle of the screen.
+inline BrowseShellLayout browseLayoutNative480(int w = 960) {
+    BrowseShellLayout L = browseLayout480();
+    L.w = w;
+    L.margin = 24;
+    L.posterW = 160;
+    L.posterH = 240;
+    L.btnW = 200;
+    const int fit = (w - 2 * L.margin + L.tileGap) / (L.tileW + L.tileGap);
+#ifdef MUT_BROWSE_NATIVE_5COL
+    L.gridCols = 5;
+#else
+    L.gridCols = std::clamp(fit, 5, 10);
+#endif
+    browseBakeLayout(L);
+    return L;
+}
+
+// Pick the table from the paint canvas. Only a true 15 kHz / 240-line raster
+// uses the compact table; 480i on a 480-line canvas keeps the 2x 480 table.
 inline BrowseShellLayout browseLayoutFor(int w, int h, bool interlaced = false) {
-    BrowseShellLayout L = interlaced || h <= 240 || w <= 320 ? browseLayout240()
-                             : h <= 480 ? browseLayout480() : browseLayoutHdmi();
+#ifdef MUT_BROWSE_INTERLACED_240
+    const bool compact = interlaced || h <= 288 || w <= 360;
+#else
+    const bool compact = h <= 288 || w <= 360;
+#endif
+    // 576i (720x576) is still a 15 kHz CRT: 480 table, not the 1280x720 one.
+    const bool sd = h <= 480 || (interlaced && h <= 600);
+    BrowseShellLayout L = compact ? browseLayout240()
+                          : sd ? (w >= 896 && h <= 480 ? browseLayoutNative480(w) : browseLayout480())
+                               : browseLayoutHdmi();
     L.w = w;
     L.h = h;
     L.tileW = std::min(L.tileW, std::max(16, (w - 2 * L.margin -

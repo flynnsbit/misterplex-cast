@@ -153,7 +153,7 @@ std::vector<PlexServer> parsePlexResources(const std::string& xml) {
             const std::string product = el.get("product");
             if (product != "Plex Media Server")
                 continue;
-            // gwyden: a Device with no accessToken is kept so it can still match a conf
+            // reviewer: a Device with no accessToken is kept so it can still match a conf
             // seed (by id or any address) and use the conf token; unmatched ones are
             // dropped in mergeSeedsWithAccount().
 #ifdef MUT_GWY_DROP_TOKENLESS
@@ -384,7 +384,7 @@ bool probeIdentity(HttpGetFn get, const std::string& baseUrl, const std::string&
     const std::string gotId = reached ? identityMachineId(r.body) : std::string();
     if (gotOut)
         *gotOut = gotId;
-#ifdef MUT_GWYDEN_TOKEN_ON_ADDR
+#ifdef MUT_reviewer_TOKEN_ON_ADDR
     strictId = false;
 #endif
     const bool ok = reached && (strictId ? (!gotId.empty() && gotId == expectId)
@@ -1242,7 +1242,7 @@ bool hostPortMatch(const PlexServer& a, const PlexServer& b) {
             add(k, c.address + ":" + (c.port.empty() ? "32400" : c.port));
         }
 #ifndef MUT_GWY_NO_URI_HOST
-        // gwyden: a conf seed on a plex.direct name or relay host matches the uri of any
+        // reviewer: a conf seed on a plex.direct name or relay host matches the uri of any
         // connection (local, remote, relay), not only the bare address.
         for (const auto& c : s.connections) {
             if (!c.uri.empty())
@@ -1462,7 +1462,7 @@ std::vector<PlexServer> mergeSeedsWithAccount(const std::vector<PlexServer>& see
     // machine id (the conf seed's tokenless /identity id == the row's machine/client id). An
     // address match (reused private IP, WAN IP) never adopts another id/connections or a token.
     for (const auto& s : noTok) {
-#ifdef MUT_GWYDEN_ADDR_MERGE
+#ifdef MUT_reviewer_ADDR_MERGE
         bool matched = false;
         for (const auto& e : out)
             if (!e.accessToken.empty() && sameServer(e, s))
@@ -1506,7 +1506,7 @@ void proveSeedIdentities(HttpGetFn get, std::vector<PlexServer>& seeds,
                           "plexui: conf server %s id not verified - token withheld",
                           s.name.empty() ? "?" : s.name.c_str());
             plexuiProbeLogLine(buf);
-#ifndef MUT_GWYDEN_TOKEN_ON_ADDR
+#ifndef MUT_reviewer_TOKEN_ON_ADDR
             s.accessToken.clear();
 #endif
             continue;

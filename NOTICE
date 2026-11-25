@@ -85,9 +85,10 @@ endorsed by Plex, Apple, Google or the MiSTer FPGA project.
 
 PREBUILT CORE AND SOURCE REVISION
 The public source tree ships one prebuilt core, cores/MiSTerPlex.rbf (md5
-ecae698fa3220149fd767b9623137864, BUILD_ID 0x0B2403A7). The FPGA source beside
-it is pinned at commit 7f2b165, the commit that added that file. That pin is not
-a verified build of BUILD_ID 0x0B2403A7. The exact source revision of the
-shipped bitstream will be recorded here when the core is rebuilt.
+7f048508861967f857a5aacff79bfb6f, BUILD_ID 0x0B112501, seed 14). The FPGA
+source beside it is pinned at commit 33c010f5130e869cbe33124f14c1a667cbaaf53e
+(on-branch cherry-pick of 544565ba, with sys/ascal.vhd at Template_MiSTer
+baaeff6). Upstream owenb321/MiSTer_h264_decoder is
+eac10641c5af0b808d332bb61344ee2dfdba4271.
 release_artifacts/GPL-SOURCE.md lists each RBF and the misterplexd binaries.
 The complete corresponding source is this repository (see SOURCE CODE above).

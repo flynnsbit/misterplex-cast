@@ -426,15 +426,16 @@
 #   2026-10-23 (rtl/owenb-idle0-f12-1023, idle_vis=0 alone, no F12KEYMOD): BUILD_ID 0x0B59C11A -> 0x0BFCE8C5, emu.sv idle_vis
 #     tied 0 (idle_bars ~32 ALM, E). NOT fitted yet: SEED 10 is the starting point of the sweep, not a result. Pre-flight:
 #     map-only + tools/netlist_canary.sh (idle_bars_inst|mx row). Rollback c8b34604 (0x0B59C11A, seed 10).
-#   2026-10-23 (cbox/owenb-240p-1023, base 31bf0241): BUILD_ID 0x0BFCE8C5 -> 0x0B2403A7 (round 1 was 0x0B240F9E, commit 0b44a659; round 2 was 0x0B2402F3, commit 0bb1e472, reviewer FIX-FIRST; neither fitted: do not use). Adds the 240p analog raster (O[24] Analog Raster,
+#   2026-10-23 (cbox/owenb-240p-1023, base 31bf0241): BUILD_ID 0x0BFCE8C5 -> 0x0B2403A7 (round 1 was 0x0B240F9E, commit 0b44a659; round 2 was 0x0B2402F3, commit 0bb1e472, FPGA Bug FIX-FIRST; neither fitted: do not use). Adds the 240p analog raster (O[24] Analog Raster,
 #     sync_gen std 3: 262 lines, 190 x 1719 + 72 x 1720 dots, 59.94006 Hz; forked vendor/h264/sync_gen.sv).
 #     Round 2 (review fixes): forked disp_reader/ovl_plane (p240 wrap, F2), vid_out (csync prog=1 under p240, F6), menumask bit0 il_pix_sys + bit1 p240_eff (F3).
-#     Round 3 (reviewer R1): vid_out csync_smpte .mode(p240): 240p gets the 3-line serrated vsync (259 hs / 0 eq / 6 broad, 262 lines); 480i/480p keep mode 0.
+#     Round 3 (FPGA Bug R1): vid_out csync_smpte .mode(p240): 240p gets the 3-line serrated vsync (259 hs / 0 eq / 6 broad, 262 lines); 480i/480p keep mode 0.
 #     NOT fitted, no hardware: review first.
 #   2026-11-01 (fpga/port-240p-1101, forward-port of the 0x0B2403A7 240p tree onto main): BUILD_ID 0x0B2403A7 -> 0x0B1101C5. RTL identical to the shipped 0x0B2403A7 tree except the id. The qsf and recipe default stay SEED 10; the shipped ss1c core fcd20f46 was fitted at SEED 11 (RESULT-s11.env), so reproduce it with YC_SEED=11. Not fitted yet.
 #   2026-11-07 (PR #374 analog Progressive 15 kHz dest): BUILD_ID 0x0B1101C5 -> 0x0B110715. Raster resolve from 9f4c8d7; new id so a refit is not the shipped 96eb13d2 pin. SEED 10. Not fitted yet.
 #   2026-11-07 (PR #374 reviewer N1): BUILD_ID 0x0B110715 -> 0x0B110724. Analog Progressive is true 240p. SEED 10. Not fitted yet.
-#   2026-11-15 (PR #374 fleet): BUILD_ID 0x0B110724 -> 0x0B111401. Combined Progressive 240p fit; 0x0B110724 stays accepted. SEED 10. Not fitted yet.
+#   2026-11-15 (PR #374 fleet): BUILD_ID 0x0B110724 -> 0x0B111401. Combined Progressive 240p fit; 0x0B110724 stays accepted. SEED 10.
+#   2026-11-25 (ascal-baaeff6 HDMI snow fix): BUILD_ID 0x0B111401 -> 0x0B112501; 0x0B111401 stays accepted. SEED 10. Not fitted yet.
 
 set_global_assignment -name TOP_LEVEL_ENTITY sys_top
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0
@@ -544,7 +545,7 @@ set_global_assignment -name SEED 10
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_plexob_status.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_mister_caps_shim.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_plexob_core_hook.sv
-set_global_assignment -name VERILOG_MACRO "MPX_PLEXOB_BUILD_ID=32'h0B111401"
+set_global_assignment -name VERILOG_MACRO "MPX_PLEXOB_BUILD_ID=32'h0B112501"
 
 set_global_assignment -name SDC_FILE ../fit/variants/q1b/mpx_cdc_hold_targeted.sdc
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 4

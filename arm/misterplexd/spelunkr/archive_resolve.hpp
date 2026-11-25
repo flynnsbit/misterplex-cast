@@ -608,52 +608,70 @@ ArchiveResolve resolvePlutoChannelPlay(const std::string& channelId, GetFn get,
     const auto masterQs =
         master.find('?') != std::string::npos ? master.substr(master.find('?') + 1) : std::string();
     auto mediaUrlForVariant = [&](const PlutoVariant& v) { return plutoMediaUrlForVariant(v.uri, masterQs); };
-    if (plutoMasterNeedsSegmentProbe(vars)) {
-        pick = selectPlutoVariantViaProbe(vars, capWhy, [&](const PlutoVariant& v) -> PlutoStreamProbe {
-            if (cancelled && cancelled())
-                return PlutoStreamProbe();
-            const std::string mediaUrl = mediaUrlForVariant(v);
-            const auto pr = plutoProbeVariantForCaps(
-                v, mediaUrl, boot.sessionToken, cancelled,
-                [&]() -> PlutoMediaFetchResult {
-                    PlutoMediaFetchResult m;
-                    const ArchiveHttpGet pl = plutoFetch(mediaUrl, kPlutoMaxPlaylistBody, boot.sessionToken);
-                    if (!pl.transportOk || pl.status != 200)
-                        return m;
-                    m.playlistOk = true;
-                    m.playlistBody = pl.body;
-                    if (!plutoPlaylistBlockReason(pl.body).empty()) {
-                        m.blocked = true;
-                        return m;
-                    }
-                    const std::string seg = plutoFirstSegmentUrl(pl.body, mediaUrl);
-                    if (seg.empty())
-                        return m;
-                    const ArchiveHttpGet sr = plutoFetch(seg, kPlutoMaxProbeBytes, boot.sessionToken);
-                    if (sr.transportOk && sr.status == 200)
-                        m.segmentBody = sr.body;
+    PlutoProbedMedia probedMedia;
+    // Tag path and probe path share this. The probe path already rejects an
+    // over-cap segment. The tag path then confirmPlutoVariantUnderCap, because
+    // a 720 tag or a missing RESOLUTION can still be 1920x1080 in the segments.
+    auto probeVariant = [&](const PlutoVariant& v) -> PlutoStreamProbe {
+        if (cancelled && cancelled())
+            return PlutoStreamProbe();
+        const std::string mediaUrl = mediaUrlForVariant(v);
+        const auto pr = plutoProbeVariantForCaps(
+            v, mediaUrl, boot.sessionToken, cancelled,
+            [&]() -> PlutoMediaFetchResult {
+                PlutoMediaFetchResult m;
+                const ArchiveHttpGet pl = plutoFetch(mediaUrl, kPlutoMaxPlaylistBody, boot.sessionToken);
+                if (!pl.transportOk || pl.status != 200)
                     return m;
-                });
-            if (!pr.note.empty())
-                std::fprintf(stderr, "misterplexd: spelunkr: pluto: %s band=%d\n", pr.note.c_str(), v.bandwidth);
-            return pr.probe;
-        });
-    } else {
-        pick = selectPlutoVariant(vars, capWhy);
-    }
+                m.playlistOk = true;
+                m.playlistBody = pl.body;
+                if (!plutoPlaylistBlockReason(pl.body).empty()) {
+                    m.blocked = true;
+                    return m;
+                }
+                // Last successful probe playlist. Reused when the URL matches
+                // the pick. A later miss does not keep a different URL.
+                probedMedia.mediaUrl = mediaUrl;
+                probedMedia.body = pl.body;
+                return m;
+            },
+            [&](const PlutoMediaFetchResult& m) -> std::string {
+                const std::string seg = plutoFirstSegmentUrl(m.playlistBody, mediaUrl);
+                if (seg.empty())
+                    return {};
+                const ArchiveHttpGet sr = plutoFetch(seg, kPlutoMaxProbeBytes, boot.sessionToken);
+                if (sr.transportOk && sr.status == 200)
+                    return sr.body;
+                return {};
+            });
+        if (!pr.note.empty())
+            std::fprintf(stderr, "misterplexd: spelunkr: pluto: %s band=%d\n", pr.note.c_str(), v.bandwidth);
+        return pr.probe;
+    };
+    if (plutoMasterNeedsSegmentProbe(vars))
+        pick = selectPlutoVariantViaProbe(vars, capWhy, probeVariant);
+    else
+        pick = confirmPlutoVariantUnderCap(vars, selectPlutoVariant(vars, capWhy), capWhy, probeVariant);
     if (!pick) {
         o.kind = ArchiveResolveKind::DeadUnsupported;
         o.err = capWhy.empty() ? "UNSUPPORTED: Pluto no variant" : capWhy;
         return o;
     }
     std::string mediaUrl = mediaUrlForVariant(*pick);
-    const ArchiveHttpGet pr = plutoFetch(mediaUrl, kPlutoMaxPlaylistBody, boot.sessionToken);
-    if (!pr.transportOk || pr.status != 200) {
-        o.kind = ArchiveResolveKind::Failed;
-        o.err = pr.err.empty() ? "pluto media playlist failed" : pr.err;
-        return o;
+    std::string mediaBody;
+    if (plutoReuseProbedMedia(probedMedia, mediaUrl)) {
+        mediaBody = probedMedia.body;
+    } else {
+        const ArchiveHttpGet pr = plutoFetch(mediaUrl, kPlutoMaxPlaylistBody, boot.sessionToken);
+        if (!pr.transportOk || pr.status != 200) {
+            o.kind = ArchiveResolveKind::Failed;
+            o.err = pr.err.empty() ? "pluto media playlist failed" : pr.err;
+            return o;
+        }
+        mediaBody = pr.body;
     }
-    const std::string block = plutoPlaylistBlockReason(pr.body);
+    // DRM / host-scope still run on a reused probe body. Do not skip this.
+    const std::string block = plutoPlaylistBlockReason(mediaBody);
     if (!block.empty()) {
         o.kind = ArchiveResolveKind::DeadUnsupported;
         o.err = block;
@@ -686,7 +704,7 @@ ArchiveResolve resolvePlutoChannelPlay(const std::string& channelId, GetFn get,
         std::fprintf(stderr, "misterplexd: spelunkr: pluto: separate audio rendition group=%s\n",
                      pick->audioGroup.c_str());
     }
-    if (plutoSessionBearerAllowedForMedia(mediaUrl, pr.body) &&
+    if (plutoSessionBearerAllowedForMedia(mediaUrl, mediaBody) &&
         (audioUrl.empty() || plutoSessionBearerAllowedForMedia(audioUrl, audioBody)))
         plutoRemuxSessionToken() = boot.sessionToken;
     else

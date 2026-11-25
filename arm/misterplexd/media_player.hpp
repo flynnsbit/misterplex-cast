@@ -207,7 +207,7 @@ public:
     bool store64(uint32_t phys, uint64_t value) override { return fpga_.plxStore64(phys, value); }
     bool load64(uint32_t phys, uint64_t* value) override { return fpga_.plxLoad64(phys, value); }
     void barrier() override { __sync_synchronize(); }
-    // A core reload re-primes the next PLXH request (reviewer 20:23 RULING C).
+    // A core reload re-primes the next PLXH request (FPGA Bug 20:23 RULING C).
     uint64_t coreChanges() override { return CoreGate::process().changes(); }
 
 private:
@@ -456,9 +456,6 @@ public:
     void setSpelunkrDeferResume(bool on) { spelunkrDeferResume_.store(on, std::memory_order_release); }
     bool spelunkrDeferResume() const { return spelunkrDeferResume_.load(std::memory_order_acquire); }
     void showSpelunkrLanding();
-    // GATE-V2 r2: clear leftover picture/presented so strong terminal recover
-    // can paint landing + guide (GH#648 would otherwise skip).
-    void clearSpelunkrPictureForRecover();
     void setSpelunkrGuideOpen(bool on) { spelunkrGuideOpen_.store(on); }
     void setSpelunkrCmd(std::function<void(PlaybackCommand)> f) {
         std::lock_guard<std::mutex> lock(spelunkrCmdMu_);
@@ -471,6 +468,8 @@ public:
                            bool tuning = false);
     void fillSpelunkrBannerTitle(const std::string& title, const std::string& name = {});
     void beginSpelunkrTune(uint64_t gen, const std::string &dial, const std::string &name);
+    // Gen-matched: a newer tune's pending (different gen) is left alone.
+    void clearSpelunkrPending(uint64_t gen);
     bool spelunkrUiPending();
     void showSpelunkrError(const std::string& detail, bool landing = false);
     // N14: Pluto ad-pod stand-by card. ev: 0 = relay silent / respawning, 1 = bytes flow again, 2 = clear
@@ -731,7 +730,7 @@ public:
     // Lab --play-file runs before the main loop: tick the gate until it has verified the
     // loaded core (settle + CAPS probe), or timeoutMs runs out. True when open.
     bool waitCoreGateOpen(int timeoutMs);
-    // MAST-WEDGE (reviewer 21:14, mast_reload.hpp): called once the hand-off of ONE guarded
+    // MAST-WEDGE (FPGA Bug 21:14, mast_reload.hpp): called once the hand-off of ONE guarded
     // core reload to $MPX_MAST_RELOAD_CMD has started; the caller makes misterplexd exit with
     // mast::kReloadExitCode. Unset: a wedge is a clean fail (no reload, no blind retries).
     void setMastReloadHandler(std::function<void(const std::string& where)> h) {
@@ -827,15 +826,19 @@ public:
     // MrAudio session and keep fpgaAudioPump attached to the new remux. OwenbRing
     // PCM is written by the still-running play session; leftover MACT is withdrawn.
     void rejoinLiveRelayAudio();
+    // Pluto ad-skip content return: cleanly reopen the live relay on a fresh
+    // OwenbPlaySession seek (new ffmpeg -copyts first spawn, avStartGate skip_gop,
+    // and ring flush) while keeping the Ad Break card visible until picture runs.
+    bool reopenLiveAfterAdBreak();
     // Resolve served a transcode (ladder proxy or PMS universal), not the Part: the FPGA path then
-    // sends the stream's DAR over the metadata (firstAuSourceAspect, reviewer 19:24 L2).
+    // sends the stream's DAR over the metadata (firstAuSourceAspect, FPGA Bug 19:24 L2).
     void setSourceTranscoded(bool v) { sourceTranscoded_.store(v); }
     // R1 PLXH host side for the idle painter: paint flips through r1PlxhPolicy().requestIdle,
-    // F5 pacing through r1PlxhPacer() (r1_plxh.hpp; reviewer 19:16 (1)(c), 19:27).
+    // F5 pacing through r1PlxhPacer() (r1_plxh.hpp; FPGA Bug 19:16 (1)(c), 19:27).
     r1::PlxhLink& r1PlxhLink() { return plxhLink_; }
     r1::PlxhSessionPolicy& r1PlxhPolicy() { return plxhPolicy_; }
     r1::PlxhF5Pacer& r1PlxhPacer() { return plxhPacer_; }
-    // reviewer 06:57 D3 + 07:30 C1: the PLXH en=1 gate closes at the PLAY request, before the
+    // FPGA Bug 06:57 D3 + 07:30 C1: the PLXH en=1 gate closes at the PLAY request, before the
     // resolve, with a hold keyed by the request's play generation (r1_plxh.hpp beginPlayRequest).
     // main.cpp begins it at every PLAY bump of playGen; each doPlay owns it while it runs
     // (r1_plxh.hpp PlayRequestHold on r1PlxhPolicy()); the session of that generation takes it over
@@ -952,6 +955,10 @@ private:
     // OWENB-P1B T7: from coreGateTick: arm the idle session on a verified PlexOB core, close it when the
     // core goes (a hop off OB), show / clear the PMS screen on it. ensureOwenbPlayerLocked: under obMu_.
     void owenbIdleTick();
+    // Real PlexOB loss (idle session closed). Clears sticky picture flags and
+    // arms the next owenbOpened / idle start to paint the new overlay.
+    void wipeSpelunkrPictureAfterCoreLost();
+    void onPlexObReopen();
     void republishAmbientDeck();
     // Colorbar removal 10-23: EVERY mode/raster/core event re-arms the Ready card: clear the retry gate and ask the
     // keeper for a re-arm on its next tick. Lock-free (callable from play threads); never writes video_mode.
@@ -989,8 +996,21 @@ private:
     std::atomic<bool> spelunkrTv_{false};
     std::atomic<bool> spelunkrDeferResume_{false};
     std::atomic<bool> spelunkrHasPicture_{false};
+    // Set on a real core loss, consumed by the next owenbOpened. Not set on a
+    // same-core gate re-verify (GH#27 / GH#648).
+    std::atomic<bool> plexObCoreLost_{false};
+    // Seen the PlexOB gate open. The falling edge (MENU / not Plex /
+    // reprogramming) wipes picture flags even when no idle session was running.
+    // A plexui GH#27 flicker does not clear this.
+    std::atomic<bool> plexObWasOpen_{false};
+    // Stays set until the reloaded core's idle/overlay session actually starts,
+    // so a pending resume still paints instead of skipping the idle start.
+    std::atomic<bool> reopenOverlayNeeded_{false};
+    std::atomic<int64_t> spelunkrPendingSinceMs_{0};  // beginSpelunkrTune, overlay clock
     misterplex::AdBreakGate adGate_;           // N14
     std::atomic<int64_t> adLastPosMs_{0};      // N14: last position seen (the "resumed" baseline)
+    std::atomic<uint64_t> adReopenEpoch_{0};   // playEpoch awaiting ad-return reopen picture
+    std::atomic<uint32_t> adReopenSeekEpoch_{0};  // OwenbPlaySession seekEpoch for ad-return reopen
     std::atomic<int> spelunkrOsdAspect_{-1};  // -1 off, 1=4:3, 2=16:9
     std::atomic<bool> spelunkrGuideOpen_{false};
     std::mutex spelunkrCmdMu_;
@@ -1072,7 +1092,7 @@ private:
     void paintIdleR1(bool forceOnce = false);
     // LastFrame idle (no paint): owes the D2 line for a session END that will not re-show the idle FB.
     void r1NoteNoIdleRequest(const char* why);
-    // The R1 idle-entry stream clear, under r1ClearMu_ (reviewer 20:18 (3)).
+    // The R1 idle-entry stream clear, under r1ClearMu_ (FPGA Bug 20:18 (3)).
     bool r1EntryStreamClear(std::string* why);
     void startInputPollV2();
     void startOsdPollV2();
@@ -1297,7 +1317,7 @@ private:
     bool r1PaintLogged_ = false;
     std::optional<std::chrono::steady_clock::time_point> plexuiR1SubmitAt_;
     int64_t plexuiPaintPlxhMs_ = 0;
-    // reviewer 06:57 D2: the first paint after each session END re-arms the planner and owes one
+    // FPGA Bug 06:57 D2: the first paint after each session END re-arms the planner and owes one
     // line (re-shown, or why not). D1: r1FlipOwed_ makes the idle thread retry within 250 ms.
     r1::R1SessionEndRearm r1SessionRearm_;
     bool r1AfterSession_ = false;
@@ -1305,7 +1325,7 @@ private:
     std::atomic<bool> r1FlipOwed_{false};
     // F1 PLXL beat (f1_beat.hpp; F1-PREREG v2.2). Started where r1IdleFbReady arms the R1 target on
     // an idleBeatPlxl row; stopped in shutdown() before any member it reads goes away. Its idle
-    // condition reads only atomics (reviewer 01:39 k1): r1Armed_, playing_, fpgaSession_ and the
+    // condition reads only atomics (FPGA Bug 01:39 k1): r1Armed_, playing_, fpgaSession_ and the
     // PLXH policy's inSession(). The idle paint logs its counters (logF1Beat).
     std::atomic<bool> r1Armed_{false};
     FpgaSpiBeatPort beatPort_{fpga_};
@@ -1406,7 +1426,7 @@ private:
     // MAST-WEDGE: the gate-open liveness probe, and the one reload hand-off per process.
     void probeMastAtGateOpen();
     void onMastWedge(const std::string& where);
-    // R5a (reviewer 01:10): started on an 'attempted' marker and the gate never opened: a
+    // R5a (FPGA Bug 01:10): started on an 'attempted' marker and the gate never opened: a
     // terminal, loud cure-failed. Main-loop thread only (coreGateTick).
     void checkMastSilentGate();
     const int64_t mastStartUs_ = coreGateNowUs();

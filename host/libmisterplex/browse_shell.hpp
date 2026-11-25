@@ -29,6 +29,8 @@ constexpr std::size_t kBrowseShellDiskCacheMaxMb = 128;
 constexpr int kBrowseShellSearchDebounceMs = 150;
 constexpr int kBrowseShellThumbBudgetMs = 400;
 constexpr int kBrowseShellPrefetchAllMax = 2000;
+// Poster GETs in flight at once (each is a curl process; bounded for the ARM board).
+constexpr int kBrowseShellThumbConcurrency = 3;
 
 inline bool browseShellEnvOn(const char* e) {
     if (!e || !e[0])

@@ -275,7 +275,7 @@ inline constexpr size_t kMaxPartialIndexBytes = 1024 * 1024;
 // overflow spills to `.hdr.partial` on SD (total partial may still reach kMaxPartialHeaderBytes).
 inline constexpr int64_t kMaxPartialRecordRamBytes = kMaxHeaderCacheBytes;
 
-// browse-lane #663 follow-up: dev-only glass fixture hook, off by default.  lab device glass often sees a
+// browse-lane #663 follow-up: dev-only glass fixture hook, off by default. lab glass often sees a
 // ~10.4 MB header -- under kMaxPartialRecordRamBytes (12 MiB) -- so the over-cap spill/partial
 // path (P3-1/P3-2) never exercises without a real 35.8 MB title. MPX_SPELUNKR_FORCE_PARTIAL_HEADER=1
 // lowers the *effective* in-RAM recorder cap and the shouldPersistRecordedRanges complete-entry
@@ -318,6 +318,34 @@ inline std::atomic<int64_t>& lastHeaderFetchProgressBytes() {
 
 inline void clearHeaderFetchProgress() {
     lastHeaderFetchProgressBytes().store(0, std::memory_order_release);
+}
+
+// Live-remux avStartGate skip_gop progress: true only while avStartGate() has both
+// video and audio and is actively demuxing packets through a leading GOP (bounded by
+// kLiveAvLongLeadWaitMs = 8 s). Allows a slow-but-healthy Pluto open (Trial e:
+// 9.29 s demux + 6.53 s skip_gop = 15.83 s) to extend past 15 s without extending a
+// stalled pre-demux or no-audio open (r2-03f).
+inline std::atomic<bool>& liveRemuxSkipGopProgress() {
+    static std::atomic<bool> v{false};
+    return v;
+}
+
+inline void clearLiveRemuxSkipGopProgress() {
+    liveRemuxSkipGopProgress().store(false, std::memory_order_release);
+}
+
+inline void noteLiveRemuxSkipGopProgress() {
+#ifndef MUT_NO_LIVE_REMUX_SKIP_GOP_PROGRESS
+    liveRemuxSkipGopProgress().store(true, std::memory_order_release);
+#endif
+}
+
+inline bool consumeLiveRemuxSkipGopProgress() {
+#ifdef MUT_NO_LIVE_REMUX_SKIP_GOP_PROGRESS
+    return false;
+#else
+    return liveRemuxSkipGopProgress().exchange(false, std::memory_order_acq_rel);
+#endif
 }
 
 class HeaderCacheStoreImpl : public std::enable_shared_from_this<HeaderCacheStoreImpl> {

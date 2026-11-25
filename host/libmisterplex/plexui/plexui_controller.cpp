@@ -1196,7 +1196,7 @@ int PlexUiController::findServerIndex(const std::string& needle) const {
                 return static_cast<int>(i);
         }
     }
-    static const char* kPrefer[] = {"serverA", "192.0.2.41"};
+    static const char* kPrefer[] = {"serverA", "192.0.2.10"};
     for (const char* pref : kPrefer) {
         for (size_t i = 0; i < servers_.size(); ++i) {
             if (isTestPlexServer(servers_[i]))
@@ -1297,10 +1297,16 @@ int PlexUiController::librarySidebarFocusLocked() const {
 
 void PlexUiController::syncSidebarScroll() {
     const int listTop = sidebarListTop();
-    const int listBottom = kScreenH() - kSafeBottomInset();
+    const int listBottom = sidebarListBottom();
     const int visibleH = listBottom - listTop;
     const int rowH = kSidebarRowH();
     const int focusRow = std::max(0, focus_.sidebar);
+    if (uiText2x()) {
+        // FONT-2X: the rail scrolls by whole rows so every drawn row is whole (2x rows are tall).
+        sidebarScrollY_ = sidebarWholeRowScroll(focusRow, sidebarScrollY_,
+                                                1 + static_cast<int>(sidebarEntries_.size()));
+        return;
+    }
     const int rowY = listTop + focusRow * rowH;
     if (rowY - sidebarScrollY_ < listTop)
         sidebarScrollY_ = rowY - listTop;
@@ -1376,7 +1382,7 @@ bool PlexUiController::loadStartupCatalog(const BrowseCancelFn& cancel) {
         serverIndex_ = hi;
         assignServerLocked(servers_[static_cast<std::size_t>(hi)]);
         haveServer_ = true;
-        // gwyden: a 401/403 on the picked server is shown, not an empty library.
+        // reviewer: a 401/403 on the picked server is shown, not an empty library.
         const auto ui = static_cast<std::size_t>(hi);
         if (ui < secErrs.size() && secErrs[ui].find("(40") != std::string::npos) {
             lastLoadErr_ = secErrs[ui];

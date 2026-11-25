@@ -5,6 +5,8 @@
 // failures (network, format) still fail the channel.
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <string>
 
 namespace misterplex {
@@ -67,13 +69,44 @@ inline bool skipBudgetExhausted(int skipsAfterIncrement, int itemCount) {
 // so a timeout can hit storeTuneTimeout before the job cancel path fires.
 inline constexpr int64_t kSpelunkrZapBudgetMs = 8000;
 inline constexpr int64_t kSpelunkrPrefetchTimeoutMs = 7000;
-// Glass pr685-13eca668 / reviewer ADDENDUM 7: Pluto gets split metadata + remux-open caps (~15 s
-// total). Metadata (resolve/probe) and prefetch open are not one shared 7 s pool.
+// Glass pr685-13eca668 / reviewer ADDENDUM 7: Pluto gets a split budget. Metadata
+// (resolve/probe) is cancelled on kSpelunkrPlutoZapBudgetMs. The remux open is a
+// separate cap, re-armed at prefetch start so slow metadata cannot eat it.
+// Default remux-open cap is 15 s: a healthy ARM first byte is 4–10 s, and libav
+// open + avStartGate (up to 1500 ms) + two video packets still have to fit after
+// that byte. 15 s leaves ~5 s after a 10 s-class first byte. The 8 s cap was
+// tighter than the 10 s first-stall and killed an 8–10 s first byte (or a first
+// byte plus a short gate) before the stall could. kLiveFirstStallRestartMs stays
+// 10000: a 10.1 s ARM tail is still killed by that stall (Finding 5).
+// MPX_PLUTO_REMUX_OPEN_MS=8000 is exactly today's 8 s cap (and today's re-arm
+// against the 15 s zap window). Unset, empty, or non-numeric uses 15000. Any
+// other positive value is an override.
+inline constexpr int64_t kSpelunkrPlutoRemuxOpenBudgetDefaultMs = 15000;
+inline constexpr int64_t kSpelunkrPlutoRemuxOpenBudgetLegacyMs = 8000;
 inline constexpr int64_t kSpelunkrPlutoMetadataBudgetMs = 7000;
-inline constexpr int64_t kSpelunkrPlutoRemuxOpenBudgetMs = 8000;
+// Metadata/job cancel stays today's 15 s (metadata 7 s + the legacy 8 s remux
+// cap). Do not add the 15 s default onto this: resolve would then run 22 s
+// before cancelled() fires. The open's own window is the re-arm below.
 inline constexpr int64_t kSpelunkrPlutoZapBudgetMs =
-    kSpelunkrPlutoMetadataBudgetMs + kSpelunkrPlutoRemuxOpenBudgetMs;
+    kSpelunkrPlutoMetadataBudgetMs + kSpelunkrPlutoRemuxOpenBudgetLegacyMs;
 inline constexpr int64_t kSpelunkrPlutoPrefetchTimeoutMs = kSpelunkrPlutoZapBudgetMs;
+
+// Runtime remux-open cap. MUT_PLUTO_REMUX_OPEN_8S ignores the 15 s default.
+inline int64_t plutoRemuxOpenBudgetMs() {
+#ifdef MUT_PLUTO_REMUX_OPEN_8S
+    return kSpelunkrPlutoRemuxOpenBudgetLegacyMs;
+#else
+    const char* e = std::getenv("MPX_PLUTO_REMUX_OPEN_MS");
+    if (!e || !e[0])
+        return kSpelunkrPlutoRemuxOpenBudgetDefaultMs;
+    char* end = nullptr;
+    errno = 0;
+    const long long v = std::strtoll(e, &end, 10);
+    if (end == e || *end != '\0' || errno == ERANGE || v <= 0)
+        return kSpelunkrPlutoRemuxOpenBudgetDefaultMs;
+    return static_cast<int64_t>(v);
+#endif
+}
 
 inline int64_t spelunkrPrefetchTimeoutMsForPlay(bool plutoLiveHlsItem) {
 #ifdef MUT_PLUTO_SHARED_BUDGET
@@ -93,17 +126,16 @@ inline int64_t spelunkrZapBudgetMsForPlay(bool plutoLiveHlsItem) {
 #endif
 }
 
-// v1.0.1 glass ( lab device 2026-11-23, eb6e7dbc): the "split" Pluto budget was not split. cancelled() measures ONE
+// v1.0.1 glass (lab 2026-11-23, eb6e7dbc): the "split" Pluto budget was not split. cancelled() measures ONE
 // 15 s window from the job start, so a slow metadata resolve (boot/master/variant probes/audio rendition) ate the
-// remux open's 8 s: 1063 zap "stage gen=3 attempt=1 name=timeout dur_ms=3116 t_ms=15062 reason=advance timeout"
+// remux open: 1063 zap "stage gen=3 attempt=1 name=timeout dur_ms=3116 t_ms=15062 reason=advance timeout"
 // (metadata ~11.9 s, the open got 3.1 s), and the 1066 resume after the Plex->Live TV switch (cold daemon: no
 // Pluto boot session, cold DNS/TLS, the first video_prepare of the process) hit "advance timeout" on all 3 opens ->
 // PREFETCH TIMEOUT. When a Pluto prefetch starts, the window is re-armed so it ends no sooner than
-// kSpelunkrPlutoRemuxOpenBudgetMs after that start. It never shortens the window, needs no zap-window restart
-// (kSpelunkrMaxZapWindowRestarts stays for warm partials / open retries), and the metadata stage itself is still
-// cancelled at 15 s, so one attempt is bounded by metadata 15 s + open 8 s. That bound also holds with a fix6
-// late-audio defer armed only because AvSource::demuxOne() honours cancelled() while the defer is armed
-// (review N1; test_1066_late_audio_defer_e2e C1/C2).
+// plutoRemuxOpenBudgetMs() (default 15 s, or 8 s when MPX_PLUTO_REMUX_OPEN_MS=8000) after that start. It never
+// shortens the window, needs no zap-window restart (kSpelunkrMaxZapWindowRestarts stays for warm partials / open
+// retries), and the metadata stage itself is still cancelled at 15 s. One attempt is bounded by that 15 s
+// metadata cancel plus one full remux-open cap — not by adding the new cap onto the zap budget.
 #define MPX_PLUTO_REMUX_OPEN_REARM 1
 inline int64_t plutoRemuxOpenWindowStartMs(bool plutoLiveHlsItem, int64_t windowStartMs, int64_t prefetchStartMs) {
 #ifdef MUT_PLUTO_OPEN_BUDGET_FROM_JOB_START
@@ -113,7 +145,8 @@ inline int64_t plutoRemuxOpenWindowStartMs(bool plutoLiveHlsItem, int64_t window
 #else
     if (!plutoLiveHlsItem)
         return windowStartMs;
-    const int64_t floorStart = prefetchStartMs + kSpelunkrPlutoRemuxOpenBudgetMs - kSpelunkrPlutoZapBudgetMs;
+    const int64_t remuxMs = plutoRemuxOpenBudgetMs();
+    const int64_t floorStart = prefetchStartMs + remuxMs - kSpelunkrPlutoZapBudgetMs;
     return std::max(windowStartMs, floorStart);
 #endif
 }
@@ -134,11 +167,11 @@ inline int64_t spelunkrPrefetchBudgetMs(bool plutoLiveHlsItem, int64_t zapWindow
 #else
     if (zapWindowElapsedMs >= kSpelunkrPlutoZapBudgetMs)
         return 0;
-    return kSpelunkrPlutoRemuxOpenBudgetMs;
+    return plutoRemuxOpenBudgetMs();
 #endif
 }
 
-// Chan-change regression ( lab device 1df5f4ae, 19:15-19:19 CT): the 8 s budget was one deadline for the
+// Chan-change regression (lab 1df5f4ae, 19:15-19:19 CT): the 8 s budget was one deadline for the
 // whole job. A first item whose header outran the 7 s prefetch slice (11-22 MB moov at ~3.7 MB/s)
 // left ~1 s for the next item, whose metadata/prefetch was then cancelled by the same job
 // deadline ("advance timeout ... terminal=1"), so every such zap burned two or more 8 s windows
@@ -149,6 +182,22 @@ inline constexpr int kSpelunkrMaxZapWindowRestarts = 2;
 
 inline bool mayRestartZapWindow(int restartsSoFar) {
     return restartsSoFar >= 0 && restartsSoFar < kSpelunkrMaxZapWindowRestarts;
+}
+
+// Re-arms the zap window for a bounded Pluto live-open retry (already capped by
+// kPlutoOpenRetryMax). Resets windowRestarts to 0 so prior in-place restarts
+// cannot leave windowStartMs stale and kill retry 1/2 immediately (r2-03f 55 s bug).
+#define MPX_PLUTO_55S_FIX 1
+inline void rearmZapWindowForPlutoRetry(int64_t nowMs, int64_t& windowStartMs, int& windowRestarts) {
+#ifdef MUT_PLUTO_RETRY_REUSES_RESTART_CAP
+    if (!mayRestartZapWindow(windowRestarts))
+        return;
+    ++windowRestarts;
+    windowStartMs = nowMs;
+#else
+    windowRestarts = 0;
+    windowStartMs = nowMs;
+#endif
 }
 
 inline int64_t zapWindowElapsedMs(int64_t nowMs, int64_t windowStartMs) {

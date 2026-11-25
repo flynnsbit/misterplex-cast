@@ -213,6 +213,9 @@ inline constexpr OwenbBuildInfo kOwenbBuilds[] = {
     {0x0B111401u, "MiSTerPlex analog Progressive 240p fleet", false,
      "BUILD_ID 0x0B111401; PR #374 combined fit (Progressive 240p + overlay idle); same file MiSTerPlex.rbf; "
      "RBF md5 <pending gated fit>; seed 10; 0x0B110724 and shipped 0x0B1101C5 / 96eb13d2 stay accepted"},
+    {0x0B112501u, "MiSTerPlex ascal-baaeff6 HDMI snow fix", false,
+     "BUILD_ID 0x0B112501; ascal-baaeff6 o_state reset at vsync (seed 14 of 544565ba); same file MiSTerPlex.rbf; "
+     "RBF md5 7f048508; seed 14; 0x0B111401 and shipped 0x0B1101C5 / 96eb13d2 stay accepted"},
 #endif
 };
 

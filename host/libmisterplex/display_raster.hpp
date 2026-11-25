@@ -97,10 +97,16 @@ inline bool plexObOverlayOwnsIdle(uint32_t loaded) {
 #ifdef MUT_GH12_NO_IDLE_VIS0
     (void)loaded;
     return false;
-#else
-    // 0x0B110715 / 0x0B110724 / 0x0B111401: #374 analog-progressive stamps, emu.sv idle_vis = 1'b0.
+#elif defined(MUT_NO_112501)
+    // Mutant: drop seed-14 from the idle-owns list. Video Output 720p/240p/480p
+    // falls back to 480i on 0x0B112501; the s14 behavior test must FAIL.
     return loaded == 0x0BFCE8C5u || loaded == 0x0B1101C5u || loaded == 0x0B110715u ||
            loaded == 0x0B110724u || loaded == 0x0B111401u;
+#else
+    // 0x0B110715 / 0x0B110724 / 0x0B111401 / 0x0B112501: analog-progressive stamps,
+    // emu.sv idle_vis = 1'b0. 0x0B112501 is seed 14 (0x0B111401 RTL + ascal baaeff6).
+    return loaded == 0x0BFCE8C5u || loaded == 0x0B1101C5u || loaded == 0x0B110715u ||
+           loaded == 0x0B110724u || loaded == 0x0B111401u || loaded == 0x0B112501u;
 #endif
 }
 

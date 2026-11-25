@@ -182,6 +182,9 @@ struct Ctx {
     // Default true so a caller that does not know about the gate still behaves
     // as before.
     bool youtubeReady = true;
+    // False while no MiSTerPlex core is loaded: every path is 404 (no dd.xml,
+    // no YouTube app), so a DIAL sender drops the device.
+    bool advertise = true;
 };
 inline bool youtubeAppPath(const std::string& target) {
     const std::string path = target.substr(0, target.find('?'));
@@ -251,6 +254,8 @@ inline Admit admit(const Head& h, bool peerLan) {
 
 inline Reply handle(const Head& h, const std::string& body, const Ctx& c) {
     Reply r;
+    if (!c.advertise)
+        return r;
     std::string path = h.target.substr(0, h.target.find('?'));
     // GH#8: GET /apps/YouTube must work before Lounge so the phone lists us.
     // Launch (POST) and stop (DELETE) wait for Lounge.

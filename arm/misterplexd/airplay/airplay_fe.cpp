@@ -107,6 +107,10 @@ int videoSetCodec(void* cls, video_codec_t c) {
         std::fprintf(stderr, "airplay: mirror HEVC refused (H.264 only)\n");
         return -1;
     }
+    if (!self(cls)->castAdmit("airplay mirror")) {
+        std::fprintf(stderr, "airplay: SETUP type=110 (mirroring) refused (MiSTerPlex core not loaded)\n");
+        return -1;
+    }
     if (!self(cls)->mirrorAcceptCodec()) {
         std::fprintf(stderr, "airplay: SETUP type=110 (mirroring) refused (session busy)\n");
         return -1;
@@ -116,6 +120,10 @@ int videoSetCodec(void* cls, video_codec_t c) {
 int onPlay(void* cls, const char* loc, const float start) {
     const std::string url = loc ? loc : "";
     std::fprintf(stderr, "airplay: /play %.200s start=%.3f\n", misterplex::logUrl(url).c_str(), start);
+    if (!self(cls)->castAdmit("airplay play")) {
+        std::fprintf(stderr, "airplay: /play refused status=415 (MiSTerPlex core not loaded)\n");
+        return 415;
+    }
     // Admit finishes before /play is answered. A format/resolution/framerate
     // refuse is 415; a helper that does not answer in time is 504 with a
     // timeout notice (not "format not supported"). It does not start playback.
@@ -548,6 +556,11 @@ AirplayConfig cfgWithHost(const AirplayConfig& cfg, const std::string& addr) {
 }  // namespace
 
 void AirplayFrontend::advertiseOnce() {
+    const bool advertise = advertise_.load();
+    if (advertise != advertiseApplied_) {
+        advertiseApplied_ = advertise;
+        nextAdvertiseMs_ = 0;
+    }
     const int64_t now = nowMs();
     if (now < nextAdvertiseMs_)
         return;
@@ -559,6 +572,17 @@ void AirplayFrontend::advertiseOnce() {
         nextAdvertiseMs_ = now + delay;
     };
     if (plan.action == AirplayAdvertisePlan::Action::Wait) {
+        // A lost address plans Wait before the withdraw below. Goodbye still
+        // has to go out, or the previous registration stays published.
+        if (!advertise && !advertisedAddr_.empty()) {
+            auto* gone = static_cast<dnssd_t*>(dnssd_);
+            if (gone) {
+                dnssd_unregister_raop(gone);
+                dnssd_unregister_airplay(gone);
+                advertisedAddr_.clear();
+                std::fprintf(stderr, "airplay: mDNS withdrawn (goodbye sent)\n");
+            }
+        }
         if (advertiseWaits_ == 0)
             std::fprintf(stderr, "airplay: mDNS/RAOP waiting for a local address\n");
         ++advertiseWaits_;
@@ -570,15 +594,22 @@ void AirplayFrontend::advertiseOnce() {
         later(plan.delayMs);
         return;
     }
-    if (plan.action == AirplayAdvertisePlan::Action::Reregister) {
+    if (!advertise) {
+        if (!advertisedAddr_.empty()) {
+            dnssd_unregister_raop(d);
+            dnssd_unregister_airplay(d);
+            advertisedAddr_.clear();
+            std::fprintf(stderr, "airplay: mDNS withdrawn (goodbye sent)\n");
+        }
+    } else if (plan.action == AirplayAdvertisePlan::Action::Reregister) {
         std::fprintf(stderr, "airplay: local address %s -> %s, re-register\n", advertisedAddr_.c_str(),
                      addr.c_str());
         dnssd_unregister_raop(d);
         dnssd_unregister_airplay(d);
         advertisedAddr_.clear();
     }
-    if (plan.action == AirplayAdvertisePlan::Action::Register ||
-        plan.action == AirplayAdvertisePlan::Action::Reregister) {
+    if (advertise && (plan.action == AirplayAdvertisePlan::Action::Register ||
+                      plan.action == AirplayAdvertisePlan::Action::Reregister)) {
         const int raopRc = dnssd_register_raop(d, httpPort_);
         const int airRc = raopRc != 0 ? raopRc : dnssd_register_airplay(d, httpPort_);
         if (raopRc != 0 || airRc != 0) {

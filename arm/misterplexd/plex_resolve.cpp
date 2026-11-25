@@ -281,7 +281,7 @@ static ArgvRun runArgvOnce(const std::vector<std::string>& args, bool mergeStder
     std::vector<std::string> own = args;   // writable, stable storage for argv
     // FU8: the choke point for every curl in this file. A token in a URL query or a
     // -H pair moves into the -K config (stdin or /dev/fd/N), never argv (ps on  lab).
-    // FU9 (reviewer nit): only a curl argv is scrubbed; other tools keep their argv as built.
+    // FU9 (FPGA Bug nit): only a curl argv is scrubbed; other tools keep their argv as built.
     std::string fu8Cfg = curlKConfig ? *curlKConfig : std::string{};
     if (runArgvIsCurl(own) && mpx::scrubPlexTokenArgv(own, fu8Cfg))
         curlKConfig = &fu8Cfg;
@@ -4507,6 +4507,19 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
                          rung.kbps);
         } else {
             std::fprintf(stderr, "misterplexd: remote OwenB cap 640x480 %dk (was %dk)\n", rung.kbps, beforeKbps);
+        }
+    }
+    {
+        const int was = playWeak.maxVideoBitrateKbps;
+        const int floored = misterplex::nativeHd720pRequestKbps(
+            playWeak.owenb, misterplex::picture149VoutSlot().load(), playWeak.videoResolution, was,
+            misterplex::nativeHd720pMinKbpsFromEnv());
+        if (floored != was) {
+            playWeak.maxVideoBitrateKbps = floored;
+            std::fprintf(stderr,
+                         "misterplexd: HDMI Native 1280x720 request floor %dk (was %dk; below it PMS picks its "
+                         "720x480 tier)\n",
+                         floored, was);
         }
     }
     const WeakLadder& weak = playWeak;

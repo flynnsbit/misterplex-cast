@@ -1992,7 +1992,7 @@ wire [63:0] st_sys_word, st_mem_word, st_dec_word;
 `ifdef MPX_PLEXOB_BUILD_ID
 wire [31:0] mpx_build_id = `MPX_PLEXOB_BUILD_ID;
 `else
-wire [31:0] mpx_build_id = 32'h0B111401;
+wire [31:0] mpx_build_id = 32'h0B112501;
 `endif
 wire [63:0] mpx_ring_sys_word =
     (st_sys_ix == 7'd87) ? {32'd0, 20'd0, 1'b1, status[25], p240_act_sys, status[24], 4'd0, status[23:20]} :

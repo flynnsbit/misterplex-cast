@@ -120,6 +120,7 @@ private:
     void openServers(uint64_t gen, int64_t recvMs);
     void refreshServersFromNetwork(uint64_t gen);
     void openLibraries(uint64_t gen);
+    void enterSearchLocked();
     void openTitles(uint64_t gen);
     void openChildren(uint64_t gen, const BrowseTitleRow& item);
     bool prefetchNext(uint64_t gen, int target = -1);
@@ -170,7 +171,6 @@ private:
     std::unordered_map<std::string, BrowseRenderModel> cursors_;
     std::vector<BrowseRenderModel> parents_;
     BrowseRenderModel searchOrigin_;
-    BrowseTitleRow thumbItem_;
     std::unordered_map<std::string, int64_t> failedThumbs_;
     int64_t thumbRetryAt_ = 0;
     struct PendingMs {
@@ -198,7 +198,7 @@ private:
     std::size_t artDamageSize_ = 0;
     FrameDamage lastDamage_{};
 
-    // G2 three-clock split on the browse-shell path ( lab device product default).
+    // G2 three-clock split on the browse-shell path (lab product default).
     // plexui: navtrace was only emitted on the old Plex TV worker.
     struct NavTrace {
         uint64_t id = 0;

@@ -2,50 +2,72 @@
 
 All notable changes to MiSTerPlex, written for people running it on a MiSTer.
 
-## v1.0.2 (pre-release, 23 November 2026)
+## v2.0.1 (25 November 2026)
 
-Build `6e55d1ce`. Checked on a real MiSTer.
+Bugfix and polish release over v2.0.0, fixing Vevo/Pluto post-ad-break A/V desync, Pluto 55 s `PREFETCH TIMEOUT`, and cold-boot Spelunkr guide landing, plus a Cold-Boot Guide and consolidated known-issues documentation.
 
-### Playback
-- **Live TV channels with no audio track (for example MTV on Pluto, channel 1062).** If a channel's stream has a picture but no audio, playback no longer stops. If audio appears later, the player picks it up.
-- **Live TV Vevo 80s (Pluto channel 1066) audio drop-outs.** In v1.0.1 the picture could keep playing while the sound dropped out for a while. This build covers those gaps and recovers more reliably. **Known leftover:** after you stop and resume this channel, it can take about a minute to start again if the next stream is slow to arrive.
-- **AirPlay 403 / 410.** When an AirPlay video URL expires, the player asks for a fresh one once and continues, instead of failing. **Known leftover:** if the same play is sent again, playback still restarts from the beginning.
+### Fixes
 
-### Install
-- **One installer name:** `install-misterplex.sh`, run from the unpacked package folder (`sh install-misterplex.sh`). The v1.0.1 minimal package called it `install.sh`.
-- **The installer does the setup steps itself.** It adds the start-at-boot line to `/media/fat/linux/user-startup.sh` (once, with a timestamped backup), moves an old different core at `/media/fat/MiSTerPlex.rbf` into the backup folder, and writes a `restore.sh` that undoes the install. A run that changes nothing makes no backup folder. If old `PlexOB.rbf` files are present, they are saved first, so a re-run does make a backup folder. Your settings file is never changed. If a step fails, the installer stops, names the step, and prints the `restore.sh` command. `--dry-run` and `--no-boot-line` are available.
-- **Install docs match the package.** The README, `docs/INSTALL.md` and the package `README.txt` describe what the minimal package installs and where, how to undo with `restore.sh`, and the difference between the release tag and the build id the program reports.
-- **Same FPGA core as v1.0.1.** The v1.0.1 core (`MiSTerPlex.rbf`, md5 `042f86171b562a61694da46860b89d89`) is accepted, so you can install this over a v1.0.1 card.
+- **Vevo / Pluto ad-break → next video A/V sync.** On Pluto ad-skip content return, `LiveRelay` invokes `MediaPlayer::reopenLiveAfterAdBreak()` to cleanly reopen `/yt-live.ts` on a fresh `-copyts -avoid_negative_ts make_zero` first spawn (running `AvSource::avStartGate()` `skip_gop` and flushing `OwenbRing` STC) while holding the Ad Break card until aligned picture runs (`reopen=1`, `ad card cleared why=ad_reopen_picture`). `live_disc::notePacket()` also invalidates the opposite stream's stale pre-splice raw PTS on any discontinuity rebase so a cross-stream splice triggers one rebase instead of two, and `OwenbPlaySession::readOne()` honors a queued reopen `Seek` on intentional old-socket EOF.
+- **Cold-boot Live TV (`Spelunkr`) lands on the Streaming Guide (`481f7634`).** On cold daemon start / first core open (`!preferCurrent`), Spelunkr opens the Streaming Guide by design even when `SPELUNKR_LAST_CHANNEL` is set; in-session core reopens continue resuming the current or saved last channel.
+- **Pluto 55 s `PREFETCH TIMEOUT` fix (`49499247`).** `HeaderCacheAvio::doRead()` updates header-fetch progress only while recording (stopping steady-state playback on another channel from poisoning a concurrent Pluto tune's zap window), `tryPlutoLiveOpenRetry()` re-arms `zapWindowRestarts`/`zapWindowStartMs` for bounded retries, `avStartGate()` sets a single-consumption `skip_gop` progress guard, and `guideThr` yields between manifest fetches while a playjob is active.
+- **Documentation & test hygiene.** Added a Cold-Boot Guide to `README.md` and `packaging/rc3/README.md`, verified flag tables and clean `configure-misterplex` screenshots, updated `test_spelunkr_auto_video.py` for the `onPlexObReopen()` refactor, and verified `test_cold_boot_land_guide`, `test_pluto_55s_timeout_fix`, `test_spelunkr_schedule`, `test_live_disc_rebase`, and `test_pluto_adskip_relay` (with mutants).
 
-### Package
-This is still the minimal package: the FPGA core, the ARM program, the idle card, the boot script and the mode switcher. Source code and licences stay in the public repository and on the release page; they are not copied to the MiSTer. An existing install keeps AirPlay and YouTube helpers it already has; a new card still needs those extra files for AirPlay, YouTube and automatic restart.
+### Known issues
 
-## v1.0.1 (pre-release, 23 November 2026)
+- **Static helper `ffmpeg`/`ffprobe` SDT streams require the launch wrapper.** Direct invocations without `GCONV_PATH` abort (`rc=134`) on DVB SDT-bearing MPEG-TS / HLS streams; invoke via `run-airplay-xcode.sh` (`60cba938`) / `run-gcast-xcode.sh` (`1f8c2b39`).
+- **Pluto / 1066 reopen, service-switch timing, & 960x480 glass status.** Rare 1066 core-reopen black pause (~10.1 s, 1/4 on glass, self-recovering), ~30 s first tune after an OSD service switch (longer if OSD stays open), and unscored `HDMI Native 960x480` 2x layout.
+- **Installer `_Utility` / `_Utilities` cleanup, reboot requirement, & `UI_SAFE_MARGIN` clamp.** `install-misterplex.sh` moves legacy `/media/fat/MiSTerPlex.rbf` into `/media/fat/misterplex/backup/`, migrates `/media/fat/_Utilities/misterplex/` into `/media/fat/misterplex/`, and requires a reboot after a fresh install (`misterplexd-boot-rc3.sh start` without reboot may not bring up the daemon). Uninstall lives in **Scripts > configure-misterplex > 4 Uninstall** (no standalone `bin/uninstall-misterplex.sh` in the runtime tar). Old root `PlexOB.rbf` copies from pre-v2 installs may remain visible in the Cores menu until removed. `configure-misterplex.sh --safe-margin` accepts `0`–`20` while `misterplexd` clamps above `15`.
+- **Analog CRT, S-Video/composite, CEA 1080p, & architecture diagram.** Analog CRT captures (`docs/screenshots/analog/`), S-Video/composite TV validation, CEA 1080p measurements, and redrawing `docs/misterplex-architecture.svg`/`.png` for seed-14 `0x0B112501` remain post-release work.
+- **Unverified optional / guard features.** `AIRPLAY_MIRROR=1` (on in shipped conf), on-card AirPlay helper live video/HLS on MiSTer hardware, YouTube `YT_CAPTIONS=1` and `YT_LIVE=1`, shared-server TV browsing, and the companion/DIAL/AirPlay browser-origin CSRF/CORS guard (`MPX_COMPANION_NO_ORIGIN` / `Origin` checks) await end-to-end TV/glass testing.
+- **Host build / test notes & `update_all` pin.** `Makefile` unit/mutant targets use `$(ROOT)/build/...` absolute paths; `test_spelunkr_auto_video.py`'s RTL tail needs `iverilog`; `mister-db/` / `db.json.zip` pin updates follow public release tagging.
 
-Build `eb6e7dbc`. A test release of the minimal install package.
+## v2.0.0 (25 November 2026)
 
-- **Title play from Browse.** Picking a title in Browse now starts the picture. Before, a background refresh could pull you back to the Servers list before playback began.
-- **Live TV channel zaps.** When a channel's stream reports an unknown format, the player retries instead of showing NO NEXT. The guide stays closed after the zap.
-- **Browse.** Library Browse, server picking and navigation timing improvements. Demo and placeholder rows use documentation addresses (192.0.2.x).
-- **Idle and boot.** Updated idle "Ready" card and boot hook: no colour bars at start-up, and Ready · AirPlay · YouTube shows after boot.
-- **Build.** The program is built reproducibly from pinned upstream sources and fully stripped.
+Major release consolidating the full MiSTerPlex v2.0.0 package, unified `Scripts > configure-misterplex` menu, `update_all` / MiSTer Downloader support, 2x HDMI/480p PlexUI browse shell, Live TV / Spelunkr improvements, AirPlay stability fixes, and the `BUILD_ID 0x0B112501` (seed 14, md5 `7f048508861967f857a5aacff79bfb6f`) FPGA core.
 
-The v1.0.1 release notes listed a known issue with audio drop-outs on Vevo 80s (Pluto channel 1066). That is addressed in v1.0.2, with the leftover noted above.
+### Features
+
+- **Unified `Scripts > configure-misterplex` configurator and `update_all` support.** Installs to `/media/fat/Scripts/configure-misterplex.sh` with a 4-item interactive `dialog` menu (Settings, Restart MisterPlex, Repair / Reinstall, Uninstall), automatic first-run setup when invoked after `update_all`, 14 CLI flags, 10 user-facing `MPX_*` environment variables, and `--selftest`. Forces `BURN_SUBS_FIX=0` and `AUTO_BURN=0` on every settings save.
+- **Seed-14 `MiSTerPlex.rbf` core (`0x0B112501`, md5 `7f048508`).** Default core pin updated from `96eb13d2` (`0x0B1101C5`) to `7f048508` (`0x0B112501`, `YC_SEED=14`), updating `sys/ascal.vhd` to `Template_MiSTer baaeff6` (`o_state` reset at vsync) to eliminate HDMI snow/tearing after 480i OSD switching.
+- **2x PlexUI browse shell (`FONT-2X`) for HDMI / 960x480 / 480p.** ~2x scaled browse text, tile layout, and 2x MiSTerPlex logo header on HDMI 720p, HDMI Native 960x480, and 480p outputs, with whole-row server-title rail scrolling and 480i kept at 1x.
+- **Faster Plex library browsing and search navigation.** Visible posters load first with up to 3 concurrent poster requests while remaining catalog pages fetch in the background; `Servers` host/locality and `Libraries` titles ellipsize cleanly before the right column; typed Search preserves `searchOrigin_` so Back cannot wipe `Servers`.
+- **Cast-target advertisement gated on active core.** Plex companion / cast targets advertise only while a MiSTerPlex core is loaded.
+- **HDMI 1280x720 OB request floor (`2000k`).** Prevents Plex browse playback from falling back to `720x405` on 1280x720 HDMI output.
+- **Pluto / Live TV (Spelunkr) ad-pod path skip, live remux reserve, and ad-break card.** Ships `misterplex-ad-break.jpg` in the package, skips ad pods by path, grows a live remux reserve, and tunes cleanly across Pluto ad pods.
+- **Full-package installer (`install-misterplex.sh`).** Installs one core in `/media/fat/_Utility/MiSTerPlex.rbf`, writes `<path>.bak.<stamp>` backups when files change, saves superseded cores in `/media/fat/misterplex/backup/`, preserves `misterplex.conf` and tokens (seeding `PLUTO_LIVE=1`, `AIRPLAY_MIRROR=1`, `CRT_LOOK` off when missing), installs both `linux/airplay/` and `linux/gcast/`, and cleans up legacy `Scripts/misterplex_setup.sh` and `misterplex/{licenses,docs,scripts}/`.
+
+### Fixes
+
+- **Never auto-load a core at boot or daemon start.** `misterplexd-boot-rc3.sh` and `misterplex_mode.sh` (`6369fa6d`) never load a core on boot and never assign or export `MPX_MODE_SWITCH`; service switching strips unexpected environment overrides cleanly.
+- **Honor `0x0B112501` Video Output / 240p.** Added `0x0B112501` to the daemon's recognized PlexOB build ID tables so non-480i video modes (480p, 720p, 240p) are not forced to 480i.
+- **Ping-pong back buffer & skipped dirty-band recovery.** `ob-plexui` keeps the ping-pong back buffer seeded and never shared with the OSD, and performs a full `memcmp` scan blit whenever a dirty-band generation was skipped (fixes partial/black menu reopen frames).
+- **Live TV / Pluto 1066 & Vevo playback stability.** Added first-spawn A/V start gate for split Pluto renditions (`Vevo` start blocks / silent audio), fixed first-spawn PCM cancel/stall livelock, gave the Pluto remux open a dedicated 15s window without re-paying the first-byte path, raised first-stall restart threshold above 6s, fixed ad-hold timeout key release and watchdog exemption end, prevented failed-tune clears from wiping Guide landings, added Pluto 1080p capability fallback (`NO NEXT` fix), prevented long-lead silent starts, painted wiped PlexOB overlays while holding a silent audio key, and added core-gate `reopen2` fallback (`d849e330`) for the 1066 reopen black-screen stall.
+- **AirPlay reliability and URL refresh.** Held re-sent `/play` of the active stream with `/playback-info` restore and signed-URL refresh; pinned live running entries against `/admit` eviction; preserved VOD playhead on reopen; fixed cookie, VOD, and LAN `/refresh`; and re-resolved once on 403/410 from server or device `ffmpeg`.
+- **Release & source-export packaging gates (`G4`, `G5`, `N1`).** Updated `package_release.sh` required `libav` protocol check (`file,http,tcp,pipe,https,tls,udp,crypto`), `tools/export/make-export.sh` (`0x0B112501` seed 14 `SOURCE.md` and `README.md` export anchors), and scrubbed lab-host identifiers from build targets.
+
+### Known issues
+
+- **On-card helper `GCONV_PATH` SDT wrapper fix.** `run-airplay-xcode.sh` and `run-gcast-xcode.sh` populate `/tmp/mpx-gconv-stub/gconv-modules` and export `GCONV_PATH` so the bundled static `ffmpeg`/`ffprobe` do not abort (`rc=134`) on DVB SDT-bearing MPEG-TS or HLS streams.
+- **Pluto TV / 1066 reopen & service-switch timing.** `PLUTO_LIVE=1` is on by default in the shipped `misterplex.conf.example` (`AIRPLAY_MIRROR=1` is also on by default in the shipped conf; `CRT_LOOK` stays off by default); the first Pluto try after startup may report `PREFETCH TIMEOUT` (retry after ~16 s). Rare 1066 reopen black screen (~10.1 s, 1/4 on glass) and ~30 s first tune after a service switch; `HDMI Native 960x480` 2x layout is unscored on live glass.
+- **Installer `_Utility` cleanup & `UI_SAFE_MARGIN` clamp.** `install-misterplex.sh` moves any legacy `/media/fat/MiSTerPlex.rbf` into `/media/fat/misterplex/backup/` (leaving `_Utility/MiSTerPlex.rbf`); `configure-misterplex.sh --safe-margin` accepts `0`–`20` while `misterplexd` clamps above `15`.
+- **Analog CRT & S-Video/composite hardware verification pending.** Analog CRT captures (`docs/screenshots/analog/`) and S-Video/composite TV validation remain post-release work; CEA 1080p output was not measured.
+- **Unverified optional / guard features (post-release).** `AIRPLAY_MIRROR=1`, YouTube `YT_CAPTIONS=1` and `YT_LIVE=1`, shared-server TV browsing, and the companion browser-origin CSRF/CORS guard (`MPX_COMPANION_NO_ORIGIN` / `Origin` checks) have not been TV/glass-tested end-to-end.
+- **`update_all` database publish pending final tag.** `mister-db/` workflow and `db.json.zip` pin update for `v2.0.0` follow public release tagging.
+
+## v1.0.1 keep-chain (not a v1.0.2 release)
+
+This is the v1.0.1 keep-chain for the batch / lab-class payload: installer and docs brought over from the v1.0.2 work, plus later keep-chain fixes, on the v1.0.1 code base. It is not a v1.0.2 release. The build id and the full list are filled in when a named cut is made.
+
+- **One installer name.** Every package now has one installer, `install-misterplex.sh`, run from the unpacked package folder (`sh install-misterplex.sh`). The v1.0.1 minimal package called it `install.sh`; the README, `docs/INSTALL.md` and the package `README.txt` now give one command.
+- **The minimal installer does the setup steps itself.** `install-misterplex.sh` now adds the start-at-boot line to `/media/fat/linux/user-startup.sh` (once, with a `.bak.<stamp>` copy), moves an old different core at `/media/fat/MiSTerPlex.rbf` into the backup folder (the boot script would load it first), and writes a `restore.sh` that undoes the install. A run that changes nothing makes no backup folder, so a fresh card no longer gets an empty one; old `PlexOB.rbf` files, if present, are saved first on every run, so then a re-run does make one. An existing settings file is never changed. If a step fails, it stops, names the step and prints the `restore.sh` command, which undoes everything done so far. `--dry-run` and `--no-boot-line` are available. The manual steps are kept in the docs only as a fallback. *(Gated on a fresh install and an update over v1.0.1 on a real MiSTer.)*
+- **Install docs match the package.** The README, `docs/INSTALL.md` and the package `README.txt` describe what the minimal package installs and where: the core in `_Utility` only, the boot line, the settings file, old `PlexOB.rbf` files, undo with `restore.sh`, and the release tag vs the build id the program reports.
+- **v1.0.1 core accepted.** The v1.0.1 core (`MiSTerPlex.rbf`, md5 `042f86171b562a61694da46860b89d89`, BUILD_ID `0x0B111401`, seed 10) is on the installer's core pin list, so installing over a v1.0.1 card or repackaging that core is no longer refused. The earlier pins stay accepted.
+- *(AirPlay, 1062 / 1066, and other keep-chain items are listed with the named cut, not under a v1.0.2 heading.)*
 
 ## v1.0.0 (pre-release, 11 November 2026)
 
 Everything below is new since the **rc5** pre-release, published on the public repo (flynnsbit/misterplex-cast, 21 October 2026). It covers the merged PRs from #16 to #357. Some items have not been checked on a real TV yet; those are marked *(not yet TV-tested)*.
-
-**About optional features.** Many new features are **off by default**. Each has a switch in the settings file, `/media/fat/linux/misterplex.conf`. A feature that is off works exactly like the old build. To turn one on, add a line like `CHAPTERS=1`, then reboot. See the settings file for what each one does.
-
-### Latest fixes (after #402)
-
-- **Embedded mov_text** (MP4/M4V timed text) is drawn on the overlay even when `SOFT_SUBS` is off. The server is not asked to burn it in (#260).
-
-### Latest fixes (PRs #349 to #357, on dev main 443b1d4, not yet in a staged build)
-
-- **Installer: one core, in `_Utility`.** The core is installed only as `/media/fat/_Utility/MiSTerPlex.rbf`; an old root copy is removed so the menu does not show it twice, and replaced cores go to `/media/fat/misterplex/backup/`. The core must match the release pin list. Copies are exFAT-safe (no file modes, owners or symlinks needed) (#349).
-- **Uninstall** (`uninstall-misterplex.sh`) removes what the installer created, using an install record; in `linux/airplay` and `linux/gcast` only the installer's own files are removed. Settings, identity and `misterplex/backup/` are kept unless `--purge` (#349).
 - **Casting sign-in safety:** the caster's token is sent only to a server whose identity was checked; after a refused cast it is not used for seek or play-queue requests, and an IPv6 home-network cast address is not kept for timeline updates (#355). Timeline fallback and mark-watched gate the token against the host they actually send to (#361, #362). *(not yet TV-tested)*
 - **Picture modes on every source:** Program-menu Letterbox / 14:9 / Zoom 4:3 / Stretch / Fit-crop apply on the shared OwenbRing scaler, including AirPlay video, screen mirroring, Plex cast, YouTube cast, and Spelunkr. *(not yet TV-tested)*
 - **YouTube vs on-card helper (GH#390 / PR #395):** `GCAST_XCODE=http://127.0.0.1:18781` is AirPlay only. YouTube stays on local yt-dlp (`yt-local:`) so a plex-to-YT cast cannot sit on LOADING YOUTUBE waiting for `/yt.ts`. A real remote helper is unchanged.
@@ -136,7 +158,7 @@ Everything below is new since the **rc5** pre-release, published on the public r
 - YouTube video links are hidden in the log.
 - Optional YouTube extras (all off by default): `YT_CAPTIONS=1` captions, `YT_CAST_TITLE=1` video title on screen, `YT_VOLUME=1` volume from your phone, `YT_NEXT_PREV=1` next/previous from your phone, `YT_LIVE=1` livestreams. *(captions and livestreams not yet TV-tested)*
 - **AirPlay:** video above what the MiSTer can play (over 720p, over 30 fps, HEVC or 10-bit) is refused with a short message on screen instead of failing silently. Fixed errors opening some streams (for example Fubo). Fixed audio problems with some senders. The AirPlay helper has been renamed from `gcast` to `airplay`; the old folder name and `GCAST_*` settings still work.
-- Optional AirPlay **screen mirroring** (`AIRPLAY_MIRROR=1`, off by default). *(experimental, not yet TV-tested)*
+- AirPlay **screen mirroring** (`AIRPLAY_MIRROR=1`, **on by default** in shipped `misterplex.conf.example`; built-in code default stays off when unset). *(experimental, not yet TV-tested)*
 - Optional **Zaparoo** support (`ZAPAROO=1`): play a Plex title by tapping a Zaparoo card.
 
 ### Display, CRT, 240p and overscan

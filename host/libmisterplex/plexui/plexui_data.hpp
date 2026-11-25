@@ -35,7 +35,7 @@ std::string identityExpectId(const PlexServer& s);
 // Seeds first; account rows win on the same machine id or base URL (name + token).
 std::vector<PlexServer> mergePlexServerLists(const std::vector<PlexServer>& seeds,
                                              const std::vector<PlexServer>& account);
-// gwyden: seeds + plex.tv rows. A tokenless plex.tv row is kept only when it matches a
+// reviewer: seeds + plex.tv rows. A tokenless plex.tv row is kept only when it matches a
 // seed (machine/client id, or any connection host:port or uri) and keeps the seed's conf
 // token; unmatched tokenless rows are dropped.
 // #328: bind each conf seed's token to its machine id (learned via tokenless /identity at the

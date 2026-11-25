@@ -1,7 +1,7 @@
 #pragma once
 // Loaded-core gate for misterplexd's FPGA traffic, v2.
 //
-// reviewer, reviewer-hdmi-fixes-review-1004 Y1: v1 opened and closed on the core name
+// FPGA Bug, fpga-bug-hdmi-fixes-review-1004 Y1: v1 opened and closed on the core name
 // alone. It failed open, and it never saw a Plex->Plex reload or the reprogram window.
 // v2 rules:
 //
@@ -316,6 +316,9 @@ enum class CoreGateEvent { None, Closed, ProbeWanted, Opened, Rejected };
 class CoreGate {
 public:
     static constexpr int64_t kSettleUs = 600000;
+    static constexpr int64_t kFreshNameTimeoutUs = 12000000;
+    static constexpr int64_t kOwenbFreshFallbackUs = 2500000;
+    static constexpr int64_t kRecentRewriteWindowUs = 2000000;
     static constexpr int kMaxProbeAttempts = 5;
 
     static CoreGate& process() {
@@ -349,7 +352,7 @@ public:
     void dropFabricRegs(const volatile uint32_t* regs) {
         regs_.compare_exchange_strong(regs, nullptr, std::memory_order_acq_rel);
     }
-    // For a thread that may take no lock (the F1 PLXL beat, reviewer 01:39 k1): the gate's
+    // For a thread that may take no lock (the F1 PLXL beat, FPGA Bug 01:39 k1): the gate's
     // {open generation, build id} as of its last Open transition. A core change always closes the
     // gate and reopens it through probeResult, which publishes a new generation before open_.
     // Read open() first; equal snapshots read on both sides of an access mean the same opening.
@@ -419,11 +422,28 @@ public:
         } else if (!first && o.rbfName != last_.rbfName) {
             why = "RBFNAME rewritten ('" + last_.rbfName.text + "' -> '" + o.rbfName.text + "')";
         }
+        if (!needFreshName_ && !first && !reloadMarker && o.coreName.text != last_.coreName.text) {
+            recentRewritePre_ = last_.coreName;
+            recentRewriteUs_ = o.nowUs;
+        }
         if (reloadMarker && !needFreshName_) {
             needFreshName_ = true;
             freshWhy_ = "waiting for the new Main to rewrite CORENAME";
-            // The stamp before this tick predates the reload: only a later write is fresh.
-            preReloadName_ = first ? o.coreName : last_.coreName;
+            freshLiveSinceUs_ = 0;
+            // If Main rewrote CORENAME just before the Main-restarted edge landed, keep the
+            // pre-rewrite snapshot so we do not compare the new name against itself.
+            if (!first && o.fabric.live() && o.main.pid != 0 && o.main != lastMain_ &&
+                recentRewriteUs_ > 0 && o.nowUs >= recentRewriteUs_ &&
+                o.nowUs - recentRewriteUs_ <= kRecentRewriteWindowUs &&
+                o.coreName.text != recentRewritePre_.text) {
+                preReloadName_ = recentRewritePre_;
+            } else {
+                // The stamp before this tick predates the reload: only a later write is fresh.
+                preReloadName_ = first ? o.coreName : last_.coreName;
+            }
+            recentRewriteUs_ = 0;
+        } else if (reloadMarker) {
+            recentRewriteUs_ = 0;
         }
         // First look on a live fabric: no edge has been seen, so ask the names themselves.
         // Every Main writes both in user_io_init (user_io.cpp:1808), after it starts; a stamp
@@ -434,6 +454,7 @@ public:
             freshWhy_ = "CORENAME/RBFNAME predate Main pid " + std::to_string(o.main.pid) +
                         " (the last core's names); waiting for Main to write them";
             preReloadName_ = o.coreName;
+            freshLiveSinceUs_ = 0;
         }
         last_ = o;
         haveLast_ = true;
@@ -442,8 +463,27 @@ public:
         familyNow_.store(static_cast<uint8_t>(family_), std::memory_order_release);
         if (o.main.pid != 0)
             lastMain_ = o.main;
-        if (needFreshName_ && o.fabric.live() && o.coreName != preReloadName_)
-            needFreshName_ = false;
+        if (needFreshName_) {
+            if (o.fabric.live() && o.main.pid != 0) {
+                if (freshLiveSinceUs_ == 0)
+                    freshLiveSinceUs_ = o.nowUs;
+                if (o.coreName != preReloadName_) {
+                    needFreshName_ = false;
+                    freshLiveSinceUs_ = 0;
+                }
+#ifndef MUT_CORE_GATE_NO_FRESH_FALLBACK
+                else if (o.nowUs - freshLiveSinceUs_ >= kFreshNameTimeoutUs) {
+                    needFreshName_ = false;
+                    freshLiveSinceUs_ = 0;
+                    holdLogged_.clear();
+                    pending_.push_back(
+                        "core gate: Main did not rewrite CORENAME within 12 s; falling through to loaded-core check");
+                }
+#endif
+            } else {
+                freshLiveSinceUs_ = 0;
+            }
+        }
         if (first)
             lastChangeUs_ = o.nowUs; // settle from the first look
 
@@ -595,60 +635,40 @@ public:
     // Pairing is untouched: OB picks its raster at run time.
     // Retries (as for CAPS): no map, no magic, a frozen heartbeat. Refused at once: a version,
     // geometry or BUILD_ID refusal.
+    int64_t freshNameLiveWaitUs(int64_t nowUs) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!needFreshName_ || freshLiveSinceUs_ == 0 || nowUs < freshLiveSinceUs_)
+            return 0;
+        return nowUs - freshLiveSinceUs_;
+    }
+
+    int64_t lastNowUs() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return haveLast_ ? last_.nowUs : 0;
+    }
+
+    // If Main stalled rewriting CORENAME after a core load (observed in reopen2 while CORENAME
+    // stayed 'MENU'), peek the read-only PlexOB control page and open directly when a live,
+    // allowed PlexOB ring is present. Non-PlexOB cores (MENU, etc.) return None without burning
+    // probe attempts or marking Rejected.
+    CoreGateEvent acceptOwenbFreshFallback(const OwenbIdentity& id, const std::string& refusal,
+                                           int64_t nowUs) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!managed_.load() || !needFreshName_ || state_ != CoreGateState::Closed)
+            return CoreGateEvent::None;
+        if (id.verdict != OwenbIdVerdict::Alive || !refusal.empty())
+            return CoreGateEvent::None;
+        needFreshName_ = false;
+        freshLiveSinceUs_ = 0;
+        holdLogged_.clear();
+        pending_.push_back("core gate: Main did not rewrite CORENAME; verified live PlexOB ring identity");
+        state_ = CoreGateState::Verifying;
+        return owenbProbeResultLocked(id, refusal, nowUs);
+    }
+
     CoreGateEvent owenbProbeResult(const OwenbIdentity& id, const std::string& refusal, int64_t nowUs) {
         std::lock_guard<std::mutex> lk(mu_);
-        if (state_ != CoreGateState::Verifying)
-            return CoreGateEvent::None; // a reload landed during the probe
-        holdLogged_.clear();
-        rePairPending_ = false;
-        char hex[16];
-        std::snprintf(hex, sizeof hex, "0x%08X", id.buildId);
-        const bool alive = id.verdict == OwenbIdVerdict::Alive;
-        if (alive && refusal.empty()) {
-            state_ = CoreGateState::Open;
-            buildId_ = id.buildId;
-            // Not lastOpenId_: that is the legacy daemon id a pairing error paints, never an OB id.
-            lastCapsId_.store(0, std::memory_order_release);
-            rejectedIdlePaint_.store(false, std::memory_order_release);
-            ++changes_;
-            ++openEpoch_;
-            openSnap_.store(((openEpoch_ & 0xFFFFFFFFull) << 32) | id.buildId, std::memory_order_release);
-#ifdef MUT_OWENB_GATE_LEGACY_OPEN
-            open_.store(true, std::memory_order_release); // test-only mutant: legacy traffic allowed on OB
-#endif
-            owenbOpen_.store(true, std::memory_order_release);
-            std::string label;
-            if (const OwenbBuildInfo* row = recognisedOwenbBuild(id.buildId)) {
-                if (row->label && row->label[0])
-                    label = row->label;
-            }
-            pending_.push_back("core gate open: '" + last_.coreName.text + "' build " + hex +
-                               (label.empty() ? "" : " " + label) +
-                               " verified by ring identity (" + id.describe() +
-                               "); OwenbRing backend, legacy FPGA traffic stays closed");
-            return CoreGateEvent::Opened;
-        }
-        const bool retry = id.verdict == OwenbIdVerdict::NoMap || id.verdict == OwenbIdVerdict::NoMagic ||
-                           id.verdict == OwenbIdVerdict::Stale;
-        if (!retry) {
-            markRejectedLocked(alive ? id.buildId : 0);
-            pending_.push_back("core gate stays closed: '" + last_.coreName.text + "' " +
-                               (refusal.empty() ? std::string(toString(id.verdict)) : refusal) + " (" +
-                               id.describe() + ")");
-            return CoreGateEvent::Rejected;
-        }
-        if (++probeAttempts_ >= kMaxProbeAttempts) {
-            markRejectedLocked(0);
-            pending_.push_back("core gate stays closed: no live owenb ring from '" + last_.coreName.text +
-                               "' after " + std::to_string(probeAttempts_) + " probes (" + id.describe() + ")");
-            return CoreGateEvent::Rejected;
-        }
-        state_ = CoreGateState::Closed;
-        nextProbeUs_ = nowUs + (500000LL << probeAttempts_);
-        if (probeAttempts_ == 1)
-            pending_.push_back("core gate stays closed: no live owenb ring from '" + last_.coreName.text +
-                               "' (" + id.describe() + "); retrying");
-        return CoreGateEvent::None;
+        return owenbProbeResultLocked(id, refusal, nowUs);
     }
 
     // OWENB-P1B T3: the gate is open on a verified PlexOB core (owenb ring). open() stays false.
@@ -671,6 +691,7 @@ public:
             needFreshName_ = true;
             freshWhy_ = "waiting for the new Main to rewrite CORENAME";
             preReloadName_ = last_.coreName;
+            freshLiveSinceUs_ = 0;
         }
         if (state_ == CoreGateState::Open)
             closeLocked("core gate closed: " + why);
@@ -700,7 +721,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         return state_;
     }
-    // reviewer 01:10 R5a: true while the gate's own CAPS probe sequence still runs (a probe in
+    // FPGA Bug 01:10 R5a: true while the gate's own CAPS probe sequence still runs (a probe in
     // flight, or a retry scheduled after a failed one), so a failed-cure verdict waits for the
     // 5-probe give-up.
     bool probeSequenceActive() const {
@@ -765,6 +786,9 @@ public:
         needFreshName_ = false;
         freshWhy_.clear();
         preReloadName_ = {};
+        freshLiveSinceUs_ = 0;
+        recentRewritePre_ = {};
+        recentRewriteUs_ = 0;
         lastChangeUs_ = 0;
         nextProbeUs_ = 0;
         probeAttempts_ = 0;
@@ -792,6 +816,62 @@ private:
     static bool& probingThread() {
         static thread_local bool probing = false;
         return probing;
+    }
+
+    CoreGateEvent owenbProbeResultLocked(const OwenbIdentity& id, const std::string& refusal,
+                                         int64_t nowUs) {
+        if (state_ != CoreGateState::Verifying)
+            return CoreGateEvent::None; // a reload landed during the probe
+        holdLogged_.clear();
+        rePairPending_ = false;
+        char hex[16];
+        std::snprintf(hex, sizeof hex, "0x%08X", id.buildId);
+        const bool alive = id.verdict == OwenbIdVerdict::Alive;
+        if (alive && refusal.empty()) {
+            state_ = CoreGateState::Open;
+            buildId_ = id.buildId;
+            // Not lastOpenId_: that is the legacy daemon id a pairing error paints, never an OB id.
+            lastCapsId_.store(0, std::memory_order_release);
+            rejectedIdlePaint_.store(false, std::memory_order_release);
+            ++changes_;
+            ++openEpoch_;
+            openSnap_.store(((openEpoch_ & 0xFFFFFFFFull) << 32) | id.buildId, std::memory_order_release);
+#ifdef MUT_OWENB_GATE_LEGACY_OPEN
+            open_.store(true, std::memory_order_release); // test-only mutant: legacy traffic allowed on OB
+#endif
+            owenbOpen_.store(true, std::memory_order_release);
+            std::string label;
+            if (const OwenbBuildInfo* row = recognisedOwenbBuild(id.buildId)) {
+                if (row->label && row->label[0])
+                    label = row->label;
+            }
+            pending_.push_back("core gate open: '" + last_.coreName.text + "' build " + hex +
+                               (label.empty() ? "" : " " + label) +
+                               " verified by ring identity (" + id.describe() +
+                               "); OwenbRing backend, legacy FPGA traffic stays closed");
+            return CoreGateEvent::Opened;
+        }
+        const bool retry = id.verdict == OwenbIdVerdict::NoMap || id.verdict == OwenbIdVerdict::NoMagic ||
+                           id.verdict == OwenbIdVerdict::Stale;
+        if (!retry) {
+            markRejectedLocked(alive ? id.buildId : 0);
+            pending_.push_back("core gate stays closed: '" + last_.coreName.text + "' " +
+                               (refusal.empty() ? std::string(toString(id.verdict)) : refusal) + " (" +
+                               id.describe() + ")");
+            return CoreGateEvent::Rejected;
+        }
+        if (++probeAttempts_ >= kMaxProbeAttempts) {
+            markRejectedLocked(0);
+            pending_.push_back("core gate stays closed: no live owenb ring from '" + last_.coreName.text +
+                               "' after " + std::to_string(probeAttempts_) + " probes (" + id.describe() + ")");
+            return CoreGateEvent::Rejected;
+        }
+        state_ = CoreGateState::Closed;
+        nextProbeUs_ = nowUs + (500000LL << probeAttempts_);
+        if (probeAttempts_ == 1)
+            pending_.push_back("core gate stays closed: no live owenb ring from '" + last_.coreName.text +
+                               "' (" + id.describe() + "); retrying");
+        return CoreGateEvent::None;
     }
 
     void closeLocked(const std::string& line) {
@@ -854,6 +934,9 @@ private:
     bool needFreshName_ = false;
     std::string freshWhy_;  // the hold line while needFreshName_
     CoreFileStamp preReloadName_;
+    int64_t freshLiveSinceUs_ = 0;
+    CoreFileStamp recentRewritePre_;
+    int64_t recentRewriteUs_ = 0;
     int64_t lastChangeUs_ = 0;
     int64_t nextProbeUs_ = 0;
     int probeAttempts_ = 0;
@@ -908,6 +991,7 @@ struct CoreGateTickHooks {
     std::function<void(const std::string&)> log;
     // OWENB-P1B T3, both optional (a tool or test without them never opens on a PlexOB core).
     std::function<CoreGateEvent()> ringProbe;      // ring identity probe -> CoreGate::owenbProbeResult
+    std::function<CoreGateEvent()> ringFallback;   // optional read-only PlexOB check when Main stalls CORENAME
     std::function<void()> owenbOpened;             // opened on a PlexOB core: no legacy reset, no repaint
 };
 
@@ -918,9 +1002,24 @@ inline CoreGateEvent coreGateTickStep(CoreGate& gate, const CoreGateTickHooks& h
     if (!gate.managed())
         return CoreGateEvent::None;
     CoreGateEvent event = gate.observe(h.observe());
-    if (event == CoreGateEvent::ProbeWanted && !h.playing())
-        event = gate.loadedFamily() == CoreFamily::PlexOwenb ? (h.ringProbe ? h.ringProbe() : CoreGateEvent::None)
-                                                             : h.probe();
+#ifndef MUT_CORE_GATE_NO_FRESH_FALLBACK
+    if (event == CoreGateEvent::None && h.ringFallback &&
+        gate.freshNameLiveWaitUs(gate.lastNowUs()) >= CoreGate::kOwenbFreshFallbackUs) {
+        event = h.ringFallback();
+    }
+#endif
+    if (event == CoreGateEvent::ProbeWanted) {
+        if (gate.loadedFamily() == CoreFamily::PlexOwenb) {
+#ifdef MUT_CORE_GATE_NO_FRESH_FALLBACK
+            if (!h.playing())
+                event = h.ringProbe ? h.ringProbe() : CoreGateEvent::None;
+#else
+            event = h.ringProbe ? h.ringProbe() : CoreGateEvent::None;
+#endif
+        } else if (!h.playing()) {
+            event = h.probe();
+        }
+    }
     for (const auto& line : gate.takeLogs())
         h.log(line);
     if (event == CoreGateEvent::Opened && gate.owenbOpen()) {
@@ -956,6 +1055,17 @@ inline CoreGateEvent owenbGateRingProbe(CoreGate& gate, const char* path, unsign
             id = readOwenbIdentity(map.reader(), heartbeatMs);
     }
     return gate.owenbProbeResult(id, owenbIdentityRefusal(id, allowUnstamped), nowUs);
+}
+
+inline CoreGateEvent owenbGateRingFallback(CoreGate& gate, const char* path, unsigned heartbeatMs, int64_t nowUs,
+                                           bool allowUnstamped) {
+    OwenbIdentity id;
+    {
+        OwenbCtrlPageMap map;
+        if (map.open(path) == 0)
+            id = readOwenbIdentity(map.reader(), heartbeatMs);
+    }
+    return gate.acceptOwenbFreshFallback(id, owenbIdentityRefusal(id, allowUnstamped), nowUs);
 }
 
 } // namespace misterplex

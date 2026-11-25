@@ -1,4 +1,5 @@
 #include "plexui_render.hpp"
+#include "plexui_logo.hpp"
 
 #include "libmisterplex/browse_nav.hpp"
 #include "libmisterplex/crt_look.hpp"
@@ -118,7 +119,7 @@ void paintSidebarFocus(std::uint8_t* rgba, int sideW, int rowY, int rowH) {
     const int h = rowH - P(8);
     if (w < 4 || h < 4)
         return;
-    const int rad = std::min(P(8), h / 2);
+    const int rad = std::min(XP(8, 12), h / 2);
     const int thick = std::max(1, P(2));
     for (int row = 0; row < h; ++row) {
         for (int col = 0; col < w; ++col) {
@@ -483,33 +484,15 @@ void Renderer::paintBackdrop(const ImageCacheKey& key, bool keyValid, bool detai
 }
 
 void Renderer::drawPlexLogo() {
-    const float size = PF(20.f);
-    int textX = kLogoTextX();
-    const int textY = kLogoTextY();
-    int capCY = -1;
-    if (fonts_.ready()) {
-        const FontSet::GlyphBox g = fonts_.measureGlyph(static_cast<int>('M'), size, true);
-        textX = kLogoTextX(g.xoff);
-        if (g.h > 0)
-            capCY = logoCapCenterY(g.yoff, g.h, size);
-    }
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), textX, textY,
+    const float size = kLogoTextPx();
+    const auto logo = placePlexLogo(fonts_, kLogoMarkX(), kLogoTextY(), size,
+                                    kLogoMarkW(), kLogoMarkHalfH(), kLogoMarkGap(),
+                                    kLogoMarkCYFallback());
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
+                    static_cast<float>(logo.textX), static_cast<float>(logo.textY),
                     "MiSTerPlex", size, true, 255, 255, 255);
-    const int cx = kLogoMarkX();
-    const int cy = kLogoMarkCY(capCY);
-    const int halfH = kLogoMarkHalfH();
-    const int markW = kLogoMarkW();
-    for (int dy = -halfH; dy <= halfH; ++dy) {
-        for (int dx = 0; dx < markW; ++dx) {
-            const int px = cx + dx;
-            const int py = cy + dy;
-            if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
-                continue;
-            if (std::abs(dy) <= halfH - dx)
-                blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4,
-                        kAccentR, kAccentG, kAccentB, 230);
-        }
-    }
+    drawPlexLogoMarkRgba(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), logo,
+                         kAccentR, kAccentG, kAccentB, 230);
 }
 
 void Renderer::drawChip(float x, float y, const std::string& text) {
@@ -522,7 +505,7 @@ void Renderer::drawCategoryChip(float x, float y, const std::string& text, bool 
         return;
     const float padX = kGridChipPadX();
     const float h = kGridChipH();
-    const float w = fonts_.measureText(text, PF(12.), false) + padX * 2.f;
+    const float w = fonts_.measureText(text, TF(12.f), false) + padX * 2.f;
     const int ix = static_cast<int>(x);
     const int iy = static_cast<int>(y);
     const int iw = static_cast<int>(w);
@@ -537,7 +520,7 @@ void Renderer::drawCategoryChip(float x, float y, const std::string& text, bool 
             const int py = iy + row;
             if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
                 continue;
-            if (roundedCornerSkip(col, row, iw, ih, P(8)))
+            if (roundedCornerSkip(col, row, iw, ih, XP(8, 14)))
                 continue;
             blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, br, bg, bb,
                     fillA);
@@ -550,10 +533,20 @@ void Renderer::drawCategoryChip(float x, float y, const std::string& text, bool 
                 const int py = iy + row;
                 if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
                     continue;
-                const bool edge = col == 0 || col == iw - 1 || row == 0 || row == ih - 1;
+                bool edge = col == 0 || col == iw - 1 || row == 0 || row == ih - 1;
+                if (uiText2x()) {
+                    // FONT-2X: the outline follows the rounded fill (no square corners).
+                    const int rad = XP(8, 14);
+                    if (roundedCornerSkip(col, row, iw, ih, rad))
+                        continue;
+                    edge = edge || roundedCornerSkip(col - 1, row, iw, ih, rad) ||
+                           roundedCornerSkip(col + 1, row, iw, ih, rad) ||
+                           roundedCornerSkip(col, row - 1, iw, ih, rad) ||
+                           roundedCornerSkip(col, row + 1, iw, ih, rad);
+                }
                 if (!edge)
                     continue;
-                if (roundedCornerSkip(col, row, iw, ih, P(8)) &&
+                if (roundedCornerSkip(col, row, iw, ih, XP(8, 14)) &&
                     !(col == 0 || col == iw - 1 || row == 0 || row == ih - 1))
                     continue;
                 blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, 255, 255,
@@ -564,7 +557,7 @@ void Renderer::drawCategoryChip(float x, float y, const std::string& text, bool 
     const std::uint8_t tr = focused ? 0 : 230;
     const std::uint8_t tg = focused ? 0 : 230;
     const std::uint8_t tb = focused ? 0 : 230;
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), x + padX, y + PF(4.f), text, PF(12.f),
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), x + padX, y + XPF(4.f, 7.f), text, TF(12.f),
                     focused, tr, tg, tb);
 }
 
@@ -584,15 +577,17 @@ void Renderer::drawPlayPill(int x, int y, int w, int h, const std::string& label
                     255);
         }
     }
-    const float tw = fonts_.measureText(label, PF(14.), true);
+    const float tw = fonts_.measureText(label, TF(14.f), true);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                    static_cast<float>(x) + (w - tw) / 2.f + PF(8.f), static_cast<float>(y) + PF(10.f),
-                    label, PF(14.f), true, 0, 0, 0);
-    const int tx = x + P(18);
+                    static_cast<float>(x) + (w - tw) / 2.f + XPF(8.f, 16.f),
+                    static_cast<float>(y) + (uiText2x() ? (static_cast<float>(h) - TF(14.f)) / 2.f : PF(10.f)),
+                    label, TF(14.f), true, 0, 0, 0);
+    const int tx = x + XP(18, 28);
     const int ty = y + h / 2;
-    for (int dy = -P(5); dy <= P(5); ++dy) {
-        for (int dx = 0; dx < P(8); ++dx) {
-            if (std::abs(dy) > P(5) - dx / 2)
+    const int triH = XP(5, 9), triW = XP(8, 14);
+    for (int dy = -triH; dy <= triH; ++dy) {
+        for (int dx = 0; dx < triW; ++dx) {
+            if (std::abs(dy) > (uiText2x() ? triH - dx * triH / triW : triH - dx / 2))
                 continue;
             const int px = tx + dx;
             const int py = ty + dy;
@@ -638,9 +633,9 @@ void Renderer::drawHubItemDecor(int x, int y, int w, int h, const PlexItem& it, 
         }
     }
     if (!code.empty()) {
-        const float ty = static_cast<float>(oy + sh - barH - P(14));
-        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(ox + P(4)),
-                        ty, code, PF(11.f), true, 255, 255, 255);
+        const float ty = static_cast<float>(oy + sh - barH - XP(14, 26));
+        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(ox + XP(4, 8)),
+                        ty, code, TF(11.f), true, 255, 255, 255);
     }
 }
 
@@ -730,11 +725,11 @@ void Renderer::drawPoster(int x, int y, int w, int h, const ImageCacheKey& imgKe
     }
     if (!have && !title.empty()) {
         const std::string line =
-            fonts_.ellipsize(title, PF(11.f), false, static_cast<float>(std::max(8, sw - P(8))));
-        const float tw = fonts_.measureText(line, PF(11.), false);
+            fonts_.ellipsize(title, TF(11.f), false, static_cast<float>(std::max(8, sw - XP(8, 12))));
+        const float tw = fonts_.measureText(line, TF(11.f), false);
         const float tx = static_cast<float>(ox) + (static_cast<float>(sw) - tw) / 2.f;
-        const float ty = static_cast<float>(oy + sh) - PF(22.f);
-        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), tx, ty, line, PF(11.f), false, 150, 150,
+        const float ty = static_cast<float>(oy + sh) - XPF(22.f, 34.f);
+        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), tx, ty, line, TF(11.f), false, 150, 150,
                         155);
     }
     if (focused) {
@@ -822,11 +817,11 @@ void Renderer::drawPosterScaled(int x, int y, int w, int h, const DecodedImage& 
     }
     if (!haveImg && !title.empty()) {
         const std::string line =
-            fonts_.ellipsize(title, PF(11.f), false, static_cast<float>(std::max(8, sw - P(8))));
-        const float tw = fonts_.measureText(line, PF(11.), false);
+            fonts_.ellipsize(title, TF(11.f), false, static_cast<float>(std::max(8, sw - XP(8, 12))));
+        const float tw = fonts_.measureText(line, TF(11.f), false);
         const float tx = static_cast<float>(ox) + (static_cast<float>(sw) - tw) / 2.f;
-        const float ty = static_cast<float>(oy + sh) - PF(22.f);
-        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), tx, ty, line, PF(11.f), false, 150, 150,
+        const float ty = static_cast<float>(oy + sh) - XPF(22.f, 34.f);
+        fonts_.drawText(pxBase, kScreenW() * 4, kScreenW(), kScreenH(), tx, ty, line, TF(11.f), false, 150, 150,
                         155);
     }
     for (int row = -P(2); row < sh + P(2); ++row) {
@@ -860,12 +855,22 @@ void Renderer::drawPosterScaled(int x, int y, int w, int h, const DecodedImage& 
 
 void Renderer::drawServerList(const RenderState& st) {
     drawPlexLogo();
-    const int cardW = std::min(P(420), kScreenW() - 2 * kSafeMargin());
+    const int cardW = std::min(XP(420, 600), kScreenW() - 2 * kSafeMargin());
     const int cardX = std::max(kSafeMargin(), (kScreenW() - cardW) / 2);
-    int y = P(88);
+    int y = uiText2x() ? std::max(P(88), sidebarLogoBottom() + P(20)) : P(88);
+    // FONT-2X: 2x name + link line need a taller card; with many servers the cards shrink
+    // (link line dropped below P(70)) so the list stays above the status line.
+    int cardH = XP(56, 76);
+    const int cardGap = P(12);
+    if (uiText2x() && !st.servers.empty()) {
+        const int n = static_cast<int>(st.servers.size());
+        const int avail = kStatusLineY() - P(8) - y;
+        if (n * (cardH + cardGap) - cardGap > avail)
+            cardH = std::max(P(44), (avail + cardGap) / n - cardGap);
+    }
+    const bool cardSub = !uiText2x() || cardH >= P(70);
     for (size_t i = 0; i < st.servers.size(); ++i) {
         const bool sel = static_cast<int>(i) == st.focus.row;
-        const int cardH = P(56);
         if (sel) {
             for (int row = 0; row < cardH; ++row) {
                 for (int col = 0; col < cardW; ++col) {
@@ -873,7 +878,7 @@ void Renderer::drawServerList(const RenderState& st) {
                     const int py = y + row;
                     if (px < 0 || py < 0 || px >= kScreenW() || py >= kScreenH())
                         continue;
-                    if (roundedCornerSkip(col, row, cardW, cardH, P(10)))
+                    if (roundedCornerSkip(col, row, cardW, cardH, XP(10, 14)))
                         continue;
                     blendPx(rgba_.data() + (static_cast<std::size_t>(py) * kScreenW() + px) * 4, 30,
                             30, 34, 200);
@@ -893,31 +898,39 @@ void Renderer::drawServerList(const RenderState& st) {
                 }
             }
         }
-        const float nameX = static_cast<float>(std::min(cardX + P(16), kTextMaxX() - P(8)));
+        const float nameX = static_cast<float>(std::min(cardX + XP(16, 22), kTextMaxX() - P(8)));
+        const float nameMaxW = static_cast<float>(cardX + cardW) - nameX - PF(12.f);
+        const std::string name = uiText2x() ? fonts_.ellipsize(stripMisterPlexPrefix(st.servers[i].name),
+                                                               TF(18.f), true, nameMaxW)
+                                            : stripMisterPlexPrefix(st.servers[i].name);
+        const int nameDY = uiText2x() ? (cardSub ? P(9) : (cardH - static_cast<int>(TF(18.f))) / 2) : P(10);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), nameX,
-                        static_cast<float>(y + P(10)), stripMisterPlexPrefix(st.servers[i].name), PF(18.f), true,
+                        static_cast<float>(y + nameDY), name, TF(18.f), true,
                         st.servers[i].offline ? 110 : 255, st.servers[i].offline ? 110 : 255,
                         st.servers[i].offline ? 115 : 255);   // 0011: greyed when offline
         std::string sub = st.servers[i].owned ? "You" : "Shared";
         sub += " | ";
         sub += serverLinkLabel(st.servers[i]);
         const bool down = st.servers[i].offline;
-        fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), nameX,
-                        static_cast<float>(y + P(32)), sub, PF(13.f), false, down ? 210 : 140,
-                        down ? 150 : 140, down ? 90 : 145);
-        y += cardH + P(12);
+        if (uiText2x())
+            sub = fonts_.ellipsize(sub, TF(13.f), false, nameMaxW);
+        if (cardSub)
+            fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), nameX,
+                            static_cast<float>(y + XP(32, 42)), sub, TF(13.f), false, down ? 210 : 140,
+                            down ? 150 : 140, down ? 90 : 145);
+        y += cardH + cardGap;
     }
     // GH#14: "LOADING..." is the global catalog flag. On UI_SIZE=large it sits on
     // kStatusLineY() over the last card (Native build-host). Per-row
     // Connecting... / local / Offline already shows probe state.
     if (!st.status.empty() && st.status != "LOADING...")
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kStatusLineY(),
-                        st.status, PF(14.f), false, 180, 180, 180);
+                        st.status, TF(14.f), false, 180, 180, 180);
     else if (!st.servers.empty()) {
         const int idx = std::max(0, std::min(static_cast<int>(st.servers.size()) - 1, st.focus.row));
         if (st.servers[static_cast<std::size_t>(idx)].offline)
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kStatusLineY(),
-                            "This server is offline", PF(14.f), false, 210, 150, 90);
+                            "This server is offline", TF(14.f), false, 210, 150, 90);
     }
 }
 
@@ -929,18 +942,20 @@ void Renderer::drawSidebar(const RenderState& st) {
     }
     drawPlexLogo();
     const int listTop = sidebarListTop();
-    const int listBottom = kScreenH() - kSafeBottomInset();
+    const int listBottom = sidebarListBottom();
     const int textX = kSidebarTextX();
     const int rowH = kSidebarRowH();
     int rowIndex = 0;
     const int homeRowY = listTop - st.sidebarScrollY;
-    if (homeRowY + rowH > listTop - P(8) && homeRowY < listBottom) {
+    const bool wholeRows = uiText2x();
+    if (homeRowY + rowH > listTop - P(8) && homeRowY < listBottom &&
+        (!wholeRows || (homeRowY >= listTop && homeRowY + rowH <= listBottom))) {
         const bool homeBar = sidebarHomeShowsFocusBar(st.focus.sidebar);
         const bool homeCue = sidebarHomeShowsPageCue(st.focus.sidebar);
         if (homeBar)
             paintSidebarFocus(rgba_.data(), sideW, homeRowY, rowH);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(textX),
-                        static_cast<float>(homeRowY + P(12)), "Home", PF(16.f), homeCue,
+                        static_cast<float>(homeRowY + XP(12, 21)), "Home", TF(16.f), homeCue,
                         homeCue ? kAccentR : 220, homeCue ? kAccentG : 220,
                         homeCue ? kAccentB : 220);
     }
@@ -949,6 +964,8 @@ void Renderer::drawSidebar(const RenderState& st) {
         const int rowY = listTop + rowIndex * rowH - st.sidebarScrollY;
         ++rowIndex;
         if (rowY + rowH < listTop || rowY >= listBottom)
+            continue;
+        if (wholeRows && (rowY < listTop || rowY + rowH > listBottom))
             continue;
         const bool sel = static_cast<int>(i) + 1 == st.focus.sidebar;
         const auto& ent = st.sidebarEntries[i];
@@ -962,21 +979,21 @@ void Renderer::drawSidebar(const RenderState& st) {
                 }
             }
         }
-        const int indent = (grouped && !serverRow) ? P(12) : 0;
+        const int indent = (grouped && !serverRow) ? XP(12, 18) : 0;
         if (sel)
             paintSidebarFocus(rgba_.data(), sideW, rowY, rowH);
         const float maxW = static_cast<float>(sideW - textX - indent - P(6));
         const std::string line =
-            fonts_.ellipsize(stripMisterPlexPrefix(ent.title), PF(16.f), sel || serverRow, maxW);
+            fonts_.ellipsize(stripMisterPlexPrefix(ent.title), TF(16.f), sel || serverRow, maxW);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(textX + indent), static_cast<float>(rowY + P(6)), line,
-                        PF(16.f), sel || serverRow, sel ? kAccentR : 220, sel ? kAccentG : 220,
+                        static_cast<float>(textX + indent), static_cast<float>(rowY + XP(6, 8)), line,
+                        TF(16.f), sel || serverRow, sel ? kAccentR : 220, sel ? kAccentG : 220,
                         sel ? kAccentB : 220);
         if (!ent.subtitle.empty()) {
-            const std::string sub = fonts_.ellipsize(ent.subtitle, PF(12.f), false, maxW);
+            const std::string sub = fonts_.ellipsize(ent.subtitle, TF(12.f), false, maxW);
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                            static_cast<float>(textX + indent), static_cast<float>(rowY + P(24)), sub,
-                            PF(12.f), false, 0x9a, 0x9a, 0x9a);
+                            static_cast<float>(textX + indent), static_cast<float>(rowY + XP(24, 41)), sub,
+                            TF(12.f), false, 0x9a, 0x9a, 0x9a);
         }
     }
 }
@@ -1047,7 +1064,7 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
         }
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
                         static_cast<float>(hubRowTitleX()), static_cast<float>(rowY),
-                        stripMisterPlexPrefix(hub.title), PF(18.f), true, 255, 255, 255);
+                        stripMisterPlexPrefix(hub.title), TF(18.f), true, 255, 255, 255);
         const int py = rowY + kHubPosterOffY();
         const bool rowFocus = static_cast<int>(ri) == st.focus.row && st.focus.sidebar == 0;
         const int scrollX =
@@ -1080,15 +1097,19 @@ void Renderer::drawHome(const RenderState& st, bool omitFocusedPoster) {
             std::string meta = hubItemLabel(it);
             if (!it.year.empty())
                 meta += "  " + it.year;
-            const float metaW = fonts_.measureText(meta, PF(14.), false);
+            if (uiText2x())   // FONT-2X: one line, under the first poster, inside the row band
+                meta = fonts_.ellipsize(meta, TF(14.f), false,
+                                        static_cast<float>(kHubContentRight() - hubRowTitleX()));
+            const float metaW = fonts_.measureText(meta, TF(14.f), false);
             const float metaX =
-                std::min(static_cast<float>(sideW + kSafeMargin()),
-                         static_cast<float>(kTextMaxX()) - metaW);
+                uiText2x() ? static_cast<float>(hubRowTitleX())
+                           : std::min(static_cast<float>(sideW + kSafeMargin()),
+                                      static_cast<float>(kTextMaxX()) - metaW);
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), metaX,
-                            static_cast<float>(py + posterH + P(8)), meta, PF(14.f), false, 230, 230, 230);
+                            static_cast<float>(py + posterH + P(8)), meta, TF(14.f), false, 230, 230, 230);
         }
         rowY += kHubRowAdvance();
-        if (rowY > kScreenH() - P(40))
+        if (rowY > kScreenH() - XP(40, 80))
             break;
     }
 }
@@ -1115,23 +1136,27 @@ void Renderer::drawGrid(const RenderState& st, bool omitFocusedPoster) {
     if (st.filter43On)
         title += " \xC2\xB7 4:3";
     const int titleX = kGridTitleX(st.focus.sidebar != 0);
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX, kSafeMargin(), title,
-                    PF(28.f), true, 255, 255, 255);
+    const std::string titleShown =
+        uiText2x() ? fonts_.ellipsize(title, TF(28.f), true,
+                                      static_cast<float>(kScreenW() - titleX - kSafeRight()))
+                   : title;
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX, kSafeTopTextY(), titleShown,
+                    TF(28.f), true, 255, 255, 255);
     if (st.focus.gridOnLetters) {
         const std::string bar = azJumpBarText(st.focus.gridLetter);
         const float maxW = static_cast<float>(kScreenW() - titleX - kSafeRight());
-        const std::string shown = fonts_.ellipsize(bar, PF(14.f), true, maxW);
+        const std::string shown = fonts_.ellipsize(bar, TF(14.f), true, maxW);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX,
-                        kSafeMargin() + P(30), shown, PF(14.f), true, kAccentR, kAccentG, kAccentB);
+                        kSafeTopTextY() + gridCountLineDY(), shown, TF(14.f), true, kAccentR, kAccentG, kAccentB);
     } else {
         const std::string count =
             std::to_string(st.gridItemCount > 0 ? st.gridItemCount : static_cast<int>(st.grid.size())) +
             " items";
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), titleX,
-                        kSafeMargin() + P(30), count, PF(14.f), false, 140, 140, 145);
+                        kSafeTopTextY() + gridCountLineDY(), count, TF(14.f), false, 140, 140, 145);
     }
     if (categoryRow) {
-        const int chipY = kSafeMargin() + P(30) + P(14);
+        const int chipY = kSafeTopTextY() + gridCountLineDY() + gridChipLineDY();
         float cx = static_cast<float>(kSafeMargin() - st.gridChipScrollX);
         for (size_t i = 0; i < st.gridChips.size(); ++i) {
             const auto& chip = st.gridChips[i];
@@ -1170,12 +1195,12 @@ void Renderer::drawGrid(const RenderState& st, bool omitFocusedPoster) {
         }
         drawPoster(px, py, posterW, posterH, imgKey, url, st.grid[i].title, foc, st.focusAnim, nullptr,
                    st.grid[i].viewCount, st.grid[i].viewOffsetMs);
-        const int capY = py + posterH + P(4);
-        if (capY + P(14) <= kScreenH() - kSafeBottomInset() + P(4)) {
+        const int capY = py + posterH + XP(4, 6);
+        if (capY + XP(14, 26) <= kScreenH() - kSafeBottomInset() + P(4)) {
             const std::string cap =
-                fonts_.ellipsize(st.grid[i].title, PF(12.f), foc, static_cast<float>(posterW));
+                fonts_.ellipsize(st.grid[i].title, TF(12.f), foc, static_cast<float>(posterW));
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                            static_cast<float>(px), static_cast<float>(capY), cap, PF(12.f), foc,
+                            static_cast<float>(px), static_cast<float>(capY), cap, TF(12.f), foc,
                             foc ? 255 : 210, foc ? 255 : 210, foc ? 255 : 214);
         }
     }
@@ -1199,7 +1224,7 @@ void Renderer::drawDetail(const RenderState& st) {
     if (st.haveServer && !st.detail.thumb.empty())
         purl = photoTranscodeUrl(st.server.baseUrl, st.detail.thumb, st.server.accessToken,
                                  posterW, posterH);
-    const int detailTop = kSafeMargin() + P(24);
+    const int detailTop = uiText2x() ? kSafeTopInset() : kSafeMargin() + P(24);
     const ImageCacheKey detailKey = cachedDetailThumb(cache_, st, posterW, posterH);
     const std::string detailTitle = stripMisterPlexPrefix(st.detail.title);
     drawPoster(kSafeMargin(), detailTop, posterW, posterH, detailKey, purl, detailTitle, false,
@@ -1208,26 +1233,26 @@ void Renderer::drawDetail(const RenderState& st) {
     const float tx = static_cast<float>(kSafeMargin() + posterW + P(20));
     const float textMaxW = static_cast<float>(kTextMaxX()) - tx;
     fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                           static_cast<float>(detailTop), textMaxW, detailTitle, PF(28.f), true, 255,
+                           static_cast<float>(detailTop), textMaxW, detailTitle, TF(28.f), true, 255,
                            255, 255, 2);
 
-    const float titleBlockH = fonts_.measureTextWrapped(detailTitle, PF(28.), true, textMaxW, 2);
+    const float titleBlockH = fonts_.measureTextWrapped(detailTitle, TF(28.f), true, textMaxW, 2);
     float chipX = tx;
-    const float chipY = static_cast<float>(detailTop) + titleBlockH + PF(8.f);
+    const float chipY = static_cast<float>(detailTop) + titleBlockH + XPF(8.f, 2.f);
     if (!st.detail.year.empty()) {
         drawChip(chipX, chipY, st.detail.year);
-        chipX += fonts_.measureText(st.detail.year, PF(12.), false) + PF(28.f);
+        chipX += fonts_.measureText(st.detail.year, TF(12.f), false) + XPF(28.f, 48.f);
     }
     if (st.detail.runtimeMs > 0) {
         const int m = (st.detail.runtimeMs / 60000) % 60;
         const int h = st.detail.runtimeMs / 3600000;
         const std::string rt = std::to_string(h) + "h " + std::to_string(m) + "m";
         drawChip(chipX, chipY, rt);
-        chipX += fonts_.measureText(rt, PF(12.), false) + PF(28.f);
+        chipX += fonts_.measureText(rt, TF(12.f), false) + XPF(28.f, 48.f);
     }
     if (!st.detail.contentRating.empty()) {
         drawChip(chipX, chipY, st.detail.contentRating);
-        chipX += fonts_.measureText(st.detail.contentRating, PF(12.), false) + PF(28.f);
+        chipX += fonts_.measureText(st.detail.contentRating, TF(12.f), false) + XPF(28.f, 48.f);
     }
     const float score = st.detail.audienceRating > 0.f ? st.detail.audienceRating : st.detail.rating;
     if (score > 0.f) {
@@ -1235,107 +1260,180 @@ void Renderer::drawDetail(const RenderState& st) {
         std::snprintf(buf, sizeof(buf), "%.1f", score);
         drawChip(chipX, chipY, buf);
     }
-    float textY = chipY + PF(30.f);
-    if (!st.detail.tagline.empty()) {
+    float textY = chipY + XPF(30.f, 52.f);
+    const bool isShow = st.detail.type == "show";
+    const std::string playLabel =
+        isShow ? "Seasons" : (st.detail.viewOffsetMs > 0 ? "Resume" : "Play");
+    // FONT-2X: the pill and the text buttons are sized from the 2x label instead of fixed
+    // R1 widths. The summary gets the whole lines that fit above the button block; when that
+    // is under two lines the genres line, then the tagline, give their room to it.
+    const int pillH = XP(36, 52);
+    const int pillW = uiText2x()
+                          ? std::max(P(160), static_cast<int>(fonts_.measureText(playLabel, TF(14.f), true)) + P(84))
+                          : (isShow ? P(140) : P(120));
+    const int pillAdvance = uiText2x() ? pillW + P(22) : (isShow ? P(150) : P(130));
+    const int btnRowStep = XP(28, 40);
+    const int textRight = kTextMaxX();
+    auto btnAdvance = [&](const char* label, int r1Advance) {
+        return uiText2x() ? static_cast<int>(fonts_.measureText(label, TF(14.f), true)) + P(30) : r1Advance;
+    };
+    struct TextBtn { int index; const char* label; int advance; };
+    std::vector<TextBtn> textBtns;
+    if (!isShow && st.detail.viewOffsetMs > 0)
+        textBtns.push_back({playFromStartButtonIndex(st.detail), "Play from start", btnAdvance("Play from start", P(150))});
+    if (itemShowsSubtitleButton(st.detail))
+        textBtns.push_back({subtitleButtonIndex(st.detail), "Subtitles", btnAdvance("Subtitles", P(100))});
+    if (itemShowsAudioButton(st.detail))
+        textBtns.push_back({audioButtonIndex(st.detail), "Audio", btnAdvance("Audio", P(80))});
+    if (itemShowsQueueButtons(st.detail)) {
+        textBtns.push_back({playNextButtonIndex(st.detail), "Play next", btnAdvance("Play next", P(100))});
+        textBtns.push_back({addToQueueButtonIndex(st.detail), "Add to queue", btnAdvance("Add to queue", P(130))});
+    }
+    const int taglineLines = uiText2x() ? 1 : 2;
+    bool showTagline = !st.detail.tagline.empty();
+    bool showGenres = !st.detail.genres.empty();
+    int summaryLines = 6;
+    if (uiText2x()) {
+        int rows = 0, x = static_cast<int>(tx) + pillAdvance;
+        for (const TextBtn& b : textBtns) {
+            if (b.index < 0)
+                continue;
+            if (x + b.advance > textRight && x > static_cast<int>(tx)) {
+                x = static_cast<int>(tx);
+                ++rows;
+            }
+            x += b.advance;
+        }
+        const float bottom = static_cast<float>(kScreenH() - std::max(kSafeBottomInset(), gridHintBandH()));
+        const float btnBlock = static_cast<float>(pillH + rows * btnRowStep);
+        const float lineStep = TF(14.f) * 1.35f;
+        const float taglineH =
+            fonts_.measureTextWrapped(st.detail.tagline, TF(13.f), false, textMaxW, taglineLines) + PF(8.f);
+        auto linesFor = [&](bool tag, bool gen) {
+            const float avail = bottom - btnBlock - PF(16.f) - (gen ? PF(36.f) : 0.f) - PF(8.f) -
+                                (textY + (tag ? taglineH : 0.f));
+            return std::max(0, std::min(6, static_cast<int>(avail / lineStep)));
+        };
+        const bool hasSummary = !st.detail.summary.empty();
+        summaryLines = linesFor(showTagline, showGenres);
+        if (hasSummary && summaryLines < 2 && showGenres) {
+            showGenres = false;
+            summaryLines = linesFor(showTagline, false);
+        }
+        if (hasSummary && summaryLines < 2 && showTagline) {
+            showTagline = false;
+            summaryLines = linesFor(false, false);
+        }
+    }
+    if (showTagline) {
         fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx, textY, textMaxW,
-                               st.detail.tagline, PF(13.f), false, 190, 190, 195, 2);
-        textY += fonts_.measureTextWrapped(st.detail.tagline, PF(13.), false, textMaxW, 2) + PF(6.f);
+                               st.detail.tagline, TF(13.f), false, 190, 190, 195, taglineLines);
+        textY += fonts_.measureTextWrapped(st.detail.tagline, TF(13.f), false, textMaxW, taglineLines) +
+                 XPF(6.f, 8.f);
     }
     const float summaryY = textY;
-    fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx, summaryY, textMaxW,
-                           st.detail.summary, PF(14.f), false, 210, 210, 210, 6);
-    const float summaryH =
-        fonts_.measureTextWrapped(st.detail.summary, PF(14.), false, textMaxW, 6);
+    float summaryH = 0.f;
+    if (summaryLines > 0) {
+        fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx, summaryY, textMaxW,
+                               st.detail.summary, TF(14.f), false, 210, 210, 210, summaryLines);
+        summaryH = fonts_.measureTextWrapped(st.detail.summary, TF(14.f), false, textMaxW, summaryLines);
+    }
     textY = summaryY + summaryH + PF(8.f);
-    if (!st.detail.genres.empty()) {
+    if (showGenres) {
         fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx, textY, textMaxW,
-                               st.detail.genres, PF(13.f), false, 140, 140, 145, 1);
-        textY += PF(18.f);
+                               st.detail.genres, TF(13.f), false, 140, 140, 145, 1);
+        textY += XPF(18.f, 36.f);
     }
     const int btnX = static_cast<int>(tx);
     int btnY = static_cast<int>(textY + PF(16.f));
     const bool playFoc = st.focus.detailButton == 0;
-    const bool isShow = st.detail.type == "show";
-    const std::string playLabel =
-        isShow ? "Seasons" : (st.detail.viewOffsetMs > 0 ? "Resume" : "Play");
-    drawPlayPill(btnX, btnY, isShow ? P(140) : P(120), P(36), playLabel, playFoc);
-    int nextX = btnX + (isShow ? P(150) : P(130));
-    const int textRight = kTextMaxX();
+    drawPlayPill(btnX, btnY, pillW, pillH, playLabel, playFoc);
+    int nextX = btnX + pillAdvance;
     auto drawTextBtn = [&](int index, const char* label, int advance) {
         if (index < 0)
             return;
         if (nextX + advance > textRight && nextX > btnX) {
             nextX = btnX;
-            btnY += P(28);
+            btnY += btnRowStep;
         }
         const bool foc = st.focus.detailButton == index;
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), nextX,
-                        static_cast<float>(btnY + P(10)), label, PF(14.f), foc, foc ? kAccentR : 200,
+                        static_cast<float>(btnY + XP(10, 12)), label, TF(14.f), foc, foc ? kAccentR : 200,
                         foc ? kAccentG : 200, foc ? kAccentB : 200);
         nextX += advance;
     };
-    if (!isShow && st.detail.viewOffsetMs > 0)
-        drawTextBtn(playFromStartButtonIndex(st.detail), "Play from start", P(150));
-    if (itemShowsSubtitleButton(st.detail))
-        drawTextBtn(subtitleButtonIndex(st.detail), "Subtitles", P(100));
-    if (itemShowsAudioButton(st.detail))
-        drawTextBtn(audioButtonIndex(st.detail), "Audio", P(80));
-    if (itemShowsQueueButtons(st.detail)) {
-        drawTextBtn(playNextButtonIndex(st.detail), "Play next", P(100));
-        drawTextBtn(addToQueueButtonIndex(st.detail), "Add to queue", P(130));
-    }
+    for (const TextBtn& b : textBtns)
+        drawTextBtn(b.index, b.label, b.advance);
 }
 
 void Renderer::drawAudioPicker(const RenderState& st) {
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
-                    "Audio", PF(28.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeTopTextY(),
+                    "Audio", TF(28.f), true, 255, 255, 255);
     const std::string sub = st.detail.title.empty() ? "Tracks" : stripMisterPlexPrefix(st.detail.title);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    kSafeMargin() + P(30), sub, PF(14.f), false, 140, 140, 145);
+                    kSafeTopTextY() + gridCountLineDY(), sub, TF(14.f), false, 140, 140, 145);
     const auto rows = audioPickerRows(st.detail);
-    const int rowH = P(28);
-    const int y0 = kSafeMargin() + P(60);
-    for (size_t i = 0; i < rows.size(); ++i) {
+    const int rowH = XP(28, 44);
+    const int y0 = kSafeTopTextY() + XP(60, 96);
+    // FONT-2X: the taller rows window around the focus instead of running off the screen.
+    int first = 0;
+    if (uiText2x()) {
+        const int vis = std::max(1, (kScreenH() - std::max(kSafeBottomInset(), gridHintBandH()) - y0) / rowH);
+        first = std::max(0, std::min(st.focus.row - vis + 1, static_cast<int>(rows.size()) - vis));
+        first = std::max(0, first);
+    }
+    for (size_t i = static_cast<size_t>(first); i < rows.size(); ++i) {
         const bool foc = st.focus.row == static_cast<int>(i);
         const AudioPickerRow& row = rows[i];
-        const int y = y0 + static_cast<int>(i) * rowH;
+        const int y = y0 + (static_cast<int>(i) - first) * rowH;
+        if (uiText2x() && y + rowH > kScreenH() - std::max(kSafeBottomInset(), gridHintBandH()))
+            break;
         const std::uint8_t r = !row.selectable ? 110 : (foc ? kAccentR : 220);
         const std::uint8_t g = !row.selectable ? 110 : (foc ? kAccentG : 220);
         const std::uint8_t b = !row.selectable ? 110 : (foc ? kAccentB : 220);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                        static_cast<float>(y), row.label, PF(16.f), foc && row.selectable, r, g, b);
+                        static_cast<float>(y), row.label, TF(16.f), foc && row.selectable, r, g, b);
     }
 }
 
 void Renderer::drawSubtitlePicker(const RenderState& st) {
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
-                    "Subtitles", PF(28.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeTopTextY(),
+                    "Subtitles", TF(28.f), true, 255, 255, 255);
     const std::string sub = st.detail.title.empty() ? "Tracks" : stripMisterPlexPrefix(st.detail.title);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    kSafeMargin() + P(30), sub, PF(14.f), false, 140, 140, 145);
+                    kSafeTopTextY() + gridCountLineDY(), sub, TF(14.f), false, 140, 140, 145);
     const auto rows = subtitlePickerRows(st.detail);
-    const int rowH = P(28);
-    const int y0 = kSafeMargin() + P(60);
-    for (size_t i = 0; i < rows.size(); ++i) {
+    const int rowH = XP(28, 44);
+    const int y0 = kSafeTopTextY() + XP(60, 96);
+    // FONT-2X: the taller rows window around the focus instead of running off the screen.
+    int first = 0;
+    if (uiText2x()) {
+        const int vis = std::max(1, (kScreenH() - std::max(kSafeBottomInset(), gridHintBandH()) - y0) / rowH);
+        first = std::max(0, std::min(st.focus.row - vis + 1, static_cast<int>(rows.size()) - vis));
+        first = std::max(0, first);
+    }
+    for (size_t i = static_cast<size_t>(first); i < rows.size(); ++i) {
         const bool foc = st.focus.row == static_cast<int>(i);
         const SubtitlePickerRow& row = rows[i];
-        const int y = y0 + static_cast<int>(i) * rowH;
+        const int y = y0 + (static_cast<int>(i) - first) * rowH;
+        if (uiText2x() && y + rowH > kScreenH() - std::max(kSafeBottomInset(), gridHintBandH()))
+            break;
         const std::uint8_t r = !row.selectable ? 110 : (foc ? kAccentR : 220);
         const std::uint8_t g = !row.selectable ? 110 : (foc ? kAccentG : 220);
         const std::uint8_t b = !row.selectable ? 110 : (foc ? kAccentB : 220);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                        static_cast<float>(y), row.label, PF(16.f), foc && row.selectable, r, g, b);
+                        static_cast<float>(y), row.label, TF(16.f), foc && row.selectable, r, g, b);
     }
 }
 
 void Renderer::drawSeasonList(const RenderState& st) {
     const GridLayout gl = seasonGridLayout();
     const std::string title = st.listTitle.empty() ? "Seasons" : stripMisterPlexPrefix(st.listTitle);
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
-                    title, PF(28.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeTopTextY(),
+                    title, TF(28.f), true, 255, 255, 255);
     const std::string count = std::to_string(static_cast<int>(st.seasons.size())) + " seasons";
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    kSafeMargin() + P(30), count, PF(14.f), false, 140, 140, 145);
+                    kSafeTopTextY() + gridCountLineDY(), count, TF(14.f), false, 140, 140, 145);
     for (size_t i = 0; i < st.seasons.size(); ++i) {
         const int c = static_cast<int>(i % gl.cols);
         const int r = static_cast<int>(i / gl.cols);
@@ -1359,22 +1457,22 @@ void Renderer::drawSeasonList(const RenderState& st) {
         drawPoster(px, py, gl.posterW, gl.posterH, imgKey, url, "", foc, st.focusAnim, nullptr,
                    it.viewCount, it.viewOffsetMs);
         const std::string name = it.title.empty() ? ("Season " + std::to_string(it.index)) : it.title;
-        const std::string cap = fonts_.ellipsize(name, PF(13.f), false, static_cast<float>(gl.posterW));
+        const std::string cap = fonts_.ellipsize(name, TF(13.f), false, static_cast<float>(gl.posterW));
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(px),
-                        static_cast<float>(py + gl.posterH + P(4)), cap, PF(13.f), foc, foc ? 255 : 230,
+                        static_cast<float>(py + gl.posterH + XP(4, 6)), cap, TF(13.f), foc, foc ? 255 : 230,
                         foc ? 255 : 230, foc ? 255 : 230);
         const std::string eps = std::to_string(std::max(0, it.leafCount)) +
                                 (it.leafCount == 1 ? " episode" : " episodes");
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(px),
-                        static_cast<float>(py + gl.posterH + P(20)), eps, PF(12.f), false, kAccentR,
+                        static_cast<float>(py + gl.posterH + XP(20, 38)), eps, TF(12.f), false, kAccentR,
                         kAccentG, kAccentB);
     }
 }
 
 void Renderer::drawEpisodeList(const RenderState& st) {
     const std::string title = st.listTitle.empty() ? "Episodes" : stripMisterPlexPrefix(st.listTitle);
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
-                    title, PF(22.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeTopTextY(),
+                    title, TF(22.f), true, 255, 255, 255);
     const int rowH = episodeRowH();
     const int top = episodeListTop();
     const int thumbW = P(72);
@@ -1408,38 +1506,38 @@ void Renderer::drawEpisodeList(const RenderState& st) {
                                    itemThumbRevision(it));
             url = photoTranscodeUrl(st.server.baseUrl, it.thumb, st.server.accessToken, thumbW, thumbH);
         }
-        drawPoster(kSafeMargin(), y + P(4), thumbW, thumbH, imgKey, url, "", false, kFocusAnimSteps,
+        drawPoster(kSafeMargin(), y + XP(4, 12), thumbW, thumbH, imgKey, url, "", false, kFocusAnimSteps,
                    nullptr, it.viewCount, it.viewOffsetMs);
         const std::string code = episodeCode(it.parentIndex, it.index);
         float tx = static_cast<float>(kSafeMargin() + thumbW + P(12));
         if (!code.empty()) {
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                            static_cast<float>(y + P(6)), code, PF(13.f), true, kAccentR, kAccentG,
+                            static_cast<float>(y + XP(6, 8)), code, TF(13.f), true, kAccentR, kAccentG,
                             kAccentB);
-            tx += fonts_.measureText(code, PF(13.), true) + PF(8.f);
+            tx += fonts_.measureText(code, TF(13.f), true) + XPF(8.f, 12.f);
         }
         const std::string dur = formatRunTime(it.runtimeMs);
-        const float durW = dur.empty() ? 0.f : fonts_.measureText(dur, PF(12.), false);
+        const float durW = dur.empty() ? 0.f : fonts_.measureText(dur, TF(12.f), false);
         const float titleMax =
             static_cast<float>(kTextMaxX()) - tx - durW - PF(12.f);
-        const std::string name = fonts_.ellipsize(it.title, PF(15.f), false, std::max(PF(40.f), titleMax));
+        const std::string name = fonts_.ellipsize(it.title, TF(15.f), false, std::max(PF(40.f), titleMax));
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                        static_cast<float>(y + P(5)), name, PF(15.f), foc, 255, 255, 255);
+                        static_cast<float>(y + XP(5, 6)), name, TF(15.f), foc, 255, 255, 255);
         if (!dur.empty()) {
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                            static_cast<float>(kTextMaxX()) - durW, static_cast<float>(y + P(8)), dur,
-                            PF(12.f), false, 180, 180, 185);
+                            static_cast<float>(kTextMaxX()) - durW, static_cast<float>(y + XP(8, 9)), dur,
+                            TF(12.f), false, 180, 180, 185);
         }
         const WatchMark mark = watchMark(it.viewCount, it.viewOffsetMs);
         if (mark == WatchMark::Watched) {
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
                             static_cast<float>(kSafeMargin() + thumbW + P(12)),
-                            static_cast<float>(y + P(26)), "Watched", PF(12.f), false, kAccentR, kAccentG,
+                            static_cast<float>(y + XP(26, 38)), "Watched", TF(12.f), false, kAccentR, kAccentG,
                             kAccentB);
         } else if (mark == WatchMark::Progress && it.runtimeMs > 0) {
             const int barX = kSafeMargin() + thumbW + P(12);
             const int barW = P(120);
-            const int barY = y + P(30);
+            const int barY = y + XP(30, 46);
             const int filled =
                 static_cast<int>(barW * std::min<int64_t>(it.viewOffsetMs, it.runtimeMs) / it.runtimeMs);
             for (int col = 0; col < barW; ++col) {
@@ -1457,10 +1555,10 @@ void Renderer::drawEpisodeList(const RenderState& st) {
     if (focused && !focused->summary.empty()) {
         const int sy = episodeListBottom() + P(4);
         const std::string sum =
-            fonts_.ellipsize(focused->summary, PF(13.f), false, static_cast<float>(kTextMaxX() - kSafeMargin()));
+            fonts_.ellipsize(focused->summary, TF(13.f), false, static_cast<float>(kTextMaxX() - kSafeMargin()));
         fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
                                static_cast<float>(kSafeMargin()), static_cast<float>(sy),
-                               static_cast<float>(kTextMaxX() - kSafeMargin()), focused->summary, PF(13.f),
+                               static_cast<float>(kTextMaxX() - kSafeMargin()), focused->summary, TF(13.f),
                                false, 200, 200, 205, 2);
         (void)sum;
     }
@@ -1472,8 +1570,8 @@ void Renderer::drawUpNext(const RenderState& st) {
             blendPx(rgba_.data() + (static_cast<std::size_t>(y) * kScreenW() + x) * 4, 0, 0, 0, 170);
         }
     }
-    const int w = P(420);
-    const int h = P(168);
+    const int w = std::min(XP(420, 600), uiText2x() ? kScreenW() - 2 * kSafeMargin() : 1 << 20);
+    const int h = XP(168, 256);
     const int x0 = (kScreenW() - w) / 2;
     const int y0 = (kScreenH() - h) / 2;
     for (int row = 0; row < h; ++row) {
@@ -1493,24 +1591,28 @@ void Renderer::drawUpNext(const RenderState& st) {
     }
     const float tx = static_cast<float>(x0 + P(20));
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                    static_cast<float>(y0 + P(16)), "UP NEXT", PF(13.f), true, kAccentR, kAccentG,
+                    static_cast<float>(y0 + P(16)), "UP NEXT", TF(13.f), true, kAccentR, kAccentG,
                     kAccentB);
     const std::string code = episodeCode(st.upNext.parentIndex, st.upNext.index);
     std::string heading = st.upNext.title.empty() ? "Next episode" : st.upNext.title;
     if (!code.empty())
         heading = code + "  " + heading;
     fonts_.drawTextWrapped(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                           static_cast<float>(y0 + P(38)), static_cast<float>(w - P(40)), heading,
-                           PF(18.f), true, 255, 255, 255, 2);
+                           static_cast<float>(y0 + XP(38, 50)), static_cast<float>(w - P(40)), heading,
+                           TF(18.f), true, 255, 255, 255, 2);
     const std::string count = "Playing in " + std::to_string(std::max(0, st.upNextSeconds)) + "s";
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), tx,
-                    static_cast<float>(y0 + P(88)), count, PF(14.f), false, 200, 200, 205);
+                    static_cast<float>(y0 + XP(88, 140)), count, TF(14.f), false, 200, 200, 205);
     const bool playFoc = st.focus.detailButton == 0;
-    drawPlayPill(x0 + P(20), y0 + P(114), P(130), P(36), "Play now", playFoc);
+    const int upPillW = uiText2x()
+                            ? static_cast<int>(fonts_.measureText("Play now", TF(14.f), true)) + P(84)
+                            : P(130);
+    drawPlayPill(x0 + P(20), y0 + XP(114, 182), upPillW, XP(36, 52), "Play now", playFoc);
     const bool cancelFoc = st.focus.detailButton == 1;
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                    static_cast<float>(x0 + P(170)), static_cast<float>(y0 + P(124)), "Back to cancel",
-                    PF(14.f), cancelFoc, cancelFoc ? kAccentR : 180, cancelFoc ? kAccentG : 180,
+                    static_cast<float>(uiText2x() ? x0 + P(20) + upPillW + P(28) : x0 + P(170)),
+                    static_cast<float>(y0 + XP(124, 194)), "Back to cancel",
+                    TF(14.f), cancelFoc, cancelFoc ? kAccentR : 180, cancelFoc ? kAccentG : 180,
                     cancelFoc ? kAccentB : 180);
 }
 
@@ -1523,7 +1625,7 @@ void Renderer::drawLinkSignIn(const RenderState& st) {
                     static_cast<std::uint8_t>(r + 6), 255);
         }
     }
-    const int cardW = std::min(P(520), kScreenW() - kSafeMargin() * 2);
+    const int cardW = std::min(XP(520, 720), kScreenW() - kSafeMargin() * 2);
     const int cardH = std::min(P(360), kScreenH() - kSafeBottomInset() * 2);
     const int x0 = (kScreenW() - cardW) / 2;
     const int y0 = (kScreenH() - cardH) / 2;
@@ -1539,7 +1641,7 @@ void Renderer::drawLinkSignIn(const RenderState& st) {
         }
     }
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
-                    static_cast<float>(y0 + P(18)), "Sign in to Plex", PF(22.f), true, 255, 255, 255);
+                    static_cast<float>(y0 + P(18)), "Sign in to Plex", TF(22.f), true, 255, 255, 255);
     const std::string code = st.linkCode.empty() ? "----" : st.linkCode;
     std::string spaced;
     for (size_t i = 0; i < code.size(); ++i) {
@@ -1547,24 +1649,24 @@ void Renderer::drawLinkSignIn(const RenderState& st) {
             spaced += "  ";
         spaced.push_back(code[i]);
     }
-    const float cw = fonts_.measureText(spaced, PF(36.), true);
+    const float cw = fonts_.measureText(spaced, TF(36.f), true);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                    static_cast<float>(x0) + (cardW - cw) / 2.f - PF(80.f),
-                    static_cast<float>(y0 + P(70)), spaced, PF(36.f), true, kAccentR, kAccentG, kAccentB);
+                    uiText2x() ? static_cast<float>(x0 + P(24)) : static_cast<float>(x0) + (cardW - cw) / 2.f - PF(80.f),
+                    static_cast<float>(y0 + XP(70, 72)), spaced, TF(36.f), true, kAccentR, kAccentG, kAccentB);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
-                    static_cast<float>(y0 + P(130)), "plex.tv/link", PF(18.f), false, 230, 230, 235);
+                    static_cast<float>(y0 + XP(130, 140)), "plex.tv/link", TF(18.f), false, 230, 230, 235);
     const int sec = std::max(0, st.linkSeconds);
     const std::string count =
         "Code expires in " + std::to_string(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") +
         std::to_string(sec % 60);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
-                    static_cast<float>(y0 + P(160)), count, PF(14.f), false, 180, 180, 185);
+                    static_cast<float>(y0 + XP(160, 184)), count, TF(14.f), false, 180, 180, 185);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
-                    static_cast<float>(y0 + cardH - P(36)), "Back to cancel", PF(13.f), false, 150, 150, 155);
+                    static_cast<float>(y0 + cardH - XP(36, 46)), "Back to cancel", TF(13.f), false, 150, 150, 155);
     if (!st.status.empty())
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), static_cast<float>(x0 + P(24)),
-                        static_cast<float>(y0 + P(188)), st.status, PF(13.f), false, 210, 150, 90);
-    const int qrPx = std::max(P(3), (cardH - P(80)) / kLinkQrModules);
+                        static_cast<float>(y0 + XP(188, 224)), st.status, TF(13.f), false, 210, 150, 90);
+    const int qrPx = std::max(P(3), (cardH - XP(80, 150)) / kLinkQrModules);
     const int qrSize = qrPx * kLinkQrModules;
     const int qx = x0 + cardW - qrSize - P(20);
     const int qy = y0 + (cardH - qrSize) / 2;
@@ -1587,16 +1689,16 @@ void Renderer::drawLinkSignIn(const RenderState& st) {
 }
 
 void Renderer::drawHomeUsers(const RenderState& st) {
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(),
-                    "Who's watching?", PF(26.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeTopTextY(),
+                    "Who's watching?", TF(26.f), true, 255, 255, 255);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    kSafeMargin() + P(28), "Plex Home", PF(14.f), false, 160, 160, 165);
-    const int rowH = P(36);
-    const int y0 = kSafeMargin() + P(64);
+                    kSafeTopTextY() + XP(28, 44), "Plex Home", TF(14.f), false, 160, 160, 165);
+    const int rowH = XP(36, 52);
+    const int y0 = kSafeTopTextY() + XP(64, 96);
     if (st.homeRows.empty()) {
         const std::string msg = st.status.empty() ? "No Home users" : st.status;
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                        static_cast<float>(y0), msg, PF(18.f), false, 220, 200, 160);
+                        static_cast<float>(y0), msg, TF(18.f), false, 220, 200, 160);
     }
     for (size_t i = 0; i < st.homeRows.size(); ++i) {
         const bool foc = st.focus.row == static_cast<int>(i);
@@ -1613,36 +1715,36 @@ void Renderer::drawHomeUsers(const RenderState& st) {
         }
         const auto& row = st.homeRows[i];
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(kSafeMargin() + P(8)), static_cast<float>(y + P(4)), row.title,
-                        PF(18.f), foc, foc ? kAccentR : 230, foc ? kAccentG : 230, foc ? kAccentB : 230);
+                        static_cast<float>(kSafeMargin() + P(8)), static_cast<float>(y + XP(4, 6)), row.title,
+                        TF(18.f), foc, foc ? kAccentR : 230, foc ? kAccentG : 230, foc ? kAccentB : 230);
         if (!row.subtitle.empty()) {
-            const float tw = fonts_.measureText(row.title, PF(18.), foc);
+            const float tw = fonts_.measureText(row.title, TF(18.f), foc);
             fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                            static_cast<float>(kSafeMargin() + P(16)) + tw, static_cast<float>(y + P(8)),
-                            row.subtitle, PF(13.f), false, 170, 170, 175);
+                            static_cast<float>(kSafeMargin() + P(16)) + tw, static_cast<float>(y + XP(8, 10)),
+                            row.subtitle, TF(13.f), false, 170, 170, 175);
         }
     }
     if (!st.status.empty() && !st.homeRows.empty())
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                        static_cast<float>(kScreenH() - kSafeBottomInset() - P(36)), st.status, PF(14.f), false,
+                        static_cast<float>(kScreenH() - kSafeBottomInset() - XP(36, 70)), st.status, TF(14.f), false,
                         210, 150, 90);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    static_cast<float>(kScreenH() - kSafeBottomInset() - P(16)), "Back", PF(13.f), false, 150, 150,
+                    static_cast<float>(kScreenH() - kSafeBottomInset() - XP(16, 32)), "Back", TF(13.f), false, 150, 150,
                     155);
 }
 
 void Renderer::drawHomePin(const RenderState& st) {
     const std::string who = st.homePinTitle.empty() ? "Enter PIN" : st.homePinTitle;
-    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeMargin(), who,
-                    PF(26.f), true, 255, 255, 255);
+    fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(), kSafeTopTextY(), who,
+                    TF(26.f), true, 255, 255, 255);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    kSafeMargin() + P(28), "Up and Down change a digit", PF(14.f), false, 160, 160, 165);
+                    kSafeTopTextY() + XP(28, 44), "Up and Down change a digit", TF(14.f), false, 160, 160, 165);
     const std::string pin = st.homePin.size() == 4 ? st.homePin : "0000";
-    const int box = P(56);
+    const int box = XP(56, 72);
     const int gap = P(12);
     const int total = box * 4 + gap * 3;
     int x = (kScreenW() - total) / 2;
-    const int y = kSafeMargin() + P(80);
+    const int y = kSafeTopTextY() + XP(80, 104);
     for (int i = 0; i < 4; ++i) {
         const bool foc = st.homePinSlot == i;
         for (int row = 0; row < box; ++row) {
@@ -1661,21 +1763,21 @@ void Renderer::drawHomePin(const RenderState& st) {
             }
         }
         const std::string digit(1, pin[static_cast<size_t>(i)]);
-        const float dw = fonts_.measureText(digit, PF(28.), true);
+        const float dw = fonts_.measureText(digit, TF(28.f), true);
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(x) + (box - dw) / 2.f, static_cast<float>(y + P(12)), digit,
-                        PF(28.f), true, 255, 255, 255);
+                        static_cast<float>(x) + (box - dw) / 2.f, static_cast<float>(y + XP(12, 16)), digit,
+                        TF(28.f), true, 255, 255, 255);
         x += box + gap;
     }
     const bool okFoc = st.homePinSlot >= 4;
-    const int okW = P(120);
+    const int okW = XP(120, 160);
     const int okX = (kScreenW() - okW) / 2;
-    drawPlayPill(okX, y + box + P(24), okW, P(36), "OK", okFoc);
+    drawPlayPill(okX, y + box + P(24), okW, XP(36, 52), "OK", okFoc);
     if (!st.status.empty())
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                        static_cast<float>(y + box + P(72)), st.status, PF(16.f), false, 210, 150, 90);
+                        static_cast<float>(y + box + XP(72, 92)), st.status, TF(16.f), false, 210, 150, 90);
     fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(), kSafeMargin(),
-                    static_cast<float>(kScreenH() - kSafeBottomInset() - P(16)), "Back", PF(13.f), false, 150, 150,
+                    static_cast<float>(kScreenH() - kSafeBottomInset() - XP(16, 32)), "Back", TF(13.f), false, 150, 150,
                     155);
 }
 
@@ -1844,7 +1946,7 @@ void Renderer::shiftStaticHomeColumns(const RenderState& st, int hubRow, int del
         return;
     // deltaPx = newScrollX - oldScrollX (whole tile steps): positive scrolls the row left.
     // The band is [x0, x1): sidebar edge to the screen edge. Only whole tiles live in it.
-    const int x0 = kSidebarW() + kSafeMargin() - kHubBaseGap();
+    const int x0 = kHubContentLeft() - kHubBaseGap();
     (void)gap;
     const int x1 = kScreenW();
     const int w = x1 - x0;
@@ -1889,7 +1991,7 @@ void Renderer::patchChipRow(const RenderState& st) {
         staticRgba_.size() != static_cast<std::size_t>(kScreenW()) * kScreenH() * 4u)
         return;
     rgba_.assign(staticRgba_.begin(), staticRgba_.end());
-    const int chipY = kSafeMargin() + P(30) + P(14);
+    const int chipY = kSafeTopTextY() + gridCountLineDY() + gridChipLineDY();
     const int y0 = std::max(0, chipY - P(2));
     const int y1 = std::min(kScreenH(), chipY + kGridChipRowH() + P(4));
     restoreBackdropRect(0, y0, kScreenW(), y1);
@@ -2010,7 +2112,9 @@ void Renderer::drawBrowseHint(const std::string& queueLine) {
     const bool hintOn = hint && *hint;
     if (!hintOn && queueLine.empty())
         return;
-    const int lineH = P(16);
+    // FONT-2X: TF(13) = 26 px text in a 36 px line (band 40 = gridHintBandH()).
+    const int lineH = XP(16, 36);
+    const int textDY = XP(0, 4);
     const int lines = (hintOn ? 1 : 0) + (queueLine.empty() ? 0 : 1);
     const int yBottom = kScreenH() - lineH;
     const int yTop = yBottom - (lines - 1) * lineH;
@@ -2023,13 +2127,13 @@ void Renderer::drawBrowseHint(const std::string& queueLine) {
     int y = yTop;
     if (!queueLine.empty()) {
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(kSafeMargin()), static_cast<float>(y), queueLine.c_str(),
-                        PF(13.f), false, 229, 160, 13);
+                        static_cast<float>(kSafeMargin()), static_cast<float>(y + textDY), queueLine.c_str(),
+                        TF(13.f), false, 229, 160, 13);
         y += lineH;
     }
     if (hintOn)
         fonts_.drawText(rgba_.data(), kScreenW() * 4, kScreenW(), kScreenH(),
-                        static_cast<float>(kSafeMargin()), static_cast<float>(y), hint, PF(13.f), false,
+                        static_cast<float>(kSafeMargin()), static_cast<float>(y + textDY), hint, TF(13.f), false,
                         220, 224, 230);
 }
 
@@ -2345,7 +2449,6 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
     const auto tFocus0 = std::chrono::steady_clock::now();
     if (st.view == ViewId::Home && st.focus.sidebar == 0) {
         const int posterW = kHubPosterW(), posterH = kHubPosterH(), gap = kHubGap();
-        const int sideW = kSidebarW();
         const int step = posterW + gap;
         int rowY = homeRowTopY(st.focus.row, static_cast<int>(st.hubs.size()), 0);
         for (size_t ri = 0; ri < st.hubs.size(); ++ri) {
@@ -2360,7 +2463,7 @@ void Renderer::render(const RenderState& st, std::vector<std::uint8_t>& out, Ren
             for (size_t ci = 0; ci < hub.items.size(); ++ci) {
                 if (px > kScreenW())
                     break;
-                if (px < sideW + kSafeMargin() - gap) {   // left of the band (scrolled out)
+                if (px < kHubContentLeft() - gap) {   // left of the band (scrolled out)
                     px += step;
                     continue;
                 }

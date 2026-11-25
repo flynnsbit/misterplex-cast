@@ -1,5 +1,5 @@
 #pragma once
-// R1 PLXH host side, the whole of it (reviewer 19:01 A, 19:16 (1)(c), 19:27 F5; kit K2):
+// R1 PLXH host side, the whole of it (FPGA Bug 19:01 A, 19:16 (1)(c), 19:27 F5; kit K2):
 //
 // 1. Write order (19:01 A). ddr_frame_store.sv:230-234 at r1-idlefb-mvpb 3a579e17 arms on the
 //    magic word (DOUT[31:0] == 'PLXH') and takes token[63:48], buf_sel[33] and en[32] from the
@@ -51,7 +51,7 @@ namespace misterplex {
 namespace r1 {
 
 // The PLX page as the daemon maps it (0x300FF000 on the 480p layout). Tests fake it.
-// store64 is ONLY for the K2 PLXO zero (reviewer 20:00 N2). An STRD may land as two beats in
+// store64 is ONLY for the K2 PLXO zero (FPGA Bug 20:00 N2). An STRD may land as two beats in
 // either order, so a PLXH request must never go through it: the magic could arrive first. Every
 // PLXH store is a store32 (upper word, then barrier, then magic); the concrete FpgaSpi port
 // refuses a 64-bit store anywhere but PLXO.
@@ -332,12 +332,12 @@ public:
     // The session proceeded on the no-FB_VBL proof; its en=0 is armed but not yet ACKed.
     bool en0Pending() const { return en0Pending_.load(); }
 
-    // reviewer 06:57 D3: the en=1 gate closes at the PLAY request, not at BEGIN (the session
-    // enters only after the resolve). reviewer 07:30 C1: the hold belongs to one request, keyed by
+    // FPGA Bug 06:57 D3: the en=1 gate closes at the PLAY request, not at BEGIN (the session
+    // enters only after the resolve). FPGA Bug 07:30 C1: the hold belongs to one request, keyed by
     // its play generation, so a stale request's end can never release a newer request's hold. It
     // ends when that request's session enters (enterSession(gen), atomically with inSession), when
     // that request ends without a session (playRequestEnded(gen)), or when a later STOP ends it
-    // (playRequestsEndedBefore). reviewer 08:17 (2): while that request's doPlay runs it OWNS the
+    // (playRequestsEndedBefore). FPGA Bug 08:17 (2): while that request's doPlay runs it OWNS the
     // hold (PlayRequestHold) and the hold does not expire; doPlay's exit (return or throw) releases
     // or disowns it. A hold nobody owns (begun, dispatch pending; or left by a doPlay that a seek's
     // replay replaced) expires kPlayRequestHoldMs after it lost its owner. kPlayRequestOwnedMaxMs only
@@ -409,7 +409,7 @@ public:
         std::lock_guard<std::mutex> hold(holdMu_);
         if (pendingLocked())
             return fail(why, "PLXH en=1 refused: a PLAY request is pending, its session not yet entered "
-                             "(reviewer 06:57 D3)");
+                             "(FPGA Bug 06:57 D3)");
         const uint16_t t = link_.write(bufSel, true);
         if (!t)
             return fail(why, "PLXH store refused");
@@ -478,7 +478,7 @@ private:
     PlxhF5Pacer* pacer_ = nullptr;
 };
 
-// doPlay's PLAY-request guard (reviewer 06:57 D3, 07:30 C1, 08:17 (2)). From doPlay's start it owns
+// doPlay's PLAY-request guard (FPGA Bug 06:57 D3, 07:30 C1, 08:17 (2)). From doPlay's start it owns
 // its generation's hold (the hold does not expire while it runs). On every exit, return or throw:
 // a play that started no session and was not replaced by a seek's replay (`releasable`: still the
 // current request, or stopped) releases its own generation's hold; otherwise the hold is only

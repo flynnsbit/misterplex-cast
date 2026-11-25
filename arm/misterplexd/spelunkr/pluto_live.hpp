@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace misterplex {
 namespace spelunkr {
@@ -34,7 +35,7 @@ inline std::string plutoBootBaseUrl() {
 // Slate fix (glass #685 80544cc5): the legacy `<stitcher>/stitch/hls/channel/<id>/master.m3u8` path now
 // serves Pluto's takedown slate ("no longer available on this device", clip *ptv_takedownslates*) for every
 // session; the same boot + bearer + stitcherParams on `/v2/stitch/hls/channel/...` returns the real channel
-// (build-host pluto-probe RESULT-SLATE.md). MUT_PLUTO_LEGACY_STITCH_PATH restores the legacy path.
+// (buildhost pluto-probe RESULT-SLATE.md). MUT_PLUTO_LEGACY_STITCH_PATH restores the legacy path.
 #ifdef MUT_PLUTO_LEGACY_STITCH_PATH
 inline constexpr const char* kPlutoStitchChannelPath = "/stitch/hls/channel/";
 #else
@@ -43,7 +44,7 @@ inline constexpr const char* kPlutoStitchChannelPath = "/v2/stitch/hls/channel/"
 // The /v2 stitcher requires the session on every request: master without it is 401, and the media playlist
 // ffmpeg fetches (it gets NO Authorization header since ADDENDUM 8) is 401 unless the session rides in the
 // URL. `jwt=<sessionToken>&masterJWTPassthrough=true` makes the stitcher copy the jwt into every media
-// playlist URI (build-host probe: slate_bearer.py / slate_jwtq.py). The jwt only goes to the *.pluto.tv stitcher
+// playlist URI (buildhost probe: slate_bearer.py / slate_jwtq.py). The jwt only goes to the *.pluto.tv stitcher
 // host; segment/key hosts (plutotv.net) need no auth. Logs redact the `jwt` key (log_redact.hpp).
 inline std::string plutoUrlEncodeComponent(const std::string& in) {
     static const char* hex = "0123456789ABCDEF";
@@ -445,18 +446,68 @@ struct PlutoVariantProbeResult {
 struct PlutoMediaFetchResult {
     bool playlistOk = false;
     bool blocked = false;
+    bool segmentFetched = false;
     std::string playlistBody;
     std::string segmentBody;
 };
 
+// Media playlist captured while probing a variant. After the pick, reuse it when
+// the URL matches instead of fetching the same playlist again. The reused body
+// still runs plutoPlaylistBlockReason (DRM / host scope are not skipped).
+// MPX_PLUTO_REFETCH_MEDIA=1 restores today's always-refetch. Unset = reuse.
+// MUT_PLUTO_REFETCH_MEDIA always re-fetches.
+struct PlutoProbedMedia {
+    std::string mediaUrl;
+    std::string body;
+    bool filled() const { return !mediaUrl.empty() && !body.empty(); }
+};
+
+inline bool plutoRefetchMediaPlaylist() {
+#ifdef MUT_PLUTO_REFETCH_MEDIA
+    return true;
+#else
+    const char* e = std::getenv("MPX_PLUTO_REFETCH_MEDIA");
+    return e && e[0] == '1' && e[1] == '\0';
+#endif
+}
+
+inline bool plutoReuseProbedMedia(const PlutoProbedMedia& probed, const std::string& mediaUrl) {
+    if (plutoRefetchMediaPlaylist())
+        return false;
+    return probed.filled() && probed.mediaUrl == mediaUrl;
+}
+
+// Unset: do not download the first segment (kPlutoMaxProbeBytes) before a libav
+// probe that is about to run. MPX_PLUTO_PROBE_EAGER_SEGMENT=1 restores today's
+// fetch-up-front. AES-128 ciphertext cannot SPS-parse, so libav still runs for
+// encrypted rungs; the segment is fetched only when libav is skipped or fails.
+// MUT_PLUTO_PROBE_EAGER_SEGMENT always fetches the segment up front.
+inline bool plutoProbeEagerSegment() {
+#ifdef MUT_PLUTO_PROBE_EAGER_SEGMENT
+    return true;
+#else
+    const char* e = std::getenv("MPX_PLUTO_PROBE_EAGER_SEGMENT");
+    return e && e[0] == '1' && e[1] == '\0';
+#endif
+}
+
 // HLS demuxer probe first; raw segment SPS; bandwidth ladder last (AES-128 ciphertext).
-template <typename MediaFetchFn>
+// fetchPlaylist does not download the segment. fetchSegment is the fallback.
+template <typename PlaylistFn, typename SegmentFn>
 inline PlutoVariantProbeResult plutoProbeVariantForCaps(const PlutoVariant& v, const std::string& mediaUrl,
                                                           const std::string& sessionToken,
                                                           const std::function<bool()>& cancelled,
-                                                          MediaFetchFn fetchMedia) {
+                                                          PlaylistFn fetchPlaylist, SegmentFn fetchSegment) {
     PlutoVariantProbeResult out;
-    const PlutoMediaFetchResult m = fetchMedia();
+    PlutoMediaFetchResult m = fetchPlaylist();
+    auto loadSegment = [&] {
+        if (m.segmentFetched || !m.playlistOk || m.blocked)
+            return;
+        m.segmentFetched = true;
+        m.segmentBody = fetchSegment(m);
+    };
+    if (plutoProbeEagerSegment())
+        loadSegment();
     const bool bearerScope = plutoSessionBearerAllowedForMedia(mediaUrl, m.playlistBody);
     if (plutoHlsProbeAttemptEnabled()) {
         if (plutoHlsProbeOverride()) {
@@ -482,6 +533,7 @@ inline PlutoVariantProbeResult plutoProbeVariantForCaps(const PlutoVariant& v, c
     if (!out.probe.ok) {
         if (out.note.empty())
             out.note = "pluto hls probe unavailable";
+        loadSegment();
         if (m.playlistOk && !m.blocked) {
             PlutoStreamProbe seg = plutoProbeFromSegmentBytes(m.segmentBody);
             if (seg.ok) {
@@ -846,6 +898,101 @@ inline const PlutoVariant* selectPlutoVariantViaProbe(const std::vector<PlutoVar
     return nullptr;
 }
 
+// URLs a remux already rejected as a real oversize (1920x1080). The next
+// resolve must not pick them again. Cleared at the start of a play job.
+inline std::vector<std::string>& plutoRejectedVariants() {
+    thread_local std::vector<std::string> urls;
+    return urls;
+}
+
+inline void plutoClearRejectedVariants() { plutoRejectedVariants().clear(); }
+
+inline void plutoNoteRejectedVariant(const std::string& url) {
+    if (url.size() < 8)
+        return;
+    auto& urls = plutoRejectedVariants();
+    for (const auto& e : urls) {
+        if (e == url)
+            return;
+    }
+    urls.push_back(url);
+}
+
+inline bool plutoVariantExcluded(const std::string& uri) {
+    if (uri.size() < 8)
+        return false;
+    for (const auto& r : plutoRejectedVariants()) {
+        if (r.empty())
+            continue;
+        if (r == uri || r.find(uri) != std::string::npos || uri.find(r) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+// After the tag pick, probe the chosen rung's actual dimensions. A 720 tag
+// (or a missing RESOLUTION, which variantOverCap does not treat as over cap)
+// can be 1920x1080 in the segments. Walk down to the next rung that fits.
+// The bandwidth-probe selector already does this walk; this confirm is the
+// tag path. MUT_PLUTO_TRUST_TAGS returns the tag pick and makes a real
+// oversize caps-reject terminal (no lower-variant fallback).
+template <typename ProbeFn>
+inline const PlutoVariant* confirmPlutoVariantUnderCap(const std::vector<PlutoVariant>& vars, const PlutoVariant* pick,
+                                                       std::string& reason, ProbeFn probeOne) {
+#ifdef MUT_PLUTO_TRUST_TAGS
+    (void)vars;
+    (void)reason;
+    (void)probeOne;
+    return pick;
+#else
+    if (!pick)
+        return nullptr;
+    std::vector<const PlutoVariant*> ladder;
+    ladder.reserve(vars.size());
+    for (const auto& v : vars) {
+        if (!variantCodecAllowed(v))
+            continue;
+        if (v.height > 0 && variantOverCap(v))
+            continue;
+        ladder.push_back(&v);
+    }
+    std::sort(ladder.begin(), ladder.end(), [](const PlutoVariant* a, const PlutoVariant* b) {
+        const int ha = a->height > 0 ? a->height : 100000;
+        const int hb = b->height > 0 ? b->height : 100000;
+        if (ha != hb)
+            return ha > hb;
+        return a->bandwidth > b->bandwidth;
+    });
+    bool atPick = false;
+    for (const PlutoVariant* v : ladder) {
+        if (!atPick) {
+            if (v->uri != pick->uri)
+                continue;
+            atPick = true;
+        }
+        if (plutoVariantExcluded(v->uri))
+            continue;
+        const PlutoStreamProbe pr = probeOne(*v);
+        if (pr.ok) {
+            PlutoVariant merged = *v;
+            plutoMergeProbe(merged, pr);
+            const PlutoStreamProbe capProbe{merged.width, merged.height, merged.fps, merged.codecs, true};
+            if (!variantCodecAllowed(merged) || variantOverCap(merged) ||
+                !plutoProbeFitsCaps(capProbe, merged.bandwidth))
+                continue;
+            return v;
+        }
+        // Probe miss: a positive under-cap tag may stand. A missing tag must not
+        // (it is how a 1080 rung skips variantOverCap). The remux caps-reject
+        // path re-resolves a lower rung if the tag was a lie.
+        if (v->height > 0 && !variantOverCap(*v))
+            return v;
+    }
+    reason = "UNSUPPORTED: Pluto no variant under cap";
+    return nullptr;
+#endif
+}
+
 inline std::string plutoPlaylistBlockReason(const std::string& body) {
     for (const auto& line : splitLines(body)) {
         if (line.rfind("#EXT-X-KEY", 0) != 0)
@@ -932,7 +1079,7 @@ inline bool plutoSpelunkrStopsLiveRemuxOnTeardown() {
 // MUT_PLUTO_OPEN_RETRY_ANY: retries non-transient failures (unsupported resolution, non-H.264...).
 inline constexpr int kPlutoOpenRetryMax = 2;
 
-// N2 (reviewer review of a310e5c3): a 4XX (expired jwt 401/403, unknown channel 404, 410, 429) is the stitcher's
+// N2 (FPGA Bug review of a310e5c3): a 4XX (expired jwt 401/403, unknown channel 404, 410, 429) is the stitcher's
 // answer, not a blip: retrying it only delays the terminal and re-sends a rejected jwt. A 4XX anywhere in the
 // reason is terminal even when the message also carries a transient needle ("... 4XX Client Error ... End of
 // file"). MUT_PLUTO_OPEN_RETRY_4XX: the 4XX guard is gone and "Server returned 4" counts as transient.
@@ -980,7 +1127,6 @@ inline bool plutoPrefetchFailTransient(const std::string& why) {
     // libav strings for the loopback relay / network: 5xx, reset, timeout, EOF/EIO before first data.
     // Unable to open resource / prefetch timeout: glass ff11ef73 zap02 crypto
     // stall sent=0 then PREFETCH TIMEOUT: NO NEXT (retry before 1-item fail).
-    // sample_rate=0: live remux demux reject (zap4 multi-zap stall) — retry open.
     // Glass a6bfe8e0 #668: remux first-spawn pace with audio_bytes=0 then ffmpeg SIGKILL
     // (rc=-9, err='') does not match crypto needles; treat zap-window cancel and relay
     // teardown as retriable like prefetch timeout.
@@ -989,7 +1135,10 @@ inline bool plutoPrefetchFailTransient(const std::string& why) {
                                      "Connection refused", "Input/output error", "End of file",
                                      "Unable to open resource", "prefetch timeout", "prefetch cancelled",
                                      "ffmpeg gone", "first-spawn pace", "unknown resolution",
-                                     "sample_rate=0"};
+                                     // AvSource gates (owenb_av_source.cpp). Prefetch read fails before
+                                     // cutover; tryPlutoLiveOpenRetry reopens. Not a stop().
+                                     // "av start long lead" is a reopen, not a present of the early key.
+                                     "av start no audio", "av start long lead"};
     for (const char* n : kNeedles)
         if (why.find(n) != std::string::npos)
             return true;
@@ -1011,6 +1160,28 @@ inline std::string plutoOpenRetryWhy(const std::string& prefetchFail, bool prefe
     return retryWhy;
 }
 
+// Real oversize from the remux (1920x1080 fps=30/1), not the 0x0 / unknown
+// remux-stall string. Not a same-URL plutoPrefetchFailTransient: the play loop
+// drops the stashed URL and re-resolves a lower rung. 0x0 stays the transient
+// retry. MUT_PLUTO_TRUST_TAGS makes this terminal NO NEXT.
+inline bool plutoRealOversizeResolution(const std::string& why) {
+    if (plutoPrefetchUnknownFormat(why))
+        return false;
+    int w = 0, h = 0, n = 0, d = 0;
+    if (std::sscanf(why.c_str(), "unsupported resolution %dx%d fps=%d/%d", &w, &h, &n, &d) == 4)
+        return w > 1280 || h > 720;
+    return why.find("unsupported resolution 1920x1080") != std::string::npos;
+}
+
+inline bool plutoOversizeVariantFallback(const std::string& why) {
+#ifdef MUT_PLUTO_TRUST_TAGS
+    (void)why;
+    return false;
+#else
+    return plutoRealOversizeResolution(why);
+#endif
+}
+
 inline bool plutoOpenRetryAllowed(const std::string& why, int retriesSoFar) {
 #ifdef MUT_PLUTO_OPEN_NO_RETRY
     (void)why;
@@ -1030,6 +1201,45 @@ inline int64_t plutoOpenRetryBackoffMs(int retryNo) {
     if (retryNo > 4)
         retryNo = 4;
     return 1000LL * retryNo;
+}
+
+// Stitcher URLs from a successful resolve, captured before np.url is replaced
+// with the loopback relay URL. A transient open retry reuses them instead of
+// resolveScheduledPlay / resolvePlutoChannelPlay. Empty = fall through to
+// today's re-resolve. MPX_PLUTO_RETRY_RERESOLVE=1 restores always-reresolve.
+// Unset / missing / any other value = reuse when the stash is filled.
+// MUT_PLUTO_RETRY_ALWAYS_RERESOLVE ignores the stash and the unset-env path.
+struct PlutoResolvedStash {
+    std::string videoUrl;
+    std::string audioUrl;
+    std::string sessionToken;
+    bool filled() const { return !videoUrl.empty(); }
+    void clear() {
+        videoUrl.clear();
+        audioUrl.clear();
+        sessionToken.clear();
+    }
+};
+
+inline bool plutoRetryReresolveEnv() {
+    const char* e = std::getenv("MPX_PLUTO_RETRY_RERESOLVE");
+    return e && e[0] == '1' && e[1] == '\0';
+}
+
+// True only when this retry is allowed to skip resolve and restart the relay
+// from stash. 4xx and other terminal reasons stay false (no retry at all).
+inline bool plutoOpenRetryReusesStash(const std::string& why, int retriesSoFar,
+                                       const PlutoResolvedStash& stash) {
+    if (!plutoOpenRetryAllowed(why, retriesSoFar))
+        return false;
+#ifdef MUT_PLUTO_RETRY_ALWAYS_RERESOLVE
+    (void)stash;
+    return false;
+#else
+    if (!stash.filled() || plutoRetryReresolveEnv())
+        return false;
+    return true;
+#endif
 }
 
 }  // namespace pluto_live

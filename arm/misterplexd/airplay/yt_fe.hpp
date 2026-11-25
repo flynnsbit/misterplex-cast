@@ -68,6 +68,10 @@ public:
     bool start(const YtConfig& cfg, Sink sink);
     void stop();
     bool running() const { return running_.load(); }
+    // Off: no SSDP answers, DIAL 404s every path, and the Lounge session is
+    // closed. On: SSDP/DIAL answer again and the Lounge re-binds with the same
+    // screen id and pairings. The listeners and threads stay up.
+    void setAdvertise(bool on);
     // True only after the Lounge bind succeeds. Ready must not advertise
     // YouTube, and a play must not start, until this is set.
     bool loungeConnected() const { return loungeUp_.load(); }
@@ -95,11 +99,13 @@ private:
     lounge::Out nowPlayingLocked() const;
     bool ensureToken(HttpsClient& c);
     void registerPairing(const std::string& code);
+    void loungeWithdraw();
 
     YtConfig cfg_;
     Sink sink_;
     std::string uuid_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> advertise_{true};
     std::atomic<bool> loungeUp_{false};
     // KI-2: 410 / gracefulReconnect rebind. YouTube stays on Ready and DIAL
     // until this time while the next bind is in flight.

@@ -38,9 +38,9 @@ MPX_LEGACY_CORE_PREFIX=999800cf
 # GCAST_XCODE is the old name for AIRPLAY_XCODE. An existing GCAST_XCODE= line
 # still works when AIRPLAY_XCODE is unset.
 # AIRPLAY_MIRROR=1 opts in to screen mirroring (SETUP type 110) and the FPGA
-# feed. Default off: unset does not advertise mirroring. A card that mirrors
-# sets 1. Env AIRPLAY_MIRROR overrides this line.
-# AIRPLAY_MIRROR=0
+# feed. Shipped conf turns this on (set AIRPLAY_MIRROR=0 to disable). Env
+# AIRPLAY_MIRROR overrides this line.
+AIRPLAY_MIRROR=1
 
 # --- PlexOB direct play -------------------------------------------------------
 # A new card turns the Tip A switches on (the set below, plus soft subtitles
@@ -155,9 +155,9 @@ AMBIENT=1
 # THEME_MUSIC=0
 
 # PLUTO_LIVE=1 tunes Back When Pluto channels via public Pluto stitcher HLS
-# (boot.pluto.tv + remux to MPEG-TS like YT_LIVE). Default off: Pluto channels
-# stay UNSUPPORTED as on backwhen.stream/tv. Env MPX_PLUTO_LIVE or PLUTO_LIVE wins.
-# PLUTO_LIVE=0
+# (boot.pluto.tv + remux to MPEG-TS like YT_LIVE). Shipped conf turns this on
+# (set PLUTO_LIVE=0 to disable). Env MPX_PLUTO_LIVE or PLUTO_LIVE wins.
+PLUTO_LIVE=1
 
 # ZAPAROO=1 plays a Plex movie or episode when a card text hits
 # GET or POST /misterplex/zaparoo?text=<card>. The card is a Zaparoo
@@ -201,7 +201,7 @@ WATCHED_BADGES=1
 # A stage card that must stay quiet sets this to 0.
 # Env MPX_CRT_LOOK or CRT_LOOK overrides this line.
 # Env MPX_CRT_LOOK_PRESET or CRT_LOOK_PRESET overrides the preset line.
-CRT_LOOK=1
+# CRT_LOOK=1
 # CRT_LOOK_PRESET=scanlines
 
 # IDLE_MENU_KEY=1 maps USB keyboard P (PS/2 set-2 make code 0x4D) to the

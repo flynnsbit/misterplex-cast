@@ -292,7 +292,7 @@ private:
         av_dict_set(&opts, "rw_timeout", std::to_string(misterplex::gcast::openRwTimeoutUs(key_.url)).c_str(), 0);
         // Open at the needed offset and keep the connection for later seeks (keyframe /
         // playback). Without this, ffmpeg's http protocol GETs at byte 0, then reconnects
-        // for the seek and again for the IDR (~0.9 s per setup on  lab device).
+        // for the seek and again for the IDR (~0.9 s per setup on lab).
         av_dict_set(&opts, "multiple_requests", "1", 0);
         const bool useOffset = allowOffset && pos_ > 0;
         if (useOffset)
@@ -514,8 +514,14 @@ private:
                                           .count();
                 // browse-lane #663 follow-up: a warm-resumed partial being served back counts as
                 // progress too -- cancelled()'s in-place zap-window restart treats it the
-                // same as a live read (see lastHeaderFetchProgressBytes()).
+                // same as a live read (see lastHeaderFetchProgressBytes()). Only record while
+                // recording_ is true (before finalizeHeader()): steady-state playback on an
+                // already-opened channel must never poison a concurrent tune's progress atomic.
+#ifdef MUT_HEADER_PROGRESS_AFTER_FINALIZE
                 if (touchGlobalCapHit_)
+#else
+                if (touchGlobalCapHit_ && recording_)
+#endif
                     lastHeaderFetchProgressBytes().fetch_add(served, std::memory_order_relaxed);
                 return served;
             }
@@ -527,7 +533,11 @@ private:
                 pos_ += r;
                 liveAt_ = pos_;
                 stats_.liveBytesRead += r;
+#ifdef MUT_HEADER_PROGRESS_AFTER_FINALIZE
                 if (touchGlobalCapHit_)
+#else
+                if (touchGlobalCapHit_ && recording_)
+#endif
                     lastHeaderFetchProgressBytes().fetch_add(r, std::memory_order_relaxed);
                 if (abortOnCapHit_ && recordCapHit_)
                     return AVERROR_EXIT;

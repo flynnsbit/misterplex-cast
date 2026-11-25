@@ -33,7 +33,7 @@ namespace misterplex {
 
 constexpr int64_t kSpiWindowSlowUs = 20000;
 
-// Lab diagnostics (reviewer's review of 323780bb): the SPI-window phase stamps, the
+// Lab diagnostics (FPGA Bug's review of 323780bb): the SPI-window phase stamps, the
 // park-timeout /proc capture and the window ring/counters run while Main is stopped, and
 // the extra log fields (present_lock tid/blocker, io_levels suffix, spi_window lines,
 // thread roles) change the daemon's log. All of it is on only while a lab overlay flag

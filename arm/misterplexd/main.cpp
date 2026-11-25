@@ -12,6 +12,7 @@
 #include "libmisterplex/pluto_live.hpp"
 #include "libmisterplex/owenb_idle_card_ctl.hpp"
 #include "libmisterplex/service_switch.hpp"
+#include "libmisterplex/cast_advertise_gate.hpp"
 #include "libmisterplex/spelunkr_guide_format.hpp"
 #include "libmisterplex/owenb_prefetch.hpp"
 #include "libmisterplex/live_disc_rebase.hpp"
@@ -157,7 +158,7 @@ void on_signal(int sig) {
 #ifdef MPX_HAVE_MAST_RELOAD
 // MAST-WEDGE: set once the guarded-reload launcher has started; main exits with
 // misterplex::mast::kReloadExitCode so the launcher's load finds no daemon. The hand-off time
-// lets the exit line report the teardown (reviewer 21:52: it must end well inside the
+// lets the exit line report the teardown (FPGA Bug 21:52: it must end well inside the
 // launcher's MR_EXIT_WAIT).
 std::atomic<bool> g_mastReload{false};
 std::atomic<int64_t> g_mastReloadAtMs{0};
@@ -1515,6 +1516,23 @@ int main(int argc, char** argv) {
         misterplex::gcast::yt_live::liveRelay().setFrameProbe([&player]() { return player.adFramePositionMs(); });
         misterplex::gcast::yt_live::liveRelay().setRespawnCallback(
             [&player] { player.rejoinLiveRelayAudio(); });
+        misterplex::gcast::yt_live::liveRelay().setAdReturnReopenCallback(
+            [&player] { return player.reopenLiveAfterAdBreak(); });
+        // Pluto ad skip polls the remux's own media playlists (relay poller thread; never logs the URL).
+        misterplex::gcast::yt_live::liveRelay().setPlaylistFetcher(
+            [](const std::string& url, const std::function<bool()>& cancelled, std::string& body) {
+                if (!misterplex::spelunkr::pluto_live::plutoFetchUrlAllowed(url))
+                    return false;
+                misterplex::TlsVerifiedRequest q;
+                q.url = url;
+                q.maxBody = 512u << 10;
+                q.timeoutSec = 4;
+                q.cancelled = cancelled;
+                q.headers = {{"User-Agent", misterplex::spelunkr::kArchiveUserAgent}};
+                const misterplex::TlsVerifiedResult r = misterplex::tlsVerifiedGet(q);
+                body = r.body;
+                return r.transportOk && r.status == 200 && !r.cancelled;
+            });
     }
     struct AdBreakRelayGuard {   // the callback holds `player`: detach before it is destroyed
         ~AdBreakRelayGuard() {
@@ -1522,6 +1540,8 @@ int main(int argc, char** argv) {
             misterplex::gcast::yt_live::liveRelay().setGapCallback(nullptr);
             misterplex::gcast::yt_live::liveRelay().setFrameProbe(nullptr);
             misterplex::gcast::yt_live::liveRelay().setRespawnCallback(nullptr);
+            misterplex::gcast::yt_live::liveRelay().setAdReturnReopenCallback(nullptr);
+            misterplex::gcast::yt_live::liveRelay().setPlaylistFetcher(nullptr);
         }
     } adBreakRelayGuard;
     const bool spelunkrOn = misterplex::envFlagWanted("SPELUNKR");
@@ -1534,9 +1554,9 @@ int main(int argc, char** argv) {
         const bool b = upsertConfKey(confPath, "OVERSCAN_BOTTOM", std::to_string(bottom));
         return l && r && t && b;
     });
-    // An INT between menu.rbf and PlexOB leaves CORENAME on Menu. Reload it
-    // before the idle loop, and again on the way out if this process is the
-    // one that got the signal mid-bounce.
+    // Start never loads a core (the user loads MiSTerPlex from the menu); it
+    // only clears a leftover menu-bounce marker. On the way out, a process
+    // that got an INT mid-bounce (menu.rbf loaded, PlexOB not yet) finishes it.
     player.recoverStrandedMenuCore(true);
     misterplex::mem_stat::setQueueProbe([&player] {
         misterplex::mem_stat::QueueDepths q;
@@ -1870,7 +1890,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "misterplexd: SUBTITLES=burn (PMS universal)\n");
     else if (subtitleMode == "ffmpeg")
         std::fprintf(stderr, "misterplexd: SUBTITLES=ffmpeg (local files, STREAM=0)\n");
-    // #328 (gwyden): initPresent() fails while the core gate is still closed at start (PlexOB
+    // #328 (reviewer): initPresent() fails while the core gate is still closed at start (PlexOB
     // answers CAPS later). The server catalog and the PlexUI / browse v2 controller do not need a
     // present path, so they are set up either way; only the paint/idle/poll workers wait for one.
     // Gating them on initPresent left browseTargets empty and browseV2_ false: the legacy library_
@@ -2090,9 +2110,7 @@ int main(int argc, char** argv) {
         player.setSpelunkrTv(true);
         // Core loads are manual-only (MPX_CORE_MANUAL_ONLY): the daemon must stay up
         // with the core unloaded. Each channel play re-runs prepareSpelunkrVideo().
-        // browse-lane #624 P2-1: core already loaded / loading during the 5 s wait must not show the landing before the lineup
-        if (!lastPlayedChannel.empty())
-            player.beginSpelunkrTune(0, misterplex::service::label(true), "");
+        // Cold boot always lands on the guide, so do not pre-arm startup tuning chrome.
         if (!player.prepareSpelunkrVideo())
             std::fprintf(stderr, "misterplexd: spelunkr: video core not ready at start; "
                                  "deferring video prep to first channel play\n");
@@ -2155,7 +2173,7 @@ int main(int argc, char** argv) {
                          "misterplexd: play-file content fps=%d/%d (match cap 30Hz)\n",
                          srcFpsN, srcFpsD);
         }
-        // A lab play-file plays its own file: never a transcode (reviewer 19:37 N1).
+        // A lab play-file plays its own file: never a transcode (FPGA Bug 19:37 N1).
         player.setSourceTranscoded(false);
         if ((!sourceAspect.valid && !player.fpgaH264Backend()) ||
             !player.setSourceAspect(sourceAspect)) {
@@ -2236,6 +2254,7 @@ int main(int argc, char** argv) {
     std::recursive_mutex tvMu;   // pad + companion HTTP; not held across HTTPS
     std::atomic<uint64_t> spelunkrEofGen{0};  // play-thread EOF handoff; main loop consumes
     std::atomic<uint64_t> spelunkrPlayGen{0};  // browse-lane N-4: tune gen known to play job
+    std::atomic<int> spelunkrPlayJobsInFlight{0};  // yields guideThr manifest fetches during active tune
     std::atomic<int64_t> spelunkrPlayJobMs{0};  // zapSteadyMs at playjob start, for first_picture t_ms
     std::atomic<uint64_t> spelunkrFirstPicLoggedGen{0};
     std::atomic<int> spelunkrPlayItemIndex{-1};  // browse-lane N-2: item index that is playing
@@ -2506,15 +2525,30 @@ int main(int argc, char** argv) {
         // Arm before lineup GET so pad Up/Down cannot open Plex browse (GH#411).
         player.setSpelunkrTv(true);
         playQ.start([&](misterplex::spelunkr::PlayRequest req, const std::function<bool()>& superseded) {
-#ifndef MUT_LIVE_RELAY_KILL_WHILE_READING
-            // Glass 4beb780b r1 zap02: the previous job's first line killed
-            // /yt-live.ts while the old session still read it. Premature resume
-            // + SourceError; this playjob never pictured and later ENTERs posted
-            // no playjob until a daemon restart. Stop the reader first.
-            player.stop();
-#endif
+            struct PlayJobInFlightGuard {
+                std::atomic<int>& count;
+                explicit PlayJobInFlightGuard(std::atomic<int>& c) : count(c) {
+                    count.fetch_add(1, std::memory_order_acq_rel);
+                }
+                ~PlayJobInFlightGuard() { count.fetch_sub(1, std::memory_order_release); }
+            } playJobInFlightGuard(spelunkrPlayJobsInFlight);
             stopSpelunkrPlutoLiveRemux();
             const uint64_t gen = req.generation;
+            // A job that fails, or whose generation is no longer current, drops its
+            // own chevron before play_started (gen-matched: a newer tune stays pending).
+            // A same-generation hand-off (skip / cached landing) keeps it; the next
+            // beginSpelunkrTune re-arms it.
+            bool jobFailed = false;
+            auto pendingGuard = misterplex::spelunkr::SpelunkrPendingGuard(
+                gen, [&player, &jobFailed, &tvMu, &tvSess](uint64_t g) {
+                    bool current = false;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(tvMu);
+                        current = tvSess && tvSess->tv.current(g);
+                    }
+                    if (jobFailed || !current)
+                        player.clearSpelunkrPending(g);
+                });
             auto tvCurrent = [&]() -> bool {
                 std::lock_guard<std::recursive_mutex> lock(tvMu);
                 return tvSess && tvSess->tv.current(gen);
@@ -2529,6 +2563,7 @@ int main(int argc, char** argv) {
                 return stage.tPrevMs;
             };
             auto fail = [&](const std::string& detail) {
+                jobFailed = true;
                 stopSpelunkrPlutoLiveRemux();
                 if (tJobSet)
                     stageMs("failed", true, detail.c_str());
@@ -2546,14 +2581,6 @@ int main(int argc, char** argv) {
                         // moves. Keep guide closed so pad up/down remain zaps.
                         if (tvSess && misterplex::live_disc::liveRemuxRecoversInputsAfterTerminalPrefetch()) {
                             tvSess->tv.bumpGeneration();
-                            // GATE-V2 r2: clear leftover picture / error OSD so later
-                            // zaps post a playjob. Glass 85629316 zap4: do not force
-                            // the guide open — ChannelUp/Down on guideOpen swallow
-                            // zaps. Keep #668 hook (product keeps guide closed).
-                            if (misterplex::live_disc::liveRemuxStrongTerminalRecover()) {
-                                player.clearSpelunkrPictureForRecover();
-                                player.showSpelunkrLanding();
-                            }
                             tvSess->guideOpen = misterplex::live_disc::liveRemuxTerminalFailOpensGuide();
                             if (tvSess->guideCursor < 0)
                                 tvSess->guideCursor = tvSess->tv.index();
@@ -2615,6 +2642,13 @@ int main(int argc, char** argv) {
             int deferredWarmItem = -1;
             std::atomic<bool> plutoLiveHlsBudget{false};
             int plutoOpenRetries = 0;  // N13: bounded Pluto first-open retries (see pluto_live.hpp)
+            // Stitcher URLs from the last successful resolve, taken before np.url
+            // becomes the loopback relay. A transient open retry reuses them.
+            misterplex::spelunkr::pluto_live::PlutoResolvedStash plutoStash;
+            bool plutoRetryReuse = false;
+            bool plutoOversizeFallbackUsed = false;
+            std::string plutoRetryWhy;
+            int plutoRetryCountAtDecision = 0;
             std::atomic<bool> prefetchReady{false};
             std::atomic<bool> finishCutoverAfterDeadline{false};
             std::atomic<int> currentItem{-1};
@@ -2674,8 +2708,10 @@ int main(int argc, char** argv) {
                         // an exhausted restart cap falls through to the existing deferred abort +
                         // persistPartial + warm-resume fallback below.
                         if (prefetchInFlight &&
-                            misterplex::spelunkr::lastHeaderFetchProgressBytes().load(
-                                std::memory_order_acquire) > 0 &&
+                            (misterplex::spelunkr::lastHeaderFetchProgressBytes().load(
+                                 std::memory_order_acquire) > 0 ||
+                             (plutoLiveHlsBudget.load(std::memory_order_relaxed) &&
+                              misterplex::spelunkr::consumeLiveRemuxSkipGopProgress())) &&
                             restartZapWindow()) {
                             zapRestartExtraMs->fetch_add(zapBudgetMs, std::memory_order_relaxed);
                             std::fprintf(stderr,
@@ -2728,8 +2764,12 @@ int main(int argc, char** argv) {
             const auto extendOnProgress = [&]() -> bool {
                 if (!prefetchInFlight)
                     return false;
-                if (misterplex::spelunkr::lastHeaderFetchProgressBytes().load(
-                        std::memory_order_acquire) <= 0)
+                const bool hasProgress =
+                    misterplex::spelunkr::lastHeaderFetchProgressBytes().load(
+                        std::memory_order_acquire) > 0 ||
+                    (plutoLiveHlsBudget.load(std::memory_order_relaxed) &&
+                     misterplex::spelunkr::consumeLiveRemuxSkipGopProgress());
+                if (!hasProgress)
                     return false;
                 if (!restartZapWindow())
                     return false;
@@ -2937,6 +2977,7 @@ int main(int argc, char** argv) {
                 }
                 return -1;
             };
+            misterplex::spelunkr::pluto_live::plutoClearRejectedVariants();
             neighborPrefetch.cancelAll();
             for (;;) {
                 ++attempt;
@@ -2964,6 +3005,41 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+                // pluto retry reuse skips resolveScheduledPlay when the stitcher
+                // URLs are already stashed. Kill switch and an empty stash fall
+                // through to today's resolve. No player.stop() here: the old
+                // picture stays until this prefetch succeeds.
+                const bool reuseStash =
+                    plutoRetryReuse &&
+                    misterplex::spelunkr::pluto_live::plutoOpenRetryReusesStash(
+                        plutoRetryWhy, plutoRetryCountAtDecision, plutoStash);
+                plutoRetryReuse = false;
+                if (reuseStash) {
+                    if (superseded() || !tvCurrent())
+                        return;
+                    misterplex::spelunkr::pluto_live::plutoRemuxSessionToken() = plutoStash.sessionToken;
+                    misterplex::gcast::yt_live::LiveSource reused;
+                    reused.ffmpeg = misterplex::gcast::yt_live::findLiveFfmpeg();
+                    reused.videoUrl = plutoStash.videoUrl;
+                    reused.httpsOnlyProto = true;
+                    reused.plutoHlsRemux = true;
+                    reused.audioUrl = plutoStash.audioUrl;
+                    reused.ffmpegHeaders = misterplex::spelunkr::pluto_live::plutoFfmpegRemuxHeaders(
+                        plutoStash.sessionToken);
+                    std::string liveErr;
+                    const std::string relay =
+                        misterplex::gcast::yt_live::liveRelay().start(reused, liveErr);
+                    if (relay.empty()) {
+                        std::fprintf(stderr, "misterplexd: spelunkr: pluto live remux failed: %s\n",
+                                     liveErr.c_str());
+                        fail("UNSUPPORTED: Pluto HLS remux");
+                        return;
+                    }
+                    spelunkrPlutoRemuxActive.store(true, std::memory_order_release);
+                    plutoLiveHlsBudget.store(true, std::memory_order_release);
+                    np.url = misterplex::gcast::yt_live::livePlayable(true, plutoStash.videoUrl, relay);
+                    std::fprintf(stderr, "misterplexd: spelunkr: pluto live HLS remux reuse\n");
+                } else {
                 const auto run = misterplex::spelunkr::playJobDeadRun(
                     tvMu, [&] { return !cancelled() && tvCurrent(); },
                     [&] {
@@ -2998,8 +3074,12 @@ int main(int argc, char** argv) {
                     src.httpsOnlyProto = true;
                     src.plutoHlsRemux = true;
                     src.audioUrl = run.resolved.audioUrl;  // #686: demuxed Pluto audio rendition ("" = muxed)
+                    // Stash the stitcher URLs before np.url becomes the relay URL.
+                    plutoStash.videoUrl = np.url;
+                    plutoStash.audioUrl = run.resolved.audioUrl;
                     const std::string& sess =
                         misterplex::spelunkr::pluto_live::plutoRemuxSessionToken();
+                    plutoStash.sessionToken = sess;
                     src.ffmpegHeaders = misterplex::spelunkr::pluto_live::plutoFfmpegRemuxHeaders(sess);
                     std::string liveErr;
                     const std::string relay = misterplex::gcast::yt_live::liveRelay().start(src, liveErr);
@@ -3013,6 +3093,9 @@ int main(int argc, char** argv) {
                     plutoLiveHlsBudget.store(true, std::memory_order_release);
                     np.url = misterplex::gcast::yt_live::livePlayable(true, run.resolved.url, relay);
                     std::fprintf(stderr, "misterplexd: spelunkr: pluto live HLS remux\n");
+                } else {
+                    plutoStash.clear();
+                }
                 }
             if (cancelled() || !tvCurrent())
                 return;
@@ -3031,8 +3114,10 @@ int main(int argc, char** argv) {
             // The same libav open probes format/aspect and retains its IDR.
             // No ring or display settings change while the old session plays.
             const bool plutoPrefetchItem = plutoLiveHlsBudget.load(std::memory_order_relaxed);
-            // v1.0.1 1063/1066: the Pluto remux open gets its own 8 s from here, not what the metadata
-            // resolve left of the job's 15 s window (see plutoRemuxOpenWindowStartMs).
+            // v1.0.1 1063/1066: the Pluto remux open gets its own cap from here
+            // (default 15 s; MPX_PLUTO_REMUX_OPEN_MS=8000 is today's 8 s), not what
+            // the metadata resolve left of the job's 15 s cancel window
+            // (see plutoRemuxOpenWindowStartMs). Metadata cancel stays 15 s.
             {
                 const int64_t ws = zapWindowStartMs.load();
                 const int64_t nowOpen = zapSteadyNowMs();
@@ -3042,10 +3127,8 @@ int main(int argc, char** argv) {
                     zapWindowStartMs.store(rearmed);
                     std::fprintf(stderr,
                                  "misterplexd: spelunkr: pluto remux open budget re-armed open_ms=%lld "
-                                 "window_left_was_ms=%lld window_used_ms=%lld attempt=%d gen=%llu\n",
-                                 static_cast<long long>(rearmed + misterplex::spelunkr::kSpelunkrPlutoZapBudgetMs -
-                                                        nowOpen),
-                                 static_cast<long long>(ws + misterplex::spelunkr::kSpelunkrPlutoZapBudgetMs - nowOpen),
+                                 "window_used_ms=%lld attempt=%d gen=%llu\n",
+                                 static_cast<long long>(misterplex::spelunkr::plutoRemuxOpenBudgetMs()),
                                  static_cast<long long>(nowOpen - ws), attempt,
                                  static_cast<unsigned long long>(gen));
                 }
@@ -3058,6 +3141,7 @@ int main(int argc, char** argv) {
             misterplex::spelunkr::clearHeaderRecordCapHit();
             // browse-lane #663 follow-up: likewise reset this attempt's progress signal and deadline
             // extension -- a prior attempt's in-place restarts must not leak into this one.
+            misterplex::spelunkr::clearLiveRemuxSkipGopProgress();
             misterplex::spelunkr::clearHeaderFetchProgress();
             zapRestartExtraMs->store(0, std::memory_order_relaxed);
             prefetchInFlight = true;
@@ -3078,6 +3162,10 @@ int main(int argc, char** argv) {
                 if (!misterplex::spelunkr::pluto_live::plutoOpenRetryAllowed(retryWhy, plutoOpenRetries) ||
                     !misterplex::live_disc::liveRemuxRetriesCryptoPrefetchStall())
                     return false;
+                plutoRetryWhy = retryWhy;
+                plutoRetryCountAtDecision = plutoOpenRetries;
+                plutoRetryReuse = misterplex::spelunkr::pluto_live::plutoOpenRetryReusesStash(
+                    plutoRetryWhy, plutoRetryCountAtDecision, plutoStash);
                 ++plutoOpenRetries;
                 const int64_t backoffMs =
                     misterplex::spelunkr::pluto_live::plutoOpenRetryBackoffMs(plutoOpenRetries);
@@ -3091,7 +3179,13 @@ int main(int argc, char** argv) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 if (superseded() || !tvCurrent())
                     return false;
-                restartZapWindow();
+                {
+                    int64_t ws = zapWindowStartMs.load();
+                    int wr = zapWindowRestarts.load();
+                    misterplex::spelunkr::rearmZapWindowForPlutoRetry(zapSteadyNowMs(), ws, wr);
+                    zapWindowStartMs.store(ws);
+                    zapWindowRestarts.store(wr);
+                }
                 timedOut = false;
                 deferredAdvanceTimeout = false;
                 return true;
@@ -3144,6 +3238,27 @@ int main(int argc, char** argv) {
                 if (tryPlutoLiveOpenRetry(false)) {
                     if (superseded() || !tvCurrent())
                         return;
+                    continue;
+                }
+                // Real oversize (1920x1080 fps=30/1) is not a same-URL retry and
+                // must not reuse the stashed 1080 URL. Re-resolve once so the
+                // tag confirm walks down to a lower rung. 0x0 stays the
+                // transient path above. Only-1080 still comes back DeadUnsupported.
+                if (!plutoOversizeFallbackUsed &&
+                    misterplex::spelunkr::pluto_live::plutoOversizeVariantFallback(prefetchFail)) {
+                    plutoOversizeFallbackUsed = true;
+                    misterplex::spelunkr::pluto_live::plutoNoteRejectedVariant(plutoStash.videoUrl);
+                    plutoStash.clear();
+                    plutoRetryReuse = false;
+                    misterplex::gcast::yt_live::liveRelay().stop();
+                    std::fprintf(stderr,
+                                 "misterplexd: spelunkr: caps reject oversize; re-resolve lower variant gen=%llu\n",
+                                 static_cast<unsigned long long>(gen));
+                    if (superseded() || !tvCurrent())
+                        return;
+                    restartZapWindow();
+                    timedOut = false;
+                    deferredAdvanceTimeout = false;
                     continue;
                 }
                 std::lock_guard<std::recursive_mutex> lock(tvMu);
@@ -3310,8 +3425,10 @@ int main(int argc, char** argv) {
                     spelunkrFirstPicture.arm(gen, zapSteadyMs(), misterplex::spelunkr::sharedSkipBudget(req));
             }
             stageMs(played ? "play_started" : "play_failed");
-            if (played)
+            if (played) {
+                pendingGuard.disarm();
                 return;
+            }
             std::fprintf(stderr, "misterplexd: SPELUNKR play failed title=%s\n", np.title.c_str());
             if (!takeSkip(skipDead(np), "play fail")) {
                 if (tvCurrent())
@@ -3491,6 +3608,10 @@ int main(int argc, char** argv) {
                 };
                 const int count = static_cast<int>(tvSess->lineup.channels.size());
                 for (int i = 0; i < count && !cancelled(); ++i) {
+                    while (spelunkrPlayJobsInFlight.load(std::memory_order_acquire) > 0 && !cancelled())
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    if (cancelled())
+                        break;
                     if (!ensureManifest(i, cancelled) && !cancelled())
                         std::fprintf(stderr, "misterplexd: spelunkr guide channel %d unavailable\n", i);
                     if (!cancelled())
@@ -4006,7 +4127,7 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> handoff(playHandoffMu);
             gen = player.r1BeginPlayRequest([&] { return ++playGen; });
         }
-        // R1 (reviewer 06:57 D3, 07:30 C1, 08:17 (2)): no PLXH en=1 from this PLAY request to the
+        // R1 (FPGA Bug 06:57 D3, 07:30 C1, 08:17 (2)): no PLXH en=1 from this PLAY request to the
         // session's BEGIN. This doPlay owns its generation's hold while it runs (no expiry) and on
         // every exit releases it if it started no session and was not replaced by a seek's replay,
         // else leaves it to the session's enter or to the replay (r1_plxh.hpp PlayRequestHold).
@@ -4942,23 +5063,51 @@ int main(int argc, char** argv) {
     std::atomic<uint64_t> apHandoffHeldGen{0};   // gen of a cast holding the Plex picture (paused) until its handoff
     std::atomic<bool> apMirrorHeldPlex{false};   // a mirror start paused a Plex play; the first AU stops it
     std::atomic<bool> ytLiveSession{false};     // lounge duration floor while a live remux is the play
-    // AirPlay: a repeat play of the stream whose open is in flight must not abort it (FoxOne, 10-14 s to the first
-    // byte, the phone re-sends /play every 2-5 s with a new signed URL). See gcast/open_coalesce.hpp.
+    // AirPlay: a repeat play of the stream whose open is in flight, or that is already playing, must not abort it
+    // (FoxOne, 10-14 s to the first byte, the phone re-sends /play every 2-5 s with a new signed URL, also after the
+    // picture). See gcast/open_coalesce.hpp.
     misterplex::gcast::OpenGuard apOpenGuard;
+    std::atomic<bool> apPlayHeldPlaying{false};   // the last castPlay held, or reopened at its playhead, the play on glass
     auto castPlay = [&](misterplex::gcast::Owner owner, const std::string& url, double startS,
                         const std::string& title, int64_t durHintMs, int64_t resumeMs,
                         bool isSeek = false) -> bool {
         using namespace misterplex::gcast;
+        apPlayHeldPlaying.store(false);
         apOpenGuard.stop().cancel();   // any play supersedes a Stop that is waiting for its replay
+        bool reopenHeld = false;
         if (owner == Owner::AirPlay && !isSeek) {
             const int64_t nowMs = OpenGuard::steadyNowMs();
-            if (apOpenGuard.coalescePlay(url, startS, gcastArbiter.owner() == Owner::AirPlay && player.playing(),
-                                         playGen.load(), nowMs)) {
-                std::fprintf(stderr, "misterplexd: AIRPLAY repeat play of the same stream: keeping the open in "
-                             "flight (gen %llu, %lld ms in)\n",
-                             static_cast<unsigned long long>(playGen.load()),
-                             static_cast<long long>(nowMs - apOpenGuard.beganMs()));
-                return true;
+            const OpenCoalesce held =
+                apOpenGuard.coalescePlay(url, startS, gcastArbiter.owner() == Owner::AirPlay && player.playing(),
+                                         playGen.load(), nowMs, static_cast<double>(player.positionMs()) / 1000.0);
+            if (held != kOpenNotCoalesced) {
+                // The held ffmpeg keeps reading through the helper, so a new signed URL reaches it only via /refresh.
+                HeldRefresh act = kHeldKeep;
+                const std::string refreshAt = apOpenGuard.takeNewSignature(url);
+                if (!refreshAt.empty()) {
+                    const std::string ans = misterplex::plexHttpGet(refreshAt + "/refresh?src=" + encodeComponent(url), 2,
+                                                                    misterplex::gcast::helperCurlHeaders());
+                    act = apOpenGuard.heldRefresh(ans, held, nowMs);
+                    if (refreshAnswerOk(ans))
+                        std::fprintf(stderr, "misterplexd: AIRPLAY held play: new signed URL passed to the helper\n");
+                    else
+                        std::fprintf(stderr, "misterplexd: AIRPLAY held play: the helper cannot live-refresh it (%s, "
+                                     "ttl %lld s): %s\n", refreshAnswerKind(ans),
+                                     static_cast<long long>(refreshAnswerTtlS(ans)),
+                                     act == kHeldReopen ? "reopening at the current position" : "keeping the current URL");
+                }
+                apPlayHeldPlaying.store(playKeepsSnapshot(held == kOpenCoalescedPlaying, act == kHeldReopen));
+                if (act == kHeldKeep) {
+                    std::fprintf(stderr, "misterplexd: AIRPLAY repeat play of the same stream: %s (gen %llu, %lld ms in)\n",
+                                 held == kOpenCoalescedPlaying ? "keeping the current play" : "keeping the open in flight",
+                                 static_cast<unsigned long long>(playGen.load()),
+                                 static_cast<long long>(nowMs - apOpenGuard.beganMs()));
+                    return true;
+                }
+                reopenHeld = true;
+                startS = static_cast<double>(player.positionMs()) / 1000.0;   // stream copy from here, not from 0
+                std::fprintf(stderr, "misterplexd: AIRPLAY held play reopened at %.1f s under the new URL (gen %llu)\n",
+                             startS, static_cast<unsigned long long>(playGen.load()));
             }
         }
         struct CastPendingExit {
@@ -4978,8 +5127,12 @@ int main(int argc, char** argv) {
         }
         castGen.store(gen);
         castPending.gen = gen;
-        if (owner == Owner::AirPlay && !isSeek)
-            apOpenGuard.beginOpen(url, startS, gen, OpenGuard::steadyNowMs());
+        if (owner == Owner::AirPlay && !isSeek) {
+            if (reopenHeld)
+                apOpenGuard.beginReopen(url, startS, gen, OpenGuard::steadyNowMs());
+            else
+                apOpenGuard.beginOpen(url, startS, gen, OpenGuard::steadyNowMs());
+        }
         // AirPlay/YT accept, before resolve. RAOP keeps the idle card (keepIdleUntilPicture).
         // A seek is a re-play of a picture already on glass.
         if (!isSeek && !raopCastUrl(url)) {
@@ -5112,6 +5265,8 @@ int main(int argc, char** argv) {
                              yt_dlp::searchedPaths().c_str());
         }
         CastPlan plan = planGcastPlay(route);
+        if (owner == Owner::AirPlay && !isSeek)
+            apOpenGuard.noteHelper(gen, plan.route == Route::Helper ? route.helper : std::string());
         yt_dlp::ResolveOptions yopt;
         bool ytLiveRemux = false;
         std::string ytExtractTitle;
@@ -5804,7 +5959,7 @@ int main(int argc, char** argv) {
         const uint64_t generation = activePlayGen.load();
         if (generation != playGen.load())
             return;
-        if (gcastOn && generation == castGen.load() && gcastArbiter.dispatchProgress(st, t, d))
+        if (gcastOn && generation == castGen.load() && gcastArbiter.dispatchProgress(st, t, d, generation))
             return;   // GCAST: a cast owns this play; never Plex timeline / companion state
         if (st == "ended") {
             if (spelunkrOn) {
@@ -5866,7 +6021,7 @@ int main(int argc, char** argv) {
     comp.setPlayQueued([&]() {
         if (gcastOn)
             gcastArbiter.claim(misterplex::gcast::Owner::Plex);   // last caster wins (Plex preempts a cast)
-        // R1 C1 (reviewer 07:30): the new generation and its PLXH en=1 hold in one step, before
+        // R1 C1 (FPGA Bug 07:30): the new generation and its PLXH en=1 hold in one step, before
         // the resolve; a release for an older generation can no longer land between them.
         const uint64_t gen = player.r1BeginPlayRequest([&] { return ++playGen; });
         player.armPlayPendingCue(gen, misterplex::gcast_osd::pendingLoadingLine("Plex"));   // playMedia queued: chevron before resolve
@@ -5896,6 +6051,25 @@ int main(int argc, char** argv) {
         pmsTimeline.updateToken(tok);
     });
 
+    // Cast targets are advertised only while a MiSTerPlex core is loaded (cast_advertise_gate.hpp). GDM stays
+    // quiet until the watcher's first look, below, after the frontends are constructed. A cast never loads a
+    // core: castAdmit refuses one that arrives with no MiSTerPlex core up. An in-play switch this daemon
+    // owns (bounce marker, reload counter, mode-switch lock) still passes through the Menu core, so it is
+    // admitted the same way the advertise hold keeps the targets up.
+    const misterplex::CastAdvertiseConfig castAdvertiseCfg = misterplex::castAdvertiseConfigFromEnv();
+    std::fprintf(stderr, "misterplexd: %s\n", misterplex::castAdvertiseConfigLine(castAdvertiseCfg).c_str());
+    comp.setAdvertise(!castAdvertiseCfg.enabled);
+    const auto castAdmit = [](const char* kind) {
+        misterplex::CastAdmitIo io;
+        io.coreName = misterplex::readCoreNameFile();
+        io.gateOpen = misterplex::CoreGate::process().owenbOpen() || misterplex::CoreGate::process().open();
+        io.ownSwitchInFlight = misterplex::ownCoreSwitchInFlight(misterplex::kMenuBounceMarkerPath,
+                                                                  misterplex::service::modeSwitchLockPath());
+        io.log = [](const std::string& line) { std::fprintf(stderr, "misterplexd: %s\n", line.c_str()); };
+        return misterplex::castAdmitted(kind, io);
+    };
+    comp.setCastAdmit([castAdmit] { return castAdmit("plex playMedia"); });
+
     // fr-glass-1032-1025 F1: a playMedia token is the NEW cast's. It feeds lastToken (the next play), never the
     // still-active session's reporter, or the old session's supersede stop/timeline go out with the new
     // server's token and the old server answers 401.
@@ -5912,6 +6086,8 @@ int main(int argc, char** argv) {
         comp.setPlexUiNavEnabled(true);
         comp.setPlexUiNav([&](const std::string& op) {
             if (spelunkrOn && tvSess) {
+                if ((op == "up" || op == "down" || op == "select") && !castAdmit("spelunkr companion tune"))
+                    return;
                 if (op == "up") {
                     player.handlePlaybackInput(misterplex::PlaybackCommand::ChannelUp);
                     return;
@@ -6160,7 +6336,7 @@ int main(int argc, char** argv) {
     misterplex::wirePlaybackControls(comp, player, pmsTimeline, transport, activePlayGen,
         playHandoffMu, seekMu, seekStart, [&](uint64_t stopGen) {
             // R1 C1: the STOP ends every PLAY request before its own generation; a PLAY (and a seek)
-            // after the STOP keeps its hold (reviewer 08:17 (1)).
+            // after the STOP keeps its hold (FPGA Bug 08:17 (1)).
             player.r1PlayRequestsEndedBefore(stopGen);
             // SPS-gate L3 b4: a USER stop clears the on-screen gate error (the player's own teardown never does).
             player.clearGateError("user stop", true);
@@ -6179,7 +6355,7 @@ int main(int argc, char** argv) {
         comp.setSkipWhenStopped(true);
     comp.setSkipNext([&]() {
         if (spelunkrOn) {
-            if (tvSess)
+            if (tvSess && castAdmit("spelunkr companion tune"))
                 player.handlePlaybackInput(misterplex::PlaybackCommand::ChannelUp);
             return;  // GH#411: never Plex play-queue skipNext in TV mode
         }
@@ -6201,7 +6377,7 @@ int main(int argc, char** argv) {
     // Companion supplies the accepted pre-restart position and command identity.
     comp.setSkipPrevious([&](const misterplex::TransportRequest& request) {
         if (spelunkrOn) {
-            if (tvSess)
+            if (tvSess && castAdmit("spelunkr companion tune"))
                 player.handlePlaybackInput(misterplex::PlaybackCommand::ChannelDown);
             return;  // GH#411: never Plex play-queue skipPrevious in TV mode
         }
@@ -6376,6 +6552,25 @@ int main(int argc, char** argv) {
     // GCAST: arbiter hooks + AirPlay receiver (GAIRPLAY=1). Started before the main loop.
     misterplex::gcast::AirplayFrontend airplayFe;
     misterplex::gcast::YtFrontend ytFe;
+    // Declared after the frontends: its thread is joined before they are destroyed. start() applies the
+    // first look before airplayFe.start() / ytFe.start() can register or bind anything.
+    misterplex::CastAdvertiseWatcher castAdvertise(
+        castAdvertiseCfg,
+        [] {
+            misterplex::CastAdvertiseSample s;
+            s.coreName = misterplex::readCoreNameFile();
+            s.gateOpen = misterplex::CoreGate::process().owenbOpen() || misterplex::CoreGate::process().open();
+            s.ownSwitchInFlight = misterplex::ownCoreSwitchInFlight(misterplex::kMenuBounceMarkerPath,
+                                                                    misterplex::service::modeSwitchLockPath());
+            return s;
+        },
+        [&comp, &airplayFe, &ytFe](bool on) {
+            comp.setAdvertise(on);
+            airplayFe.setAdvertise(on);
+            ytFe.setAdvertise(on);
+        },
+        [](const std::string& line) { std::fprintf(stderr, "misterplexd: %s\n", line.c_str()); });
+    castAdvertise.start();
     if (gcastOn) {
         using misterplex::gcast::Owner;
         gcastArbiter.setRetire(Owner::Plex, [&](Owner by) {
@@ -6388,12 +6583,14 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "misterplexd: GCAST %s preempts AirPlay\n", misterplex::gcast::ownerName(by));
             airplayFe.snapshot().ended();
         });
-        gcastArbiter.setProgress(Owner::AirPlay, [&](const std::string& st, int64_t t, int64_t d) {
+        gcastArbiter.setProgress(Owner::AirPlay, [&](const std::string& st, int64_t t, int64_t d, uint64_t gen) {
             if (st == "stopped" && player.reopenPending())   // bounded reopen restarts the same cast
                 return;
             airplayFe.snapshot().progress(st, t, d);
-            if (st == "playing" || st == "ended" || st == "stopped")
-                apOpenGuard.settle();   // the open is no longer in flight
+            if (st == "playing")
+                apOpenGuard.markPlaying(gen);   // the open is a picture: a repeat /play of it now holds the play
+            else if (st == "ended" || st == "stopped")
+                apOpenGuard.settle();
             if (st == "ended" || st == "stopped")
                 gcastArbiter.release(Owner::AirPlay, castToken.load());
         });
@@ -6403,7 +6600,7 @@ int main(int argc, char** argv) {
             misterplex::gcast::yt_live::liveRelay().stop();
             ytFe.ended(false);
         });
-        gcastArbiter.setProgress(Owner::YouTube, [&](const std::string& st, int64_t t, int64_t d) {
+        gcastArbiter.setProgress(Owner::YouTube, [&](const std::string& st, int64_t t, int64_t d, uint64_t) {
             const int64_t loungeDur = misterplex::gcast::yt_live::liveLoungeDurationMs(ytLiveSession.load(), d);
             if (st == "stopped" && player.reopenPending()) {   // bounded reopen restarts the same cast
                 ytFe.report("buffering", t, loungeDur);
@@ -6454,11 +6651,19 @@ int main(int argc, char** argv) {
             };
             apCfg.onMirrorPcm = [&](const uint8_t* p, size_t n) { return player.pushAirplayMirrorPcm(p, n); };
         }
+        apCfg.castAdmit = castAdmit;
         gcastApUp = airplayFe.start(apCfg, [&](const misterplex::gcast::ApEvent& e) {
             switch (e.type) {
             case ApEventType::Play:
+                // RAOP audio reaches here without /play's check.
+                if (!castAdmit("airplay play")) {
+                    airplayFe.snapshot().ended();
+                    break;
+                }
                 if (!castPlay(Owner::AirPlay, e.url, e.value, misterplex::gcast::titleFromUrl(e.url, "AirPlay"), 0, -1))
                     airplayFe.snapshot().ended();
+                else if (apPlayHeldPlaying.load())
+                    airplayFe.snapshot().undoLoading();   // held or reopened: /playback-info keeps answering the play
                 break;
             case ApEventType::Scrub:
                 if (gcastArbiter.owner() == Owner::AirPlay && e.value >= 0)
@@ -6497,6 +6702,10 @@ int main(int argc, char** argv) {
                 airplayFe.snapshot().ended();
                 break;
             case ApEventType::MirrorStart: {
+                if (!castAdmit("airplay mirror")) {
+                    airplayFe.snapshot().ended();
+                    break;
+                }
                 const uint64_t tok = gcastArbiter.claim(Owner::AirPlay);
                 castToken.store(tok);
                 if (misterplex::gcast::mirrorStartAction(player.playing() && !player.airplayMirrorActive()) ==
@@ -6543,6 +6752,10 @@ int main(int argc, char** argv) {
             switch (c.kind) {
             case YtCmd::Play:
             case YtCmd::Seek:   // a re-play at the new start (yt.ts / ladder are not demux-seekable)
+                if (!castAdmit("youtube play")) {
+                    ytFe.ended(false);
+                    break;
+                }
                 // Gate 8: DNS may not be up at boot. Do not start a session until
                 // Lounge has connected; the connect loop keeps retrying.
                 if (!ytFe.loungeConnected()) {
@@ -6790,6 +7003,8 @@ int main(int argc, char** argv) {
             return false;
         }
         ytWarm.stop(); // The service-switch script must not overlap a resident resolver.
+        auto childEnvStorage = misterplex::service::buildServiceSwitchChildEnv(environ);
+        auto childEnvPtrs = misterplex::service::envPointers(childEnvStorage);
         const pid_t child = ::fork();
         if (child == 0) {
             ::setsid();
@@ -6797,8 +7012,9 @@ int main(int argc, char** argv) {
             ::dup2(logFd, STDERR_FILENO);
             for (int fd = 3; fd < maxFd; ++fd)
                 ::close(fd);
-            ::execl("/bin/sh", "sh", "/media/fat/misterplex/bin/misterplex_mode.sh",
-                    target ? "--osd-spelunkr" : "--osd-plex", static_cast<char*>(nullptr));
+            ::execle("/bin/sh", "sh", "/media/fat/misterplex/bin/misterplex_mode.sh",
+                     target ? "--osd-spelunkr" : "--osd-plex", static_cast<char*>(nullptr),
+                     childEnvPtrs.data());
             ::_exit(127);
         }
         ::close(logFd);
@@ -6882,13 +7098,12 @@ int main(int argc, char** argv) {
                   // Defer the overlay publish to the existing open-edge path below.
                   std::fprintf(stderr, "misterplexd: spelunkr: closed leftover guide on core reopen\n");
               }
-              // browse-lane #623 frame 153: compute the resume FIRST; land only when it is empty.
-              // Cold boot: preferCurrent=false so startup selectIndex(primetime) cannot
-              // force CH 8 over SPELUNKR_LAST_CHANNEL / logo landing (browse-lane P1-1).
+              // Cold boot (!preferCurrent) always lands on the guide even when
+              // SPELUNKR_LAST_CHANNEL is set. In-session core reopens (preferCurrent=true)
+              // keep resuming the current/last channel. SPELUNKR_LAST_CHANNEL is still saved.
               const bool preferCurrent = tvHadCoreOpenOnce;
-              const auto resume = preferCurrent
-                  ? misterplex::spelunkr::resumeCurrentOrLast(*tvSess, lastPlayedChannel, true)
-                  : misterplex::spelunkr::resumeLastChannel(*tvSess, lastPlayedChannel);
+              const auto resume = misterplex::spelunkr::resumeCurrentOrLast(
+                  *tvSess, lastPlayedChannel, preferCurrent);
               tvResumeGeneration = resume.generation;
               if (resume.generation != 0) {
                   // P3-2: a core reopen during defer must not also post from the poll.
@@ -6969,7 +7184,9 @@ int main(int argc, char** argv) {
                 }
                 auto recovery = spelunkrFirstPicture.poll(
                     *tvSess, zapSteadyMs(), open && !tvStopping && !g_stop.load() && player.playing(),
-                    player.owenbDecodedPicture(), spelunkrPlayItemIndex.load(std::memory_order_acquire));
+                    player.owenbDecodedPicture(), spelunkrPlayItemIndex.load(std::memory_order_acquire),
+                    misterplex::pluto_adskip::adSkipEnabled() &&
+                        misterplex::gcast::yt_live::liveRelay().adHoldActive());
                 if (recovery.generation != 0) {
                     spelunkrPlayIdent.applyTo(recovery);
                     const auto& channel = tvSess->lineup.channels[static_cast<size_t>(recovery.idx)];
@@ -7299,6 +7516,7 @@ int main(int argc, char** argv) {
     // 360-field timeout shows Not running from the last beat.
     if (hbWritten && player.statusBlockActive())
         player.writeStatusHeartbeat(hb::stopValue(hbLast));
+    castAdvertise.stop();
     airplayFe.stop();
     ytFe.stop();
     neighborPrefetch.waitIdle(3000);

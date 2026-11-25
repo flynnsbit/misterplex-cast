@@ -1,4 +1,5 @@
 #include "libmisterplex/browse_shell_paint.hpp"
+#include "libmisterplex/plexui/plexui_logo.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -192,6 +193,16 @@ PaintText ellipsize(const plexui::FontSet& font, std::string_view s, int size, b
     return out;
 }
 
+// Row text that must stop before a right-hand column (Servers status, Libraries count).
+PaintText rowFit(const plexui::FontSet& font, std::string_view s, int size, int maxW) {
+#ifdef MUT_BROWSE_ROW_NO_ELLIPSIZE
+    (void)font; (void)size; (void)maxW;
+    return PaintText(s);
+#else
+    return ellipsize(font, s, size, false, maxW);
+#endif
+}
+
 void compositeText(std::uint8_t* rgb, int w, int) {
     for (int y = clip.y0; y < clip.y1; ++y) {
         const std::uint8_t* src = g_rgba.px.data() + static_cast<std::size_t>(y) * w * 4u;
@@ -218,14 +229,30 @@ int contentTop(const BrowseShellLayout& L) { return L.headerH + 4; }
 
 void drawHeader(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, const BrowseShellLayout& L,
                 std::string_view title, std::string_view right) {
-    if (clip.y0 > L.headerH + L.fontLg)
+    if (clip.y0 > L.headerH + std::max(L.fontLg, L.logoPx))
         return;
+    const int hy = std::max(4, (L.headerH - L.fontLg) / 2);
+    int titleX = L.margin;
+#if !defined(MUT_BROWSE_SHELL_NO_LOGO)
+    if (L.logoPx > 0) {
+        const int logoY = std::max(2, (L.headerH - L.logoPx) / 2);
+        const auto logo = plexui::placePlexLogo(font, L.margin, logoY, static_cast<float>(L.logoPx),
+                                                L.logoMarkW, L.logoMarkHalfH, L.logoMarkGap,
+                                                logoY + L.logoPx / 2);
+        constexpr std::uint8_t LOGO[3] = {255, 255, 255};
+        text(font, logo.textX, logo.textY, "MiSTerPlex", L.logoPx, true, LOGO);
+        plexui::drawPlexLogoMarkRgb(rgb, w, h, logo, plexui::kPlexLogoAccentR, plexui::kPlexLogoAccentG,
+                                    plexui::kPlexLogoAccentB, 230, clip.x0, clip.y0, clip.x1, clip.y1);
+        titleX = logo.right + L.margin;
+    }
+#endif
     const int rightW = right.empty() ? 0 : textW(font, right, L.fontSm, false) + L.margin;
-    text(font, L.margin, L.margin / 2 + 2,
-         ellipsize(font, title, L.fontLg, true, w - 2 * L.margin - rightW), L.fontLg, true, TEXT);
+    const int titleMaxW = std::max(0, w - titleX - L.margin - rightW);
+    text(font, titleX, hy,
+         ellipsize(font, title, L.fontLg, true, titleMaxW), L.fontLg, true, TEXT);
     if (!right.empty()) {
         const int tw = textW(font, right, L.fontSm, false);
-        text(font, w - L.margin - tw, L.margin / 2 + 4, right, L.fontSm, false, DIM);
+        text(font, w - L.margin - tw, hy + std::max(0, (L.fontLg - L.fontSm) / 2), right, L.fontSm, false, DIM);
     }
     hline(rgb, w, h, L.margin, w - L.margin, L.headerH, RULE);
 }
@@ -310,17 +337,17 @@ void paintServers(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, 
              L.fontMd, false, TEXT);
         const auto* stc = s.status == "OK" ? OKC : (s.status == "—" ? ERRORC : DIM);
         const int sw = textW(font, s.status, L.fontSm, false);
-        text(font, w - L.margin - sw - 4, y + 4, s.status, L.fontSm, false, stc);
+        const int statusX = w - L.margin - sw - 4;
+        text(font, statusX, y + 4, s.status, L.fontSm, false, stc);
         PaintText mid(s.locality);
         if (!L.compact) {
             mid += "  ";
             mid += s.host;
         }
-        if (L.compact) {
-            text(font, L.margin + nameW + 12, y + 4, mid, L.fontSm, false, DIM);
-        } else {
-            text(font, L.margin + rw / 2, y + 4, mid, L.fontSm, false, DIM);
-        }
+        const int midX = L.compact ? L.margin + nameW + 12 : L.margin + rw / 2;
+        // Long plex.direct hosts: ellipsize before the status column, never clip.
+        text(font, midX, y + 4, rowFit(font, mid, L.fontSm, std::max(0, statusX - 12 - midX)),
+             L.fontSm, false, DIM);
     }
     drawFooter(rgb, w, h, font, L,
                fallback(m.footer, L.compact ? "PgUp/Dn  A select  B back" :
@@ -342,14 +369,16 @@ void paintLibraries(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font
             focusRow(rgb, w, h, L.margin, y, rw, L.rowH);
         PaintText label(lib.type == "show" ? "TV  " : "MOV  ");
         label += lib.title;
-        text(font, L.margin + 8, y + 3, label, L.fontMd, false, TEXT);
         PaintText right(lib.type);
         if (lib.count > 0) {
             right = number(lib.count);
             right += " titles";
         }
         const int rwgt = textW(font, right, L.fontSm, false);
-        text(font, w - L.margin - rwgt - 4, y + 4, right, L.fontSm, false, DIM);
+        const int rightX = w - L.margin - rwgt - 4;
+        text(font, L.margin + 8, y + 3,
+             rowFit(font, label, L.fontMd, std::max(0, rightX - 12 - (L.margin + 8))), L.fontMd, false, TEXT);
+        text(font, rightX, y + 4, right, L.fontSm, false, DIM);
     }
     drawFooter(rgb, w, h, font, L, fallback(m.footer, L.compact ? "PgUp/Dn  A open  B servers" :
                                                               "PgUp/PgDn · A open · B servers"));
@@ -596,9 +625,10 @@ void paintSearch(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, c
                 strokeRect(rgb, w, h, cx, cy, cx + cell, cy + cell, RULE, 1);
             }
             const auto* tc = on ? BG_BOT : TEXT;
-            const int tw = textW(font, s.keys[static_cast<std::size_t>(i)].label, std::max(8, L.fontSm - 1), on);
-            text(font, cx + (cell - tw) / 2, cy + 2, s.keys[static_cast<std::size_t>(i)].label,
-                 std::max(8, L.fontSm - 1), on, tc);
+            const int kfs = std::max(8, L.fontSm - 1);
+            const int tw = textW(font, s.keys[static_cast<std::size_t>(i)].label, kfs, on);
+            text(font, cx + (cell - tw) / 2, cy + std::max(1, (cell - kfs) / 2),
+                 s.keys[static_cast<std::size_t>(i)].label, kfs, on, tc);
         }
     }
     const int rw = w - 2 * L.margin;

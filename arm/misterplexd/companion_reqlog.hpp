@@ -1,4 +1,4 @@
-// Companion HTTP request latency log (reviewer 03:24, after a D52 L3 8 s /player/timeline/poll
+// Companion HTTP request latency log (FPGA Bug 03:24, after a D52 L3 8 s /player/timeline/poll
 // timeout; reviewer 03:25). The companion HTTP server is one thread: a slow header read or a slow
 // handler holds every later request, including Plex Web's polls, in the accept queue. One line
 // per request names it:

@@ -1,7 +1,7 @@
 #pragma once
 
 // Pure helpers for neighbour-header prefetch: cache-key identity with the
-// on-path tune, skip policy so a large moov cannot OOM  lab device, and the
+// on-path tune, skip policy so a large moov cannot OOM lab, and the
 // SPELUNKR_NEIGHBOR_PREFETCH flag (defaults on; 0/off/false/no disables).
 
 #include "spelunkr/archive_resolve.hpp"

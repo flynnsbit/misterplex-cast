@@ -6,6 +6,9 @@
 // - PlaybackSnapshot: what GET /playback-info answers, fed by the arbiter's progress sink.
 //   After an end (natural EOF, Plex preemption, local stop) the next poll answers duration -1
 //   exactly once, which makes libairplay drop the sender session (RESET_TYPE_HLS_SHUTDOWN).
+//   A re-sent /play that castPlay holds (the stream already on glass) undoes its loading(): the poll keeps
+//   answering the play, not readyToPlay=0 at position 0. So does a held play castPlay reopens at its playhead
+//   under the re-send's URL, until the reopen's first progress (playKeepsSnapshot).
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -74,10 +77,31 @@ public:
     enum class State : uint8_t { Idle, Loading, Playing, Paused, Ended };
     void loading(double startS) {
         std::lock_guard<std::mutex> lk(mu_);
+#ifndef MUT_AP_LOADING_NO_SAVE
+#ifndef MUT_AP_LOADING_RESAVE
+        if (state_ != State::Loading)   // a second /play before the first one's undo keeps the play it replaced
+#endif
+            saved_ = Saved{state_, pos_, dur_, endReported_};
+#endif
         state_ = State::Loading;
         pos_ = startS;
         dur_ = 0;
         endReported_ = false;
+    }
+    // The /play behind the last loading() was held (the play on glass goes on): answer that play again. A
+    // progress or end that landed since is newer and stays.
+    void undoLoading() {
+#ifndef MUT_AP_UNDO_NOOP
+        std::lock_guard<std::mutex> lk(mu_);
+#ifndef MUT_AP_UNDO_ANY_STATE
+        if (state_ != State::Loading)
+            return;
+#endif
+        state_ = saved_.state;
+        pos_ = saved_.pos;
+        dur_ = saved_.dur;
+        endReported_ = saved_.endReported;
+#endif
     }
     // MediaPlayer progress ("buffering"/"playing"/"paused"/"stopped"/"ended", ms)
     void progress(const std::string& st, int64_t tMs, int64_t dMs) {
@@ -131,11 +155,26 @@ public:
     }
 
 private:
+    struct Saved {
+        State state = State::Idle;
+        double pos = 0, dur = 0;
+        bool endReported = false;
+    };
     mutable std::mutex mu_;
     State state_ = State::Idle;
     double pos_ = 0, dur_ = 0;
     bool endReported_ = false;
+    Saved saved_;   // what loading() replaced
 };
+
+// castPlay's /play goes on as the play on glass: it held a re-send while playing, or reopened that held play at its
+// playhead. Then the Play event undoes the /play's loading() (a reopen otherwise reads position 0, ready 0).
+inline bool playKeepsSnapshot(bool heldPlaying, bool reopenedAtPlayhead) {
+#ifdef MUT_AP_REOPEN_NO_UNDO
+    reopenedAtPlayhead = false;
+#endif
+    return heldPlaying || reopenedAtPlayhead;
+}
 
 }  // namespace airplay
 }  // namespace misterplex

@@ -6,7 +6,7 @@
 // the decoder. The WAN decision always pins videoCodec/audioCodec/videoProfile/videoLevel, the
 // resolver never takes the source Part on a remote server (HEVC refused; out-of-spec H.264 gave
 // black screen + audio only, #207), and a failed remote decision errors instead of "trying Part".
-// A remote H.264 that already fits the OwenB core still direct-plays (JOSE-DIRECT-1030).
+// A remote H.264 that already fits the OwenB core still direct-plays (reviewer-DIRECT-1030).
 // Off (0): tip behavior. LAN plays are never changed.
 #include <cctype>
 #include <atomic>
@@ -61,7 +61,7 @@ inline bool forceRemotePathEnabled() {
 // MPX_FORCE_REMOTE_RETRY=1 (env only, default OFF; glass/test aid, never set in a shipped conf).
 // Makes ONE remote PlexOB transcode request count as failed: ensureUniversalDecision reports a decision mismatch
 // ("forced remote retry ...") so the daemon's real lowered-retry path runs (main.cpp: one lowerPmsLadder retry) and
-// remoteObRung steps down to 640x480 at <= 2000k. Scope (reviewer review of a335aebd, N1/N2/N4):
+// remoteObRung steps down to 640x480 at <= 2000k. Scope (FPGA Bug review of a335aebd, N1/N2/N4):
 //  * only the HD first request: HDMI Native + /library key + remote + OwenB (tlsForcedRetryHdRung, set by
 //    resolvePlayTarget from remoteObRung(...).hd). Analog/CRT output, Live TV and every other key are never forced;
 //  * only ONCE PER DAEMON RUN: the first qualifying request claims the force (claimForcedRetry); a second play, a seek,
@@ -485,7 +485,7 @@ inline int remoteFpgaKbps(int cur) {
     return (cur > 0 && cur < kRemoteFpgaMaxKbps) ? cur : kRemoteFpgaMaxKbps;
 }
 
-// #276: any remote OwenB play (flag off too) asks 640x480 at <= 4000k so jose
+// #276: any remote OwenB play (flag off too) asks 640x480 at <= 4000k so reviewer
 // 720p/6.5M does not abort. REMOTE_H264_TRANSCODE=1 still uses 2000k via F7.
 constexpr int kRemoteOwenbMaxKbps = 4000;
 inline void applyRemoteOwenbCap(std::string& videoResolution, int& maxVideoBitrateKbps, bool owenb,
@@ -557,6 +557,39 @@ inline RemoteObRung remoteObRung(bool flagOn, bool nativeHd, bool lowered, bool 
         applyRemoteOwenbCap(r.res, r.kbps, true, true);
     }
     return r;
+}
+
+// HDMI Native 720p request floor: PMS maps maxVideoBitrate to a quality tier before it fits the box, and its
+// 1.5 Mbps tier is the 720x480 box, so a 1280x720 request at the OB per-server memory floor (1500k) comes back
+// 720x405 for a 16:9 title. 2000k is PMS's lowest 1280x720 tier.
+// MPX_NATIVE_720P_MIN_KBPS: unset/empty/unparsable -> 2000, <= 0 -> off, else that floor.
+// Mutant: MUT_PLEX_NATIVE_REQ_SD (returns kbps unchanged).
+constexpr int kNativeHd720pMinKbps = 2000;
+inline int nativeHd720pMinKbpsFromEnv() {
+    const char* e = std::getenv("MPX_NATIVE_720P_MIN_KBPS");
+    if (!e || !e[0])
+        return kNativeHd720pMinKbps;
+    char* end = nullptr;
+    const long v = std::strtol(e, &end, 10);
+    if (end == e || *end != 0)
+        return kNativeHd720pMinKbps;
+    if (v <= 0)
+        return 0;
+    return v > 1000000 ? 1000000 : static_cast<int>(v);
+}
+// kbps raised to floorKbps for an OwenB 1280x720 request on HDMI Native below the floor; otherwise unchanged
+// (CRT/VGA/interlaced or unknown output, FPGA/legacy ladders, 640x480 rungs, unset kbps).
+inline int nativeHd720pRequestKbps(bool owenb, int vout, const std::string& videoResolution, int kbps,
+                                   int floorKbps) {
+#ifdef MUT_PLEX_NATIVE_REQ_SD
+    (void)owenb; (void)vout; (void)videoResolution; (void)floorKbps;
+    return kbps;
+#else
+    if (owenb && vout == kRemoteObVoutNative && videoResolution == "1280x720" && floorKbps > 0 && kbps > 0 &&
+        kbps < floorKbps)
+        return floorKbps;
+    return kbps;
+#endif
 }
 
 constexpr const char* kRemoteTranscodeFailOsd = "Server can't transcode this title";

@@ -193,7 +193,7 @@ private:
     size_t probes_ = 0;
 };
 
-// #333 (RELEASE-1103 glass,  lab device): the player-/24 gateway rule matches by address only, so a real
+// #333 (RELEASE-1103 glass, lab): the player-/24 gateway rule matches by address only, so a real
 // PMS on the player's LAN (test PMS 203.0.113.1:32402, machineIdentifier in playMedia) was rewritten
 // onto the conf default PMS ("cast base http://203.0.113.1:32402 -> reachable http://203.0.113.25:32401")
 // and the cast ratingKey was resolved against the wrong server. Keep the cast base only when its
@@ -225,7 +225,7 @@ inline bool castLanPmsVerified(const std::string& selectedBase, const std::strin
 // #344 glass / #333: an explicit cast base wins. A rewrite onto a different base (gateway rule,
 // openable map) is allowed only when that target's /identity names the cast machineIdentifier.
 // No machine id -> keep the cast base. The probe is untokened (no conf token on a mismatch).
-// #347 glass ( lab device): the conf default (a third-party PMS) was probed on every miss. Now the target is
+// #347 glass (lab): the conf default (a third-party PMS) was probed on every miss. Now the target is
 // probed only when it is already a known candidate for the cast server: targetKnownId (from the
 // linked plex.tv roster, never from a probe) must equal the cast machine id. Otherwise: keep, no probe.
 inline bool castRewriteVerified(const std::string& selectedBase, const std::string& target,
@@ -310,7 +310,7 @@ inline std::string castKeptOpenableBase(const std::string& selectedBase) {
     return b;
 }
 
-// #347 glass ( lab device): the companion bound its PMS timeline (and main its provisional lastBase) through
+// #347 glass (lab): the companion bound its PMS timeline (and main its provisional lastBase) through
 // reachableTimelinePms(), whose address-only player-LAN gateway rule moved a cast from the test PMS
 // 203.0.113.1:32402 onto the conf default (a third-party PMS) -> timeline traffic to that server.
 // With an explicit cast address the timeline stays on the cast host: only the same-host
@@ -455,7 +455,7 @@ inline PlexEndpoint castTimelinePms(const std::string& address, const std::strin
     return reachableTimelinePms(address, port, protocol, lanFallback, playerLan);
 }
 
-// #351 review (reviewer, aa7ebfe): main's provisional lastBase (used with the cast token by queue/add,
+// #351 review (FPGA Bug, aa7ebfe): main's provisional lastBase (used with the cast token by queue/add,
 // skip and mark-watched until the verified commit) must never be the conf default chosen without a
 // machine-id check. An IPv6-literal cast host has no openable same-origin base, so the provisional
 // base is empty until the resolve commits a machine-id-verified base.
@@ -472,7 +472,7 @@ inline std::string provisionalCastBase(const std::string& address, const std::st
     return joinPlexHostPort(ep.protocol, ep.host, ep.port);
 }
 
-// #347 glass 71e4b762 ( lab device, release conf): with a cast from another server playing, the status
+// #347 glass 71e4b762 (lab, release conf): with a cast from another server playing, the status
 // heartbeat probe (TCP connect to the conf default every 10 s) was the only thing still reaching the
 // conf default. While a play is active whose base is a different host, skip that probe and keep the
 // last state. No play, no base, or the same host as the conf default: probe as before.

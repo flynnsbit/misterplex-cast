@@ -328,7 +328,7 @@ inline bool scaleI420NearestPlanes(const uint8_t* y, int yStride,
     return true;
 }
 
-// N2 (copilot-480i 10/4; reviewer F1-F4, reviewer-reviewer-batch-1428-1004.md section 4): the
+// N2 (copilot-480i 10/4; FPGA Bug F1-F4, fpga-bug-reviewer-batch-1428-1004.md section 4): the
 // lab ladder proxy answers with Connection: close and no Content-Length, and FFmpeg's http
 // protocol ends such a response with AVERROR(EIO), "Stream ends prematurely ... should be
 // 18446744073709551615" (n8.0 http.c:1680-1691), not AVERROR_EOF. Every natural end of a
@@ -341,7 +341,7 @@ inline bool scaleI420NearestPlanes(const uint8_t* y, int yStride,
 //  F2  the input reached the declared end: its session position, the play's start offset plus
 //      the longest stream span read (last pts + duration - first pts, per stream), is within
 //      kInputCloseEndWindowMs of the PMS duration, or past it.
-// Limit (reviewer N-g): the span is max(end) - min(first) per stream, so a forward pts jump
+// Limit (FPGA Bug N-g): the span is max(end) - min(first) per stream, so a forward pts jump
 // mid-stream would inflate it, and a server cut after such a jump could convert early. The
 // ladder's ffmpeg re-encode is continuous. If it shows up on glass, cap the span at the summed
 // packet durations or restart it at a discontinuity.

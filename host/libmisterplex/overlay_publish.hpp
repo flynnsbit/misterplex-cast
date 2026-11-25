@@ -38,7 +38,7 @@
 //   - a retry on the next tick after any failed (SPI) send.
 // It composes with MPX_OVERLAY_DECOUPLE. Unset or 0: a send every tick, unchanged.
 //
-// MPX_OVERLAY_SKIP_NO_PLANE=1 (reviewer 10:22, reviewer-d52-shift-rca2-1004 suspect 3):
+// MPX_OVERLAY_SKIP_NO_PLANE=1 (reviewer 10:22, fpga-bug-d52-shift-rca2-1004 suspect 3):
 // on a core built without the playback overlay plane (overlayPlaneAbsent: the 480p
 // PLEX_480P_LEAN builds) the session starts no publisher and release sends no hide, so
 // a play makes no index-6 download and no overlay Main SIGSTOP at all. Cores with the

@@ -368,6 +368,14 @@ public:
         setState("stopped", timeMs, durationMs, terminal);
     }
 
+    // GDM discovery (M-SEARCH answers, HELLO / 200 OK announces) only while on.
+    // Off sends one GDM BYE; on again announces at once. HTTP stays up either way.
+    void setAdvertise(bool on) { advertise_.store(on); }
+    bool advertising() const { return advertise_.load(); }
+    // playMedia asks this first. False: 503, nothing is staged or played.
+    using CastAdmitFn = std::function<bool()>;
+    void setCastAdmit(CastAdmitFn f) { castAdmit_ = std::move(f); }
+
     bool start();
     void stop();
     bool running() const { return running_.load(); }
@@ -461,7 +469,7 @@ private:
     bool keepaliveWanted();
     static constexpr std::chrono::seconds kSubscriberKeepalive{3};
     void requestTimelinePush(bool immediate);
-    // Bounded buffering@navigation hold (holdIdle RCA, reviewer H1-H4). Caller holds mu_.
+    // Bounded buffering@navigation hold (holdIdle RCA, FPGA Bug H1-H4). Caller holds mu_.
     static int holdMsFromEnv(const char* name, int fallback);
     void armHoldLocked(int ms);
     void disarmHoldLocked();
@@ -497,6 +505,7 @@ private:
                       const std::string& xml) const;
     std::string gdmPayload() const;
     std::string gdmPayload(bool hello) const;
+    std::string gdmMessage(const char* startLine) const;
     std::string resourcesXml(const std::string& playerIp = {}) const;
     // recipientId is the caller's X-Plex-Client-Identifier. recipientPeer is the
     // poll/subscribe source IP, or the subscriber callback host on a push.
@@ -560,6 +569,8 @@ private:
     void publishPlexTvCode(const std::string& code);
 
     std::atomic<bool> running_{false};
+    std::atomic<bool> advertise_{true};
+    CastAdmitFn castAdmit_;
     std::atomic<uint64_t> timelineGen_{0};   // bumped by requestTimelinePush; releases a held poll
     std::atomic<bool> httpReady_{false};
     int httpListenFd_{-1};

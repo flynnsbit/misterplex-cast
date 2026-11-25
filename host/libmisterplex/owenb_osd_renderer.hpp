@@ -498,6 +498,23 @@ public:
             }
         });
     }
+    // A tune job returned without a picture. Drop only this generation's pending
+    // cue. pendingGen 0 is not a wildcard: the Guide landing already cleared
+    // pending, and the first-picture path must not run over it (GH#648).
+    void abandonPlayPending(uint64_t gen) {
+#ifdef MUT_PENDING_CLEAR_IS_FIRST_PICTURE
+        // pre-fix: the guard cleared through the first-picture path
+        clearPlayPending(gen);
+        return;
+#endif
+        update([gen](UiModel& m) {
+            if (!m.pending || m.pendingGen == 0 || m.pendingGen != gen)
+                return;
+            m.pending = false;
+            m.pendingGen = 0;
+            m.pendingLabel.clear();
+        });
+    }
     void failSpelunkrTune(const std::string& detail) {
         update([&](UiModel& m) {
             m.adBreak = false;
@@ -1174,8 +1191,16 @@ inline uint64_t Renderer::writeDirtyRows(int page, const FullSurface& S, uint32_
     unsigned rows = 0;
 #ifdef MUT_NAV_OSD_FULL_SCAN
     const bool useDirty = false;
-#else
+#elif defined(MUT_OSD_SURF_COALESCE_DIRTY)
+    // Mutant: ignore gen continuity (the B1 bug). A skipped frame's dirty
+    // bands never reach fb0 when two publishes land before one tick.
     const bool useDirty = !full && S.dirtyN > 0;
+#else
+    // B1 (FPGA Bug): only the last publish's dirty bands are recorded. If
+    // OsdThread missed a gen (parallel poster GETs, back-to-back nav), fall
+    // through to the memcmp scan so every row that differs from shadow/fb0
+    // is blitted. Consecutive gens stay on the cheap dirty path.
+    const bool useDirty = !full && S.dirtyN > 0 && S.gen == surfGen_ + 1;
 #endif
     auto blitRow = [&](unsigned y, size_t a, size_t b) {
         const uint8_t* n = src + y * row;
@@ -1248,7 +1273,7 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
     }
     // New gen: present on this tick. The 16 ms floor is the same-frame sleep
     // above. Waiting here held in-window nav for another vsync/timer (glass
-    // HDMI 123-176 ms on  lab device).
+    // HDMI 123-176 ms on lab).
 #ifdef MUT_NAV_OSD_SURF_8HZ
     if (now - lastDrawMs_ < kSurfaceMinMs)
         return lastDrawMs_ + kSurfaceMinMs - now;
@@ -1325,7 +1350,7 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
 #endif
     }
 #ifndef MUT_NAV_OSD_DOUBLE_FLIP
-    //  lab device is double-buffered 8888 1280x720 (8 MiB fb0), not the 720p single-page
+    // lab is double-buffered 8888 1280x720 (8 MiB fb0), not the 720p single-page
     // path f088b3dc retimed. A nav flip to the free page waits for ovl_gen/vsync
     // (GH#27: this box may never ack). Write dirty rows on the page the core is
     // already scanning so HDMI sees the focus move without a later tick.

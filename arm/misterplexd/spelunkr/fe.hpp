@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace misterplex {
@@ -376,24 +377,90 @@ inline PlayRequest advanceAfterEof(Session& session, uint64_t eofGeneration, int
 }
 
 inline constexpr int64_t kFirstPictureTimeoutMs = 3000;
+// Hard ceiling on an ad-hold exemption, measured from arm(). The relay's own
+// hold cap (MPX_PLUTO_ADSKIP_HOLD_CAP_MS, default 600000) ends a real hold
+// sooner; this fires if adHold stays stuck.
+inline constexpr int64_t kFirstPictureAdHoldMaxMs = 660000;
+// A play-pending chevron with no picture and no play this long is wedged.
+inline constexpr int64_t kPlayPendingStaleMs = 45000;
+
+// True when play-pending should keep the idle card off. Playing or a picture
+// stays busy (GH#648). A pending tune that has sat longer than
+// kPlayPendingStaleMs with neither does not.
+inline bool playPendingBlocksIdle(bool pending, bool playing, bool hasPicture, int64_t pendingForMs) {
+#ifdef MUT_PENDING_NEVER_CLEARS
+    (void)playing;
+    (void)hasPicture;
+    (void)pendingForMs;
+    return pending;
+#else
+    if (!pending)
+        return false;
+    if (playing || hasPicture)
+        return true;
+    return pendingForMs <= kPlayPendingStaleMs;
+#endif
+}
+
+// Clears play-pending for this job's generation if the job returns without
+// play_started. disarm() at play_started. clear() must be gen-matched so a
+// newer tune is left pending.
+template <class ClearFn>
+class SpelunkrPendingGuard {
+public:
+    SpelunkrPendingGuard(uint64_t gen, ClearFn clear) : gen_(gen), clear_(static_cast<ClearFn&&>(clear)) {}
+    ~SpelunkrPendingGuard() {
+#ifdef MUT_PENDING_NEVER_CLEARS
+        (void)gen_;
+        (void)clear_;
+        (void)armed_;
+#else
+        if (armed_)
+            clear_(gen_);
+#endif
+    }
+    SpelunkrPendingGuard(const SpelunkrPendingGuard&) = delete;
+    SpelunkrPendingGuard& operator=(const SpelunkrPendingGuard&) = delete;
+    void disarm() { armed_ = false; }
+
+private:
+    uint64_t gen_;
+    ClearFn clear_;
+    bool armed_ = true;
+};
 
 // Armed only after cutover, never during archive resolution / IDR prefetch.
 // The caller serializes arm/poll with channel selection.
+// adHold (default false): while a Pluto ad-skip hold is active the 3000 ms
+// timer restarts, so it counts from the end of the hold. Ignored after
+// kFirstPictureAdHoldMaxMs from arm(). MUT_FPW_NO_AD_HOLD_EXEMPT ignores adHold.
 class FirstPictureWatchdog {
 public:
     void arm(uint64_t generation, int64_t nowMs, unsigned attempt = 0) {
         generation_ = generation;
         cutoverMs_ = nowMs;
+        armedMs_ = nowMs;
         attempt_ = attempt;
     }
 
-    PlayRequest poll(Session& session, int64_t nowMs, bool live, bool decodedPicture, int itemIndex) {
+    PlayRequest poll(Session& session, int64_t nowMs, bool live, bool decodedPicture, int itemIndex,
+                     bool adHold = false) {
         if (!session.tv.current(generation_) || !live || decodedPicture) {
             generation_ = 0;
             return {};
         }
+#ifndef MUT_FPW_NO_AD_HOLD_EXEMPT
+        if (adHold && nowMs - armedMs_ < kFirstPictureAdHoldMaxMs) {
+            cutoverMs_ = nowMs;
+            return {};
+        }
+        if (!adHold && nowMs - cutoverMs_ < kFirstPictureTimeoutMs)
+            return {};
+#else
+        (void)adHold;
         if (nowMs - cutoverMs_ < kFirstPictureTimeoutMs)
             return {};
+#endif
         auto req = advanceAfterEof(session, generation_, itemIndex);
         generation_ = 0;
         if (req.generation != 0)
@@ -404,6 +471,7 @@ public:
 private:
     uint64_t generation_ = 0;
     int64_t cutoverMs_ = 0;
+    int64_t armedMs_ = 0;
     unsigned attempt_ = 0;
 };
 
@@ -622,19 +690,24 @@ inline PlayRequest resumeLastChannel(Session& session, const std::string& id) {
     return playRequestFor(session.lineup, tune.generation, idx);
 }
 
-// First core-open after a Service switch or cold start often happens before
-// Back When is merged. A saved Back When id must not paint Open the Guide
-// until that fetch finishes (ok or fail). Empty / unknown ids still land
-// immediately (browse-lane P1-1 / N-6).
+// Cold first core-open ALWAYS lands on the guide, even when SPELUNKR_LAST_CHANNEL is set.
+// In-session core reopens (preferCurrent=true) keep resuming the current/last channel.
 enum class DeferredResume : uint8_t { Tune, Land, Defer };
 
 inline DeferredResume firstOpenLastChannelAction(const Lineup& lineup, const std::string& lastId,
                                                  bool backWhenPending) {
+#ifdef MUT_COLD_BOOT_RESUMES_LAST_CHANNEL
     if (lastId.empty())
         return DeferredResume::Land;
     if (channelIndexById(lineup, lastId) >= 0)
         return DeferredResume::Tune;
     return backWhenPending ? DeferredResume::Defer : DeferredResume::Land;
+#else
+    (void)lineup;
+    (void)lastId;
+    (void)backWhenPending;
+    return DeferredResume::Land;
+#endif
 }
 
 // browse-lane #654 P1: a real function, never a block-local lambda captured by
@@ -648,9 +721,9 @@ inline void abandonDeferredResume(bool& awaiting, ClearChrome&& clearChrome) {
     clearChrome();
 }
 
-// GH#411: core reopen keeps the dial in progress. Cold boot / first open must
-// use lastSaved only (preferCurrentDial=false) so startup selectIndex(primetime)
-// cannot defeat SPELUNKR_LAST_CHANNEL or the logo + Open the Guide landing.
+// GH#411: in-session core reopen (preferCurrentDial=true) keeps the dial in progress,
+// falling back to lastId if unset. Cold boot / first core open (preferCurrentDial=false)
+// ALWAYS lands on the guide (empty PlayRequest), even when SPELUNKR_LAST_CHANNEL is set.
 inline PlayRequest resumeCurrentOrLast(Session& session, const std::string& lastId,
                                        bool preferCurrentDial = true) {
     session.guideOpen = false;
@@ -659,9 +732,12 @@ inline PlayRequest resumeCurrentOrLast(Session& session, const std::string& last
         idx = session.tv.index();
         if (idx < 0 || idx >= static_cast<int>(session.lineup.channels.size()))
             idx = channelIndexById(session.lineup, lastId);
-    } else {
+    }
+#ifdef MUT_COLD_BOOT_RESUMES_LAST_CHANNEL
+    else {
         idx = channelIndexById(session.lineup, lastId);
     }
+#endif
     if (idx < 0)
         return {};
     const auto tune = session.selectIndex(idx);
@@ -669,8 +745,8 @@ inline PlayRequest resumeCurrentOrLast(Session& session, const std::string& last
 }
 
 // browse-lane #623 frame 153: the channel the next core-open edge will resume, WITHOUT selecting it (no
-// generation bump), or -1 when the open edge will land. Mirrors resumeCurrentOrLast / resumeLastChannel
-// so main can arm the tuning chrome before the gate opens (owenbOpened then keeps it, no landing flash).
+// generation bump), or -1 when the open edge will land. Mirrors resumeCurrentOrLast so main arms tuning
+// chrome only on in-session reopens (preferCurrentDial=true); cold boot lands on the guide (-1).
 inline int resumeIndexPreview(const Session& session, const std::string& lastId, bool preferCurrentDial) {
     const int n = static_cast<int>(session.lineup.channels.size());
     int idx = -1;
@@ -678,9 +754,12 @@ inline int resumeIndexPreview(const Session& session, const std::string& lastId,
         idx = session.tv.index();
         if (idx < 0 || idx >= n)
             idx = channelIndexById(session.lineup, lastId);
-    } else if (!lastId.empty()) {
+    }
+#ifdef MUT_COLD_BOOT_RESUMES_LAST_CHANNEL
+    else if (!lastId.empty()) {
         idx = channelIndexById(session.lineup, lastId);
     }
+#endif
     return idx >= 0 && idx < n ? idx : -1;
 }
 
