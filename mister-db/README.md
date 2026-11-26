@@ -12,7 +12,7 @@ Add this to the bottom of `/media/fat/downloader.ini`:
 
 ```ini
 [flynnsbit/misterplex]
-db_url = https://raw.githubusercontent.com/flynnsbit/misterplex-cast/refs/heads/castor/update-all-db/mister-db/db.json.zip
+db_url = https://raw.githubusercontent.com/flynnsbit/misterplex-cast/refs/heads/main/mister-db/db.json.zip
 ```
 
 You can also copy `downloader_flynnsbit_misterplex.ini` from this folder to the root of the SD card,
@@ -86,7 +86,7 @@ By hand, on this branch:
 ```sh
 mister-db/regen_from_release.sh [TAG]      # newest published release when TAG is empty
 mister-db/test_offline_install.sh <Downloader_MiSTer checkout> [yt-dlp zip]
-git push origin HEAD:refs/heads/castor/update-all-db
+git push origin HEAD:refs/heads/main
 ```
 
 `validate_db.py DB [PAYLOAD] [--remote N]` checks a db, local or by URL, against the payload and,

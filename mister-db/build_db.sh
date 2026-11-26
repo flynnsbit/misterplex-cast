@@ -19,7 +19,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DB_ID=${MPX_DB_ID:-flynnsbit/misterplex}
 REPO=${MPX_DB_REPO:-flynnsbit/misterplex-cast}
-BRANCH=${MPX_DB_BRANCH:-castor/update-all-db}
+BRANCH=${MPX_DB_BRANCH:-main}
 DIR=${MPX_DB_DIR:-mister-db}
 RAW=https://raw.githubusercontent.com/$REPO
 DB_URL="$RAW/refs/heads/$BRANCH/$DIR/db.json.zip"

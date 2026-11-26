@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DB_BRANCH: castor/update-all-db
+  DB_BRANCH: main
 
 jobs:
   regen:
