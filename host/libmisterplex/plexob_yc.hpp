@@ -51,13 +51,26 @@ inline constexpr uint32_t kPlexObIdle0BuildId = 0x0BFCE8C5u;
 // 0x0B240F9E was superseded and never fitted, so it is NOT accepted). Same ring, same Y/C word 87 map. Must be
 // in the daemon BEFORE any 240p RBF is loaded: an older daemon refuses the RBF loudly.
 inline constexpr uint32_t kPlexOb240pBuildId = 0x0B2403A7u;
-// PR #278 (240p + ss1c color). Accepted next to 0x0B2403A7. Not a fitted pin yet.
+// PR #278 (240p + ss1c color). Shipped pin 96eb13d2. Accepted next to 0x0B2403A7.
 inline constexpr uint32_t kPlexOb1101BuildId = 0x0B1101C5u;
+// PR #374 analog Progressive 15 kHz dest (bfc2389e; Progressive was still 480i on Analog Raster 480i).
+// Kept accepted. 0x0B1101C5 stays accepted.
+inline constexpr uint32_t kPlexOb110715BuildId = 0x0B110715u;
+// PR #374 reviewer N1: analog Progressive is true 240p. Kept accepted after 0x0B111401 bump.
+inline constexpr uint32_t kPlexOb110724BuildId = 0x0B110724u;
+// PR #374 fleet fit: Progressive 240p + overlay idle (#665); must be in daemon before RBF loads.
+inline constexpr uint32_t kPlexOb111401BuildId = 0x0B111401u;
+// ascal-baaeff6 HDMI snow fix, seed 14 of 544565ba. Must be in the daemon before the RBF loads.
+inline constexpr uint32_t kPlexOb112501BuildId = 0x0B112501u;
 #ifdef MUT_YC_NO_1101
-inline constexpr uint32_t kPlexObYcBuildIds[] = {kPlexObYcBuildId, kPlexObIdle0BuildId, kPlexOb240pBuildId};
+inline constexpr uint32_t kPlexObYcBuildIds[] = {kPlexObYcBuildId, kPlexObIdle0BuildId, kPlexOb240pBuildId,
+                                                  kPlexOb110715BuildId, kPlexOb110724BuildId, kPlexOb111401BuildId,
+                                                  kPlexOb112501BuildId};
 #else
 inline constexpr uint32_t kPlexObYcBuildIds[] = {kPlexObYcBuildId, kPlexObIdle0BuildId,
-                                                  kPlexOb240pBuildId, kPlexOb1101BuildId};
+                                                  kPlexOb240pBuildId, kPlexOb1101BuildId,
+                                                  kPlexOb110715BuildId, kPlexOb110724BuildId,
+                                                  kPlexOb111401BuildId, kPlexOb112501BuildId};
 #endif
 #ifdef MUT_YC_WORD_82
 inline constexpr unsigned kRingWordYcMode = 82u;  // mutant: rumble word (GH#26 owenb #20 blocker)

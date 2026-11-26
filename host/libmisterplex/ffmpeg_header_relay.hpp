@@ -61,7 +61,7 @@ inline std::string ffmpegPctDecodeOnce(const std::string& s) {
     return out;
 }
 
-inline std::string ffmpegPctDecodeStable(const std::string& s) {
+inline std::string ffmpegPctDecodeStable(const std::string& s, bool* stable = nullptr) {
     std::string decoded = s;
     for (int round = 0; round < 8; ++round) {
         std::string next = ffmpegPctDecodeOnce(decoded);
@@ -69,10 +69,12 @@ inline std::string ffmpegPctDecodeStable(const std::string& s) {
             break;
         decoded = std::move(next);
     }
+    if (stable)
+        *stable = ffmpegPctDecodeOnce(decoded) == decoded;
     return decoded;
 }
 
-// #630 GBE P3-2: match on the raw slot AND on its percent-decoded form,
+// #630 browse-lane P3-2: match on the raw slot AND on its percent-decoded form,
 // decoded until stable (X-Plex%2DToken, %58-Plex-Token, x%252Dplex%252Dtoken,
 // X%2DMPX%2DAuth). The bytes passed to exec are never changed.
 inline bool textCarriesLaunchSecret(const std::string& raw) {
@@ -82,10 +84,13 @@ inline bool textCarriesLaunchSecret(const std::string& raw) {
             return true;
         if (s.find("x-mpx-auth") != std::string::npos)
             return true;
+        if (s.find("authorization:") != std::string::npos && s.find("bearer") != std::string::npos)
+            return true;
         return false;
     };
-    std::string decoded = ffmpegPctDecodeStable(raw);
-    return matches(raw) || matches(decoded);
+    bool stable = false;
+    std::string decoded = ffmpegPctDecodeStable(raw, &stable);
+    return !stable || matches(raw) || matches(decoded);
 }
 
 inline bool ffmpegArgvCarriesPlexToken(const std::vector<std::string>& a) {
@@ -116,33 +121,33 @@ inline FfmpegLaunchStub& ffmpegLaunchStub() {
     return stub;
 }
 
-// #630 GBE P3-3: the ONE ffmpeg launch path. The secret guard and fork are
-// adjacent here, so no caller can add -headers between check and exec (G18).
+// Guard a private snapshot and prepare argv before fork: childSetup may change args.
 // Tests install ffmpegLaunchStub() to see the exact argv that would be exec'd.
 inline pid_t launchFfmpeg(const std::vector<std::string>& args,
                           const std::function<void()>& childSetup,
                           std::string* failLog = nullptr, bool* refused = nullptr) {
     if (refused)
         *refused = false;
-    if (args.empty())
+    const std::vector<std::string> argvCopy = args;
+    if (argvCopy.empty())
         return -1;
-    if (ffmpegArgvRefuseIfSecret(args, failLog)) {
+    if (ffmpegArgvRefuseIfSecret(argvCopy, failLog)) {
         if (refused)
             *refused = true;
         return -1;
     }
     if (ffmpegLaunchStub())
-        return ffmpegLaunchStub()(args);
+        return ffmpegLaunchStub()(argvCopy);
+    std::vector<char*> argvp;
+    argvp.reserve(argvCopy.size() + 1);
+    for (const auto& s : argvCopy)
+        argvp.push_back(const_cast<char*>(s.c_str()));
+    argvp.push_back(nullptr);
     const pid_t pid = ::fork();
     if (pid == 0) {
         if (childSetup)
             childSetup();
-        std::vector<char*> argv;
-        argv.reserve(args.size() + 1);
-        for (const auto& s : args)
-            argv.push_back(const_cast<char*>(s.c_str()));
-        argv.push_back(nullptr);
-        ::execv(args[0].c_str(), argv.data());
+        ::execv(argvCopy[0].c_str(), argvp.data());
         ::_exit(127);
     }
     return pid;
@@ -232,9 +237,17 @@ private:
         nonce_.clear();
         FILE* r = std::fopen("/dev/urandom", "rb");
         unsigned char b[8]{};
+        size_t nread = 0;
         if (r) {
-            (void)std::fread(b, 1, sizeof(b), r);
+            nread = std::fread(b, 1, sizeof(b), r);
             std::fclose(r);
+        }
+        if (nread != sizeof(b)) {
+            // No entropy for the nonce: refuse the relay. The caller then fails closed
+            // and never puts the Plex token on ffmpeg argv.
+            ::close(fd_);
+            fd_ = -1;
+            return false;
         }
         char hex[17];
         for (int i = 0; i < 8; ++i)

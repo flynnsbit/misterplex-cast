@@ -24,6 +24,51 @@ inline bool coreChangeAllowed(bool manualOnly, CoreChange change,
          static_cast<uint32_t>(stamp) == gate.buildId() && gate.buildId() != 0;
 }
 
+// prepareSpelunkrVideo vs reloadCoreForYcMode:
+//   A  gate still closed after the wait, or ctrl-page map never opened AND the
+//      gate is closed: OSD "VIDEO CORE UNAVAILABLE".
+//   B  MANUAL_ONLY and the live names are MENU/other/mismatch: OSD
+//      "VIDEO CORE REFUSED". Stamp matching stays a core-change rule
+//      (coreChangeAllowed). A second /dev/mem map or a zero stamp must not
+//      block first_picture on a gate-verified PlexOB (Ready · AirPlay lab path).
+enum class VideoPrepError { Ok, Unavailable, Refused };
+
+inline const char *videoPrepOsd(VideoPrepError e) {
+  switch (e) {
+  case VideoPrepError::Unavailable:
+    return "VIDEO CORE UNAVAILABLE";
+  case VideoPrepError::Refused:
+    return "VIDEO CORE REFUSED";
+  case VideoPrepError::Ok:
+    break;
+  }
+  return "";
+}
+
+inline VideoPrepError videoPrepError(bool manualOnly, bool gateOpen, bool mapOpen,
+                                     const CoreGate &gate, const std::string &core,
+                                     const std::string &rbf, uint64_t stamp) {
+  (void)mapOpen;
+  (void)stamp;
+  if (!gateOpen)
+    return VideoPrepError::Unavailable;
+  if (!manualOnly)
+    return VideoPrepError::Ok;
+#ifdef MUT_VIDEO_PREP_ALLOW_MENU
+  (void)gate;
+  (void)core;
+  (void)rbf;
+  return VideoPrepError::Ok;
+#else
+  (void)gate;
+  const CoreFamily fam = classifyLoadedCore(core, rbf);
+  // Empty/transient names: trust the open gate (it already classified PlexOB).
+  if (fam == CoreFamily::PlexOwenb || fam == CoreFamily::Unknown)
+    return VideoPrepError::Ok;
+  return VideoPrepError::Refused;
+#endif
+}
+
 inline bool recoverRasterCfg(const std::string &path, std::string &err) {
   const std::string saved = path + ".spelunkr-save";
   if (::access(saved.c_str(), F_OK) != 0) {

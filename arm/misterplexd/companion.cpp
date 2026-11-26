@@ -1285,8 +1285,12 @@ std::string Companion::gdmPayload() const {
 }
 
 std::string Companion::gdmPayload(bool hello) const {
+    return gdmMessage(hello ? "HELLO * HTTP/1.0" : "HTTP/1.0 200 OK");
+}
+
+std::string Companion::gdmMessage(const char* startLine) const {
     std::ostringstream o;
-    o << (hello ? "HELLO * HTTP/1.0\r\n" : "HTTP/1.0 200 OK\r\n")
+    o << startLine << "\r\n"
       << "Content-Type: plex/media-player\r\n"
       << "Name: " << name_ << "\r\n"
       << "Port: " << port_ << "\r\n"
@@ -2831,7 +2835,21 @@ void Companion::gdmLoop() {
         freeifaddrs(ifaddr);
         return ifs;
     };
+    bool announced = advertise_.load();
     while (running_.load()) {
+        const bool advertise = advertise_.load();
+        if (advertise != announced) {
+            announced = advertise;
+            if (advertise) {
+                lastAdv = std::chrono::steady_clock::time_point{};
+                log("GDM: advertise");
+            } else {
+                const std::string bye = gdmMessage("BYE * HTTP/1.0");
+                for (const auto& d : misterplex::gdmAdvertiseDests(collectIfaces()))
+                    sendFrom(d, bye);
+                log("GDM: withdrawn (BYE sent)");
+            }
+        }
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
@@ -2855,8 +2873,8 @@ void Companion::gdmLoop() {
                 ::inet_ntop(AF_INET, &peer.sin_addr, peerIp, sizeof(peerIp));
                 // F2190: GDM is L2. Do not reply to a WAN unicast peer; WAN PMS
                 // player list stays empty without a remote client registration.
-                if (misterplex::gdmMayReplyToPeer(httpReady_.load(), buf, static_cast<size_t>(n),
-                                                 peerIp)) {
+                if (advertise && misterplex::gdmMayReplyToPeer(httpReady_.load(), buf, static_cast<size_t>(n),
+                                                              peerIp)) {
                     auto payload = gdmPayload();
                     sendto(fd, payload.data(), payload.size(), 0, reinterpret_cast<sockaddr*>(&peer),
                            plen);
@@ -2864,7 +2882,7 @@ void Companion::gdmLoop() {
             }
         }
         auto now = std::chrono::steady_clock::now();
-        if (misterplex::gdmMayAdvertise(httpReady_.load()) &&
+        if (advertise && misterplex::gdmMayAdvertise(httpReady_.load()) &&
             now - lastAdv > std::chrono::seconds(5)) {
             lastAdv = now;
             const auto dests = misterplex::gdmAdvertiseDests(collectIfaces());
@@ -3517,6 +3535,11 @@ void Companion::httpLoop() {
                  req.find("playback/play?") != std::string::npos ||
                  req.find("playback/play ") != std::string::npos);
 
+            if (isPlayMedia && castAdmit_ && !castAdmit_()) {
+                sendHttp(c, machineId_, 503, "text/plain", "MiSTerPlex core not loaded\n");
+                close(c);
+                continue;
+            }
             if (isPlayMedia) {
                 PlayRequest pr = parsePlayRequest(req);
                 if (pr.targetRejected)

@@ -30,7 +30,7 @@ bool readFile(const std::string& path, std::vector<std::uint8_t>& out) {
     return static_cast<std::streamoff>(in.gcount()) == n;
 }
 
-int contByte(const std::string& text, size_t idx) {
+int contByte(std::string_view text, size_t idx) {
     if (idx >= text.size())
         return -1;
     const unsigned char c = static_cast<unsigned char>(text[idx]);
@@ -49,7 +49,7 @@ int asciiFallback(int cp) {
     if (cp == 0x2010 || cp == 0x2011 || cp == 0x2012 || cp == 0x2013 || cp == 0x2014 || cp == 0x2015 ||
         cp == 0x2212 || cp == 0x00AD)
         return '-';
-    if (cp == 0x2026 || cp == 0x22EF)
+    if (cp == 0x2026 || cp == 0x22EF || cp == 0x00B7)
         return '.';
     if (cp == 0x00A0 || cp == 0x202F || cp == 0x2007 || cp == 0x2009 || cp == 0x200A)
         return ' ';
@@ -75,7 +75,7 @@ int asciiFallback(int cp) {
     }
 }
 
-int utf8Codepoint(const std::string& text, size_t& i) {
+int utf8Codepoint(std::string_view text, size_t& i) {
     if (i >= text.size())
         return -1;
     const unsigned char c0 = static_cast<unsigned char>(text[i]);
@@ -189,7 +189,7 @@ FontSet::GlyphBmp FontSet::rasterFallbackGlyph(int cp, float size, bool bold) co
     return g;
 }
 
-FontSet::GlyphBmp FontSet::rasterGlyph(int cp, float size, bool bold) const {
+const FontSet::GlyphBmp& FontSet::rasterGlyph(int cp, float size, bool bold) const {
     GlyphKey key{cp, size, bold};
     const auto it = cache_.find(key);
     if (it != cache_.end())
@@ -198,13 +198,12 @@ FontSet::GlyphBmp FontSet::rasterGlyph(int cp, float size, bool bold) const {
     GlyphBmp g;
     if (usingFallback_ || ttfData(bold).empty()) {
         g = rasterFallbackGlyph(cp, size, bold);
-        cache_[key] = g;
-        return g;
+        return cache_.emplace(key, std::move(g)).first->second;
     }
     stbtt_fontinfo info{};
     const auto& data = ttfData(bold);
     if (!stbtt_InitFont(&info, data.data(), stbtt_GetFontOffsetForIndex(data.data(), 0)))
-        return g;
+        return cache_.emplace(key, std::move(g)).first->second;
     const float scale = stbtt_ScaleForPixelHeight(&info, size);
     int use = cp;
     if (stbtt_FindGlyphIndex(&info, cp) == 0) {
@@ -228,13 +227,13 @@ FontSet::GlyphBmp FontSet::rasterGlyph(int cp, float size, bool bold) const {
         g.gray.resize(static_cast<std::size_t>(g.w * g.h));
         stbtt_MakeCodepointBitmap(&info, g.gray.data(), g.w, g.h, g.w, scale, scale, use);
     }
-    cache_[key] = g;
-    return g;
+    return cache_.emplace(key, std::move(g)).first->second;
 }
 
 void FontSet::drawText(std::uint8_t* rgba, int stride, int w, int h, float x, float y,
-                       const std::string& text, float pixelHeight, bool bold, std::uint8_t cr,
-                       std::uint8_t cg, std::uint8_t cb, std::uint8_t ca) const {
+                       std::string_view text, float pixelHeight, bool bold, std::uint8_t cr,
+                       std::uint8_t cg, std::uint8_t cb, std::uint8_t ca,
+                       int clipX0, int clipY0, int clipX1, int clipY1) const {
     float penX = x;
     const float baseline = y + pixelHeight * 0.8f;
     for (size_t i = 0; i < text.size();) {
@@ -243,17 +242,15 @@ void FontSet::drawText(std::uint8_t* rgba, int stride, int w, int h, float x, fl
             break;
         if (cp == '\n')
             continue;
-        const GlyphBmp g = rasterGlyph(cp, pixelHeight, bold);
+        const GlyphBmp& g = rasterGlyph(cp, pixelHeight, bold);
         const int gx = static_cast<int>(std::round(penX + g.xoff));
         const int gy = static_cast<int>(std::round(baseline + g.yoff));
-        for (int row = 0; row < g.h; ++row) {
+        for (int row = std::max(0, std::max(0, clipY0) - gy);
+             row < std::min(g.h, std::min(h, clipY1) - gy); ++row) {
             const int py = gy + row;
-            if (py < 0 || py >= h)
-                continue;
-            for (int col = 0; col < g.w; ++col) {
+            for (int col = std::max(0, std::max(0, clipX0) - gx);
+                 col < std::min(g.w, std::min(w, clipX1) - gx); ++col) {
                 const int px = gx + col;
-                if (px < 0 || px >= w)
-                    continue;
                 const std::uint8_t a = static_cast<std::uint8_t>(
                     (static_cast<int>(g.gray[static_cast<std::size_t>(row * g.w + col)]) * ca) / 255);
                 if (a == 0)
@@ -270,7 +267,7 @@ void FontSet::drawText(std::uint8_t* rgba, int stride, int w, int h, float x, fl
     }
 }
 
-float FontSet::measureText(const std::string& text, float pixelHeight, bool bold) const {
+float FontSet::measureText(std::string_view text, float pixelHeight, bool bold) const {
     float w = 0.f;
     for (size_t i = 0; i < text.size();) {
         const int cp = utf8Codepoint(text, i);
@@ -281,6 +278,67 @@ float FontSet::measureText(const std::string& text, float pixelHeight, bool bold
         w += rasterGlyph(cp, pixelHeight, bold).advance;
     }
     return w;
+}
+
+std::size_t FontSet::fittingPrefix(std::string_view text, float pixelHeight, bool bold, float maxWidth) const {
+    float width = 0;
+    std::size_t end = 0;
+    for (std::size_t i = 0; i < text.size();) {
+        const int cp = utf8Codepoint(text, i);
+        if (cp < 0 || cp == '\n')
+            break;
+        width += rasterGlyph(cp, pixelHeight, bold).advance;
+        if (width > maxWidth)
+            break;
+        end = i;
+    }
+    return end;
+}
+
+FontSet::GlyphBox FontSet::measureGlyph(int codepoint, float pixelHeight, bool bold) const {
+    const GlyphBmp& g = rasterGlyph(codepoint, pixelHeight, bold);
+    GlyphBox b;
+    b.w = g.w;
+    b.h = g.h;
+    b.xoff = g.xoff;
+    b.yoff = g.yoff;
+    b.advance = g.advance;
+    return b;
+}
+
+bool FontSet::measureTextBox(const std::string& text, float pixelHeight, bool bold, float x, float y,
+                             int& x0, int& y0, int& x1, int& y1) const {
+    bool any = false;
+    float penX = x;
+    const float baseline = y + pixelHeight * 0.8f;
+    for (size_t i = 0; i < text.size();) {
+        const int cp = utf8Codepoint(text, i);
+        if (cp < 0)
+            break;
+        if (cp == '\n')
+            continue;
+        const GlyphBmp& g = rasterGlyph(cp, pixelHeight, bold);
+        if (g.w > 0 && g.h > 0) {
+            const int gx = static_cast<int>(std::round(penX + g.xoff));
+            const int gy = static_cast<int>(std::round(baseline + g.yoff));
+            const int gx1 = gx + g.w;
+            const int gy1 = gy + g.h;
+            if (!any) {
+                x0 = gx;
+                y0 = gy;
+                x1 = gx1;
+                y1 = gy1;
+                any = true;
+            } else {
+                x0 = std::min(x0, gx);
+                y0 = std::min(y0, gy);
+                x1 = std::max(x1, gx1);
+                y1 = std::max(y1, gy1);
+            }
+        }
+        penX += g.advance;
+    }
+    return any;
 }
 
 namespace {

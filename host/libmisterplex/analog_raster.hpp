@@ -5,7 +5,7 @@
 //  * Unset: no behaviour change at all (no CFG write, no reload). "auto" is the same as unset: no existing doc
 //    defines an auto rule for the raster (the auto-picture-mode helper is advise-only and default off), so
 //    auto == default. Only an explicit 480i or 240p acts.
-//  * Acts only on a core that supports 240p: exactly BUILD_ID 0x0B2403A7 (the dual-build-id table). Every other
+//  * Acts only on a core that supports 240p: 0x0B2403A7, 0x0B1101C5, 0x0B110715, 0x0B110724, or 0x0B111401. Every other
 //    id (0x0B59C11A, 0x0BFCE8C5, unknown) is left alone: on those, status[24] is reserved and word 87 [9:8] are 0.
 //  * Mechanism: set bit 24 (byte 3 bit 0, little endian) in the EXISTING saved status image PlexOB_v1.CFG, then
 //    one core reload through the Y/C reload worker. The CFG is never created (a missing or short file would zero
@@ -47,14 +47,24 @@ inline const char* rasterWantName(RasterWant w) {
 inline constexpr const char* kRasterStatusPath = "/tmp/mpx_analog_raster";   // tmpfs, read-only status text
 inline constexpr uint32_t kBuild240p = 0x0B2403A7u;
 inline constexpr uint32_t kBuild240p1101 = 0x0B1101C5u;
+inline constexpr uint32_t kBuild240p110715 = 0x0B110715u;
+inline constexpr uint32_t kBuild240p110724 = 0x0B110724u;
+inline constexpr uint32_t kBuild240p111401 = 0x0B111401u;
+inline constexpr uint32_t kBuild240p112501 = 0x0B112501u;
 inline constexpr unsigned kW87P240Requested = 8u, kW87P240Active = 9u;
 inline bool coreSupports240p(uint32_t buildId) {
 #ifdef MUT_RASTER_ANY_CORE
     return buildId != 0;
 #elif defined(MUT_RASTER_NO_1101)
     return buildId == kBuild240p;
+#elif defined(MUT_NO_112501)
+    // Mutant: drop seed-14. ANALOG_RASTER=240p is ignored on 0x0B112501.
+    return buildId == kBuild240p || buildId == kBuild240p1101 || buildId == kBuild240p110715 ||
+           buildId == kBuild240p110724 || buildId == kBuild240p111401;
 #else
-    return buildId == kBuild240p || buildId == kBuild240p1101;
+    return buildId == kBuild240p || buildId == kBuild240p1101 || buildId == kBuild240p110715 ||
+           buildId == kBuild240p110724 || buildId == kBuild240p111401 ||
+           buildId == kBuild240p112501;
 #endif
 }
 inline bool w87Requested(uint64_t w87) { return ((w87 >> kW87P240Requested) & 1u) != 0; }

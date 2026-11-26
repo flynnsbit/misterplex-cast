@@ -432,6 +432,10 @@
 #     Round 3 (FPGA Bug R1): vid_out csync_smpte .mode(p240): 240p gets the 3-line serrated vsync (259 hs / 0 eq / 6 broad, 262 lines); 480i/480p keep mode 0.
 #     NOT fitted, no hardware: review first.
 #   2026-11-01 (fpga/port-240p-1101, forward-port of the 0x0B2403A7 240p tree onto main): BUILD_ID 0x0B2403A7 -> 0x0B1101C5. RTL identical to the shipped 0x0B2403A7 tree except the id. The qsf and recipe default stay SEED 10; the shipped ss1c core fcd20f46 was fitted at SEED 11 (RESULT-s11.env), so reproduce it with YC_SEED=11. Not fitted yet.
+#   2026-11-07 (PR #374 analog Progressive 15 kHz dest): BUILD_ID 0x0B1101C5 -> 0x0B110715. Raster resolve from 9f4c8d7; new id so a refit is not the shipped 96eb13d2 pin. SEED 10. Not fitted yet.
+#   2026-11-07 (PR #374 reviewer N1): BUILD_ID 0x0B110715 -> 0x0B110724. Analog Progressive is true 240p. SEED 10. Not fitted yet.
+#   2026-11-15 (PR #374 fleet): BUILD_ID 0x0B110724 -> 0x0B111401. Combined Progressive 240p fit; 0x0B110724 stays accepted. SEED 10.
+#   2026-11-25 (ascal-baaeff6 HDMI snow fix): BUILD_ID 0x0B111401 -> 0x0B112501; 0x0B111401 stays accepted. SEED 10. Not fitted yet.
 
 set_global_assignment -name TOP_LEVEL_ENTITY sys_top
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0
@@ -448,6 +452,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE h264/emu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/sys_pll.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/vid_pll.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/sync_gen.sv
+set_global_assignment -name SYSTEMVERILOG_FILE h264/video_out_resolve.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/csync_smpte.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/idle_bars.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/vid_out.sv
@@ -540,7 +545,7 @@ set_global_assignment -name SEED 10
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_plexob_status.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_mister_caps_shim.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../mpx_plexob_core_hook.sv
-set_global_assignment -name VERILOG_MACRO "MPX_PLEXOB_BUILD_ID=32'h0B1101C5"
+set_global_assignment -name VERILOG_MACRO "MPX_PLEXOB_BUILD_ID=32'h0B112501"
 
 set_global_assignment -name SDC_FILE ../fit/variants/q1b/mpx_cdc_hold_targeted.sdc
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 4

@@ -30,7 +30,8 @@ inline const char* ownerName(Owner o) {
 class SessionArbiter {
 public:
     using Retire = std::function<void(Owner by)>;
-    using Progress = std::function<void(const std::string& state, int64_t timeMs, int64_t durationMs)>;
+    // gen: the play generation the progress belongs to (captured by the caller before dispatch)
+    using Progress = std::function<void(const std::string& state, int64_t timeMs, int64_t durationMs, uint64_t gen)>;
 
     void setRetire(Owner o, Retire fn) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -91,7 +92,7 @@ public:
     }
 
     // True when a non-Plex owner took the progress; false means "Plex path" (caller's own code).
-    bool dispatchProgress(const std::string& st, int64_t t, int64_t d) {
+    bool dispatchProgress(const std::string& st, int64_t t, int64_t d, uint64_t gen) {
         Progress fn;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -103,7 +104,7 @@ public:
             fn = progress_[idx(owner_)];
         }
         if (fn)
-            fn(st, t, d);
+            fn(st, t, d, gen);
         return true;
     }
 

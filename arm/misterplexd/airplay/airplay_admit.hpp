@@ -6,6 +6,7 @@
 #include "gcast/airplay_state.hpp"
 #include "gcast/cast_resolve.hpp"
 
+#include <cstdlib>
 #include <string>
 
 namespace misterplex {
@@ -25,9 +26,16 @@ inline constexpr int kAirplayInfoFps = 30;
 inline constexpr int kAirplayInfoFeatures = 2;
 
 inline constexpr const char* kNoticeResolution = "Video too high resolution for MiSTer (max 720p)";
-// <= 20 chars so the 480i toast does not clip it (GBE #627 P3-2). Same text as the helper NOTICE_FRAMERATE.
+// <= 20 chars so the 480i toast does not clip it (browse-lane #627 P3-2). Same text as the helper NOTICE_FRAMERATE.
 inline constexpr const char* kNoticeFramerate = "Max 30 fps on MiSTer";
 inline constexpr const char* kNoticeFormat = "format not supported";
+// Distinct from kNoticeFormat: a helper that does not answer in time is not a
+// format refusal. Slightly longer than the 20-char 480i toast guideline (browse-lane
+// #627 P3-2) so the on-screen text cannot be mistaken for format rejection.
+inline constexpr const char* kNoticeTimeout = "stream probe timed out, retrying";
+inline constexpr int kDefaultAdmitTimeoutMs = 28000;
+inline constexpr int kAdmitTimeoutMinMs = 1000;
+inline constexpr int kAdmitTimeoutMaxMs = 120000;
 
 struct AirplayAdmit {
     bool play = false;
@@ -62,8 +70,36 @@ inline std::string headerValue(const std::string& body, const char* key) {
     return {};
 }
 
-// Only the three notice strings are shown. A 200 that is not "copy" or "audio"
-// (the x264 mutant) does not play.
+// MPX_AIRPLAY_ADMIT_TIMEOUT_MS (ms, integer) or AIRPLAY_ADMIT_TIMEOUT_MS.
+// Bare milliseconds only; out-of-range values clamp; junk falls back to default.
+inline int admitTimeoutMsFromText(const char* e, int fallback = kDefaultAdmitTimeoutMs) {
+    if (!e || !e[0])
+        return fallback;
+    long v = 0;
+    std::size_t n = 0;
+    for (; e[n] >= '0' && e[n] <= '9'; ++n) {
+        v = v * 10 + (e[n] - '0');
+        if (v > kAdmitTimeoutMaxMs)
+            return kAdmitTimeoutMaxMs;
+    }
+    if (n == 0 || e[n] != 0)
+        return fallback;
+    if (v < kAdmitTimeoutMinMs)
+        return kAdmitTimeoutMinMs;
+    return static_cast<int>(v);
+}
+
+inline int admitTimeoutMs() {
+    if (const char* e = std::getenv("MPX_AIRPLAY_ADMIT_TIMEOUT_MS"); e && e[0])
+        return admitTimeoutMsFromText(e);
+    if (const char* e = std::getenv("AIRPLAY_ADMIT_TIMEOUT_MS"); e && e[0])
+        return admitTimeoutMsFromText(e);
+    return kDefaultAdmitTimeoutMs;
+}
+
+// Only the four notice strings are shown. A 200 that is not "copy" or "audio"
+// (the x264 mutant) does not play. A helper timeout is not parsed here; it is
+// produced when httpGetRaw fails.
 inline AirplayAdmit parseAdmitHttp(const std::string& raw) {
     AirplayAdmit a;
     const auto sep = raw.find("\r\n\r\n");
@@ -198,13 +234,17 @@ inline bool httpGetRaw(const std::string& base, const std::string& path, int tim
 }
 
 // Blocks the AirPlay httpd thread until the helper answers or the budget expires.
-// /raop.wav is audio and is not refused. A missing helper is status 400, not a hang.
-inline AirplayAdmit admitAirplayVideo(const std::string& url, int timeoutMs = 12000) {
+// /raop.wav is audio and is not refused. A missing or silent helper is status 504
+// with kNoticeTimeout (not 400/"format not supported"). timeoutMs <= 0 uses
+// admitTimeoutMs() (default 28 s, overridable by env).
+inline AirplayAdmit admitAirplayVideo(const std::string& url, int timeoutMs = 0) {
     AirplayAdmit denied;
     denied.play = false;
     denied.status = 400;
     denied.reason = "format";
     denied.notice = kNoticeFormat;
+    if (timeoutMs <= 0)
+        timeoutMs = admitTimeoutMs();
     if (url.empty())
         return denied;
     if (url.size() >= 9 && url.compare(url.size() - 9, 9, "/raop.wav") == 0) {
@@ -215,7 +255,7 @@ inline AirplayAdmit admitAirplayVideo(const std::string& url, int timeoutMs = 12
         ok.reason.clear();
         return ok;
     }
-    // A location that is not http(s) (a refused twitterav:// host, GBE #627 P3-1) is not
+    // A location that is not http(s) (a refused twitterav:// host, browse-lane #627 P3-1) is not
     // sent to the helper: 415 and the format notice, so the TV is not silent.
     if (url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0) {
         denied.status = 415;
@@ -225,8 +265,12 @@ inline AirplayAdmit admitAirplayVideo(const std::string& url, int timeoutMs = 12
     if (base.empty())
         base = kLoopbackHelperBase;
     std::string raw;
-    if (!httpGetRaw(base, "/admit?src=" + encodeComponent(url), timeoutMs, raw))
+    if (!httpGetRaw(base, "/admit?src=" + encodeComponent(url), timeoutMs, raw)) {
+        denied.status = 504;
+        denied.reason = "timeout";
+        denied.notice = kNoticeTimeout;
         return denied;
+    }
     return parseAdmitHttp(raw);
 }
 

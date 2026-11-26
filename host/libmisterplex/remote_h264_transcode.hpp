@@ -42,6 +42,104 @@ inline bool remoteH264TranscodeEnabled() {
 #endif
 }
 
+// MPX_FORCE_REMOTE_PATH=1 (env only, default OFF; glass/test aid, never set in a shipped conf).
+// Makes the daemon treat EVERY Plex server as remote (location=wan): the remote-forced transcode
+// rules (REMOTE_H264_TRANSCODE), the remote direct-play gate and the remote OwenB rung chooser
+// (remoteObRung) then run against a LAN server, so glass can exercise the remote path without a
+// real WAN server. plexLocationForBase() is the single switch; see docs/REMOTE-720P-RUNG.md.
+// Mutants: MUT_FORCE_REMOTE_IGNORED (flag has no effect), MUT_FORCE_REMOTE_DEFAULT_ON (on when unset).
+inline bool forceRemotePathEnabled() {
+#if defined(MUT_FORCE_REMOTE_DEFAULT_ON)
+    return true;
+#elif defined(MUT_FORCE_REMOTE_IGNORED)
+    return false;
+#else
+    return remoteH264EnvOn(std::getenv("MPX_FORCE_REMOTE_PATH"));
+#endif
+}
+
+// MPX_FORCE_REMOTE_RETRY=1 (env only, default OFF; glass/test aid, never set in a shipped conf).
+// Makes ONE remote PlexOB transcode request count as failed: ensureUniversalDecision reports a decision mismatch
+// ("forced remote retry ...") so the daemon's real lowered-retry path runs (main.cpp: one lowerPmsLadder retry) and
+// remoteObRung steps down to 640x480 at <= 2000k. Scope (FPGA Bug review of a335aebd, N1/N2/N4):
+//  * only the HD first request: HDMI Native + /library key + remote + OwenB (tlsForcedRetryHdRung, set by
+//    resolvePlayTarget from remoteObRung(...).hd). Analog/CRT output, Live TV and every other key are never forced;
+//  * only ONCE PER DAEMON RUN: the first qualifying request claims the force (claimForcedRetry); a second play, a seek,
+//    another server's first request or a re-resolve is never forced again (restart the daemon to re-arm);
+//  * the lowered retry itself is never forced;
+//  * if the forced mismatch cannot be retried (viaLadderProxy), main.cpp drops it (retryStepAfterResolve ->
+//    DropForced) and resolves the same request normally instead of ending in "Server can't transcode this title".
+//    viaLadderProxy is never true in the daemon today, so this is a defensive guard that cannot run in production
+//    (test_remote_h264_transcode F34 fails if a setter is added; test_remote_rung_resolve R7b covers the real path).
+// Combine with MPX_FORCE_REMOTE_PATH=1 to run it against a LAN server. See docs/REMOTE-720P-RUNG.md.
+// Mutants: MUT_FORCE_RETRY_IGNORED, MUT_FORCE_RETRY_DEFAULT_ON, MUT_FORCE_RETRY_LAN, MUT_FORCE_RETRY_EVERY (also forces
+// the lowered retry), MUT_FORCE_RETRY_ANY_SCOPE (not HD-rung scoped), MUT_FORCE_RETRY_EVERY_PLAY (never consumed),
+// MUT_RETRY_FORCED_SKIP_ERRORS (a skipped forced retry is not dropped).
+inline bool forceRemoteRetryEnabled() {
+#if defined(MUT_FORCE_RETRY_DEFAULT_ON)
+    return true;
+#elif defined(MUT_FORCE_RETRY_IGNORED)
+    return false;
+#else
+    return remoteH264EnvOn(std::getenv("MPX_FORCE_REMOTE_RETRY"));
+#endif
+}
+
+constexpr const char* kForcedRetryMismatch = "forced remote retry (MPX_FORCE_REMOTE_RETRY=1)";
+
+// Per-thread scope input: true only while resolvePlayTarget serves the HD first request (HDMI Native /library).
+inline bool& tlsForcedRetryHdRung() {
+    static thread_local bool v = false;
+    return v;
+}
+
+// True: report this request's decision as a mismatch so the lowered retry is taken.
+inline bool remoteForcedRetryDue(bool flagOn, bool wan, bool owenb, bool lowered, bool hdRung) {
+#if defined(MUT_FORCE_RETRY_LAN)
+    (void)wan; (void)hdRung;
+    return flagOn && owenb && !lowered;
+#elif defined(MUT_FORCE_RETRY_EVERY)
+    (void)lowered; (void)hdRung;
+    return flagOn && wan && owenb;
+#elif defined(MUT_FORCE_RETRY_ANY_SCOPE)
+    (void)hdRung;
+    return flagOn && wan && owenb && !lowered;
+#else
+    return flagOn && wan && owenb && !lowered && hdRung;
+#endif
+}
+
+// Once per daemon run: the first caller wins, later ones never.
+inline std::atomic<bool>& forcedRetryConsumed() {
+    static std::atomic<bool> c{false};
+    return c;
+}
+inline bool claimForcedRetry() {
+#if defined(MUT_FORCE_RETRY_EVERY_PLAY)
+    return true;
+#else
+    return !forcedRetryConsumed().exchange(true);
+#endif
+}
+inline void resetForcedRetryForTest() { forcedRetryConsumed().store(false); }
+
+inline bool isForcedRetryMismatch(const std::string& mismatch) {
+    return mismatch.rfind("forced remote retry", 0) == 0;
+}
+
+// main.cpp's step after the first resolve: the real one lowered retry, drop a forced mismatch that cannot retry
+// (resolve the same request normally; the force is already consumed), or nothing.
+enum class RetryStep { None, LoweredRetry, DropForced };
+inline RetryStep retryStepAfterResolve(const std::string& mismatch, bool lowered, bool viaLadderProxy, bool genCurrent) {
+    if (!mismatch.empty() && !lowered && !viaLadderProxy && genCurrent)
+        return RetryStep::LoweredRetry;
+#if !defined(MUT_RETRY_FORCED_SKIP_ERRORS)
+    if (isForcedRetryMismatch(mismatch) && genCurrent)
+        return RetryStep::DropForced;
+#endif
+    return RetryStep::None;
+}
+
 // The forced rule applies only to a remote play with the flag on.
 inline bool remoteH264Forced(bool flagOn, bool wan) {
 #if defined(MUT_RH264_OFF_BINDS)
@@ -403,6 +501,94 @@ inline void applyRemoteOwenbCap(std::string& videoResolution, int& maxVideoBitra
     videoResolution = "640x480";
     if (maxVideoBitrateKbps <= 0 || maxVideoBitrateKbps > kRemoteOwenbMaxKbps)
         maxVideoBitrateKbps = kRemoteOwenbMaxKbps;
+#endif
+}
+
+// 720p titles publish native-sd (glass nc-s7 check 3): a remote PlexOB transcode used to ALWAYS ask the
+// 640x480 box, so a 2.35:1 720p title decoded 640x272 and the core published a 640-wide raster
+// (about 640x359, "native-sd"). The core's raster is picture-wide, display-shaped (raster_geom), so
+// only a ~1280-wide decode reaches native-hd.
+// Rung chooser for a remote (non-LAN) OwenB play:
+//   * /library key, resolved Video Output = HDMI Native, first request -> 1280x720 at <= 4000k.
+//   * lowered retry, CRT/VGA/interlaced output (raster is the fixed 720x480), unknown output, or any
+//     non-/library key (Live TV) -> the unchanged 640x480 rung: <= 2000k with REMOTE_H264_TRANSCODE
+//     (remoteUsesFpga640), else <= 4000k (#276 applyRemoteOwenbCap).
+// kRemoteObNativeHdMaxKbps is the OB CAVLC rewrite ceiling (kOwenbCavlcMaxKbps = 4000): a first
+// request above it would hand the ARM a stream it refuses.
+// Mutants: MUT_RUNG_ALWAYS_480 MUT_RUNG_IGNORES_NATIVE MUT_RUNG_NO_LOWER_STEP MUT_RUNG_KBPS_UNCAPPED
+// MUT_RUNG_ANY_KEY.
+constexpr int kRemoteObNativeHdMaxKbps = 4000;
+constexpr int kRemoteObVoutNative = 3;   // h264ring.h H264RING_VOUT_NATIVE (1 interlaced, 2 progressive)
+struct RemoteObRung {
+    std::string res;
+    int kbps = 0;
+    bool hd = false;   // true: the 1280x720 native-hd rung
+};
+inline RemoteObRung remoteObRung(bool flagOn, bool nativeHd, bool lowered, bool libraryKey, int curKbps) {
+    (void)nativeHd; (void)lowered; (void)libraryKey;   // each is unused under one of the MUT_RUNG_* mutants
+    RemoteObRung r;
+#if defined(MUT_RUNG_ALWAYS_480)
+    const bool hd = false;
+#elif defined(MUT_RUNG_IGNORES_NATIVE)
+    const bool hd = !lowered && libraryKey;
+#elif defined(MUT_RUNG_NO_LOWER_STEP)
+    const bool hd = nativeHd && libraryKey;
+#elif defined(MUT_RUNG_ANY_KEY)
+    const bool hd = nativeHd && !lowered;
+#else
+    const bool hd = nativeHd && !lowered && libraryKey;
+#endif
+    if (hd) {
+        r.res = "1280x720";
+        r.hd = true;
+#if defined(MUT_RUNG_KBPS_UNCAPPED)
+        r.kbps = curKbps > 0 ? curKbps : kRemoteObNativeHdMaxKbps;
+#else
+        r.kbps = (curKbps > 0 && curKbps < kRemoteObNativeHdMaxKbps) ? curKbps : kRemoteObNativeHdMaxKbps;
+#endif
+        return r;
+    }
+    r.res = "1280x720";
+    r.kbps = curKbps;
+    if (remoteUsesFpga640(flagOn, true)) {
+        r.res = "640x480";
+        r.kbps = remoteFpgaKbps(curKbps);
+    } else {
+        applyRemoteOwenbCap(r.res, r.kbps, true, true);
+    }
+    return r;
+}
+
+// HDMI Native 720p request floor: PMS maps maxVideoBitrate to a quality tier before it fits the box, and its
+// 1.5 Mbps tier is the 720x480 box, so a 1280x720 request at the OB per-server memory floor (1500k) comes back
+// 720x405 for a 16:9 title. 2000k is PMS's lowest 1280x720 tier.
+// MPX_NATIVE_720P_MIN_KBPS: unset/empty/unparsable -> 2000, <= 0 -> off, else that floor.
+// Mutant: MUT_PLEX_NATIVE_REQ_SD (returns kbps unchanged).
+constexpr int kNativeHd720pMinKbps = 2000;
+inline int nativeHd720pMinKbpsFromEnv() {
+    const char* e = std::getenv("MPX_NATIVE_720P_MIN_KBPS");
+    if (!e || !e[0])
+        return kNativeHd720pMinKbps;
+    char* end = nullptr;
+    const long v = std::strtol(e, &end, 10);
+    if (end == e || *end != 0)
+        return kNativeHd720pMinKbps;
+    if (v <= 0)
+        return 0;
+    return v > 1000000 ? 1000000 : static_cast<int>(v);
+}
+// kbps raised to floorKbps for an OwenB 1280x720 request on HDMI Native below the floor; otherwise unchanged
+// (CRT/VGA/interlaced or unknown output, FPGA/legacy ladders, 640x480 rungs, unset kbps).
+inline int nativeHd720pRequestKbps(bool owenb, int vout, const std::string& videoResolution, int kbps,
+                                   int floorKbps) {
+#ifdef MUT_PLEX_NATIVE_REQ_SD
+    (void)owenb; (void)vout; (void)videoResolution; (void)floorKbps;
+    return kbps;
+#else
+    if (owenb && vout == kRemoteObVoutNative && videoResolution == "1280x720" && floorKbps > 0 && kbps > 0 &&
+        kbps < floorKbps)
+        return floorKbps;
+    return kbps;
 #endif
 }
 

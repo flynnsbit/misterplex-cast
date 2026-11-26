@@ -1,6 +1,7 @@
 #include "plexui_controller.hpp"
 
 #include "libmisterplex/browse_fetch.hpp"
+#include "libmisterplex/browse_shell.hpp"
 #include "libmisterplex/browse_v2.hpp"
 #include "filter_4_3.hpp"
 #include "grid_page.hpp"
@@ -41,6 +42,24 @@ PlexUiController::PlexUiController(Config cfg, Hooks hooks)
     else if (!err.empty() && hooks_.log)
         hooks_.log("plexui: " + err);
     renderer_.setImageCache(&images_);
+    if (cfg_.shellMode) {
+        BrowseShellController::Config sc;
+        sc.accountToken = cfg_.accountToken;
+        sc.fontDir = cfg_.fontDir;
+        sc.clientId = cfg_.clientId;
+        sc.seedServers = cfg_.seedServers;
+        sc.discoverLocal = cfg_.discoverLocal;
+        BrowseShellController::Hooks sh;
+        sh.get = hooks_.get;
+        sh.repaint = hooks_.repaint;
+        sh.playing = hooks_.playing;
+        sh.stopPlayback = hooks_.stopPlayback;
+        sh.play = hooks_.play;
+        sh.log = hooks_.log;
+        shell_ = std::make_unique<BrowseShellController>(std::move(sc), std::move(sh));
+        if (hooks_.log)
+            hooks_.log(formatBrowseShellNotice(true));
+    }
 }
 
 PlexUiController::~PlexUiController() {
@@ -49,6 +68,10 @@ PlexUiController::~PlexUiController() {
 }
 
 void PlexUiController::start(const std::function<void()>& nameThread) {
+    if (shell_) {
+        shell_->start(nameThread);
+        return;
+    }
     images_.start(
         makePlexuiImageHttpGet(),
         [this](const ImageCacheKey& key) {
@@ -67,6 +90,10 @@ void PlexUiController::start(const std::function<void()>& nameThread) {
 }
 
 void PlexUiController::stop() {
+    if (shell_) {
+        shell_->stop();
+        return;
+    }
     stopping_ = true;
     ++gen_;
     upNextToken_.fetch_add(1);
@@ -89,6 +116,10 @@ void PlexUiController::stop() {
 }
 
 void PlexUiController::postHorizontal(int delta, const char* src, int64_t recvMs) {
+    if (shell_) {
+        shell_->postHorizontal(delta, src, recvMs);
+        return;
+    }
     postIngress(delta > 0 ? BrowseOp::Right : BrowseOp::Left, src, recvMs);
 }
 
@@ -116,7 +147,10 @@ void PlexUiController::applyHorizontal(int delta) {
 #ifndef MUT_HOME_EMPTY_ROW_COL
                 // #257: an empty hub row (maxCol -1) left RIGHT unclamped, so col ran past the row
                 // and the focus patch restored an off-screen rect (SIGSEGV on  lab, row 3 col 3).
-                focus_.col = std::max(0, std::min(maxCol, focus_.col));
+                if (maxCol < 0)
+                    focus_.col = 0;
+                else
+                    focus_.col = std::max(0, std::min(maxCol, focus_.col));
 #else
                 if (maxCol >= 0)
                     focus_.col = std::min(maxCol, focus_.col);
@@ -189,6 +223,10 @@ void PlexUiController::applyHorizontal(int delta) {
 }
 
 void PlexUiController::postIngress(BrowseOp op, const char* src, int64_t recvMs) {
+    if (shell_) {
+        shell_->postIngress(op, src, recvMs);
+        return;
+    }
     const int64_t recv = recvMs > 0 ? recvMs : perfSteadyMs();
     const int64_t postMs = perfSteadyMs();
     NavTrace nt{};
@@ -224,6 +262,21 @@ void PlexUiController::postIngress(BrowseOp op, const char* src, int64_t recvMs)
 void PlexUiController::post(BrowseOp op) { postIngress(op, "http", 0); }
 
 void PlexUiController::onR1FlipAck(int64_t plxhMs, int64_t plxoMs) {
+    if (shell_) {
+        // Overlay ack is plexui::perfSteadyMs (offset from a static t0).
+        // Browse-shell keypress is browseShellNowMs (steady epoch). Mixing
+        // them made BROWSE_MS=0 on every in-window sample (glass f088b3dc).
+        int64_t flushMs = 0;
+        if (plxoMs > 0) {
+            const int64_t browseNow = browseShellNowMs();
+            const int64_t perfNow = perfSteadyMs();
+            flushMs = browseNow - (perfNow - plxoMs);
+            if (flushMs < 0)
+                flushMs = browseNow;
+        }
+        shell_->onFrameFlushed(flushMs, plxhMs);
+        return;
+    }
     bool tick = false;
     if (animWaitAck_.load()) {
         {
@@ -291,7 +344,25 @@ void PlexUiController::onR1FlipAck(int64_t plxhMs, int64_t plxoMs) {
     logLine(buf);
 }
 
+void PlexUiController::postSearch() {
+    if (shell_)
+        shell_->postSearch();
+}
+
+void PlexUiController::postText(char ch) {
+    if (shell_)
+        shell_->postText(ch);
+}
+
+bool PlexUiController::shellSearchOpen() const {
+    return shell_ && shell_->searchOpen();
+}
+
 void PlexUiController::onPlayStarted(uint64_t generation) {
+    if (shell_) {
+        shell_->onPlayStarted(generation);
+        return;
+    }
     ++gen_;
     std::lock_guard<std::mutex> lk(mu_);
     if (visible_) {
@@ -316,11 +387,15 @@ void PlexUiController::onPlayStarted(uint64_t generation) {
 }
 
 bool PlexUiController::visible() const {
+    if (shell_)
+        return shell_->visible();
     std::lock_guard<std::mutex> lk(mu_);
     return visible_;
 }
 
 bool PlexUiController::ownsSession() const {
+    if (shell_)
+        return shell_->ownsSession();
     std::lock_guard<std::mutex> lk(mu_);
     return ownsSession_;
 }
@@ -375,6 +450,8 @@ bool summaryDataReady(const PlexUiController::FrameSummary& s) {
 } // namespace
 
 bool PlexUiController::workerIdle() {
+    if (shell_)
+        return shell_->workerIdle();
     // busy_ flips in the same qMu_ section that pops the job, and it is cleared
     // under qMu_ only after handle() returns. Sampling it before that lock races
     // the handoff: the queue is already empty while Back or StopAndReopen is still
@@ -430,6 +507,8 @@ bool PlexUiController::waitForFrame(int timeoutMs) {
 }
 
 bool PlexUiController::paintReady() {
+    if (shell_)
+        return shell_->paintReady();
     if (!visible())
         return false;
     const FrameSummary s = frameSummary();
@@ -454,65 +533,105 @@ bool PlexUiController::paintReady() {
     return false;
 }
 
-bool PlexUiController::setRenderTarget(int w, int h, PixelFormat fmt) {
+PlexUiController::LayoutSig PlexUiController::currentLayoutSig() {
+    LayoutSig g;
+    g.w = kScreenW();
+    g.h = kScreenH();
+    g.posterW = kHubPosterW();
+    g.posterH = kHubPosterH();
+    g.left = kSafeMargin();
+    g.right = kSafeRight();
+    g.top = kHubTop();
+    g.sideW = kSidebarW();
+    g.tiles = hubVisibleTileCount();
+    g.gridCols = kGridCols();
+    return g;
+}
+
+// Re-plan everything derived from the layout when any input changed since the last frame.
+// oldGridCols is the grid column count the focus index was laid out for (-1: use the last sig).
+bool PlexUiController::syncLayoutLocked(int oldGridCols) {
+    const LayoutSig now = currentLayoutSig();
+    if (now == layoutSig_)
+        return false;
+    const int oldCols = oldGridCols > 0 ? oldGridCols : (layoutSig_.gridCols > 0 ? layoutSig_.gridCols : now.gridCols);
+    layoutSig_ = now;
+    setImageGeometry(kScreenW(), kScreenH(), P(8), kHubPosterW(), kHubPosterH());
+    const int newCols = now.gridCols;
+    if (newCols != oldCols && oldCols > 0 && !focus_.gridOnChips && !focus_.gridOnLetters) {   // keep the focused grid item
+        const int idx = focus_.row * oldCols + focus_.col;
+        focus_.row = idx / newCols;
+        focus_.col = idx % newCols;
+    }
+    syncGridScroll();
+    syncSidebarScroll();
+    syncChipScroll();
+    renderer_.markStaticDirty();
+    dirty_.store(true);
+    return true;
+}
+
+bool PlexUiController::setRenderTarget(int w, int h, PixelFormat fmt, bool interlaced) {
+    if (shell_)
+        return shell_->setRenderTarget(w, h, fmt, interlaced);
     std::lock_guard<std::mutex> lk(mu_);
     const int oldCols = kGridCols();
     const ScreenGeom before = screenGeom();
     setScreenGeom(w, h);
     const bool changed = before.w != kScreenW() || before.h != kScreenH() || fmt != fmt_;
+    const bool fmtChanged = fmt != fmt_;
     fmt_ = fmt;
+    const bool relaid = syncLayoutLocked(oldCols);
+    if (fmtChanged && !relaid) {
+        renderer_.markStaticDirty();
+        dirty_.store(true);
+    }
     if (!changed)
         return false;
-    setImageGeometry(kScreenW(), kScreenH(), P(8), kHubPosterW(), kHubPosterH());
-    const int newCols = kGridCols();
-    if (newCols != oldCols && !focus_.gridOnChips && !focus_.gridOnLetters) {   // keep the focused grid item
-        const int idx = focus_.row * oldCols + focus_.col;
-        focus_.row = idx / newCols;
-        focus_.col = idx % newCols;
-    }
-    syncGridScroll();
-    syncSidebarScroll();
-    syncChipScroll();
-    renderer_.markStaticDirty();
-    dirty_.store(true);
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "plexui: render target %dx%d %s scale=%.2f grid_cols=%d", kScreenW(),
-                  kScreenH(), fmt == PixelFormat::RGB24 ? "rgb24" : "bgra8888", uiScale(), newCols);
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "plexui: render target %dx%d %s scale=%.2f grid_cols=%d hub=%dx%d tiles=%d",
+                  kScreenW(), kScreenH(), fmt == PixelFormat::RGB24 ? "rgb24" : "bgra8888", uiScale(), kGridCols(),
+                  kHubPosterW(), kHubPosterH(), hubVisibleTileCount());
     logLine(buf);
     return true;
 }
 
 void PlexUiController::applyUiSafeLayout(int marginPct, UiSize size) {
+    if (shell_) {
+        shell_->applyUiSafeLayout(marginPct, size);
+        return;
+    }
     std::lock_guard<std::mutex> lk(mu_);
     const int oldCols = kGridCols();
     setUiSafePrefs(marginPct, size);
-    setImageGeometry(kScreenW(), kScreenH(), P(8), kHubPosterW(), kHubPosterH());
-    const int newCols = kGridCols();
-    if (newCols != oldCols && !focus_.gridOnChips && !focus_.gridOnLetters) {
-        const int idx = focus_.row * oldCols + focus_.col;
-        focus_.row = idx / newCols;
-        focus_.col = idx % newCols;
+    if (!syncLayoutLocked(oldCols)) {
+        renderer_.markStaticDirty();
+        dirty_.store(true);
     }
-    syncGridScroll();
-    syncSidebarScroll();
-    syncChipScroll();
-    renderer_.markStaticDirty();
-    dirty_.store(true);
 }
 
-UiSize PlexUiController::uiSize() const { return uiSafePrefs().size; }
+UiSize PlexUiController::uiSize() const { return shell_ ? shell_->uiSize() : uiSafePrefs().size; }
 
-int PlexUiController::uiSafeMarginPct() const { return uiSafePrefs().marginPct; }
+int PlexUiController::uiSafeMarginPct() const {
+    return shell_ ? shell_->uiSafeMarginPct() : uiSafePrefs().marginPct;
+}
 
 PixelFormat PlexUiController::renderFormat() const {
+    if (shell_)
+        return shell_->renderFormat();
     std::lock_guard<std::mutex> lk(mu_);
     return fmt_;
 }
 
 bool PlexUiController::copyFrame(std::vector<std::uint8_t>& frame) {
+    if (shell_)
+        return shell_->copyFrame(frame);
     std::lock_guard<std::mutex> lk(mu_);
     if (!visible_)
         return false;
+#ifndef MUT_HUX_NO_FRAME_RELAYOUT
+    syncLayoutLocked(-1);   // overscan / UI_SIZE / canvas moved since the last frame
+#endif
     scheduleImages();
     if (view_ == ViewId::LibraryGrid && gridArtLoadGen_ != 0 &&
         gridArtLoggedGen_ != gridArtLoadGen_ && gridVisiblePostersCached()) {
@@ -1177,11 +1296,17 @@ int PlexUiController::librarySidebarFocusLocked() const {
 }
 
 void PlexUiController::syncSidebarScroll() {
-    const int listTop = P(64);
-    const int listBottom = kScreenH() - kSafeBottomInset();
+    const int listTop = sidebarListTop();
+    const int listBottom = sidebarListBottom();
     const int visibleH = listBottom - listTop;
     const int rowH = kSidebarRowH();
     const int focusRow = std::max(0, focus_.sidebar);
+    if (uiText2x()) {
+        // FONT-2X: the rail scrolls by whole rows so every drawn row is whole (2x rows are tall).
+        sidebarScrollY_ = sidebarWholeRowScroll(focusRow, sidebarScrollY_,
+                                                1 + static_cast<int>(sidebarEntries_.size()));
+        return;
+    }
     const int rowY = listTop + focusRow * rowH;
     if (rowY - sidebarScrollY_ < listTop)
         sidebarScrollY_ = rowY - listTop;
@@ -1585,6 +1710,21 @@ int PlexUiController::testFocusRow() const {
 int PlexUiController::testSidebarFocus() const {
     std::lock_guard<std::mutex> lk(mu_);
     return focus_.sidebar;
+}
+
+int PlexUiController::testLayoutPosterW() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return layoutSig_.posterW;
+}
+
+int PlexUiController::testLayoutTiles() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return layoutSig_.tiles;
+}
+
+int PlexUiController::testLayoutW() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return layoutSig_.w;
 }
 
 int PlexUiController::testSidebarEntryCount() const {
@@ -2014,6 +2154,7 @@ void PlexUiController::handle(const Job& j) {
             std::lock_guard<std::mutex> lk(mu_);
             browseFromHidden = !visible_;
             visible_ = true;
+            syncLayoutLocked(-1);   // HOME-UX r3: reopen re-plans for the current canvas
             // GH#23: default view is ServerList. Opening with no catalog yet
             // must not paint the empty logo list (first Home after restart).
             // F2151: Back from that empty Home is idle Ready, not ServerList.
@@ -2364,6 +2505,18 @@ void PlexUiController::handle(const Job& j) {
             dirty_.store(true);
             return;
         }
+        // HOME-UX r3: B on a Home hub tile goes to the Home bar in the left list first
+        // (there is no Home key); B on the bar then leaves for the cast-ready idle. An empty
+        // Home (no tiles) still leaves in one press (F2151).
+#ifndef MUT_HUX_BACK_SKIPS_HOME_BAR
+        if (view_ == ViewId::Home && focus_.sidebar == 0 && homeContentNavigableLocked()) {
+            focus_.sidebar = kSidebarHomeFocus;
+            syncSidebarScroll();
+            bumpAnim();
+            dirty_.store(true);
+            return;
+        }
+#endif
         // Top of the UI (home, or the server list while it is still loading) leaves
         // the cast-ready idle. A server list is not the back target from home.
         if (isHomeSurface()) {
@@ -2483,7 +2636,10 @@ void PlexUiController::handle(const Job& j) {
                 if (focus_.row < static_cast<int>(hubs_.size())) {
                     const int maxCol =
                         static_cast<int>(hubs_[static_cast<std::size_t>(focus_.row)].items.size()) - 1;
-                    focus_.col = std::max(0, std::min(maxCol, focus_.col));
+                    if (maxCol < 0)
+                        focus_.col = 0;
+                    else
+                        focus_.col = std::max(0, std::min(maxCol, focus_.col));
                 }
 #endif
             }
@@ -3342,13 +3498,18 @@ bool PlexUiController::queueHasNext() const {
     return activeQueueIndex_ + 1 < static_cast<int>(activeQueue_.items.size());
 }
 
-void PlexUiController::postMark(MarkWatchedOp op) {
+bool PlexUiController::postMark(MarkWatchedOp op) {
+    if (shell_) {
+        if (hooks_.log)
+            hooks_.log("browse-shell: focused mark unsupported; command not consumed");
+        return false;
+    }
     if (op == MarkWatchedOp::None || !markWatchedEnabled())
-        return;
+        return false;
     {
         std::lock_guard<std::mutex> lk(qMu_);
         if (stopping_)
-            return;
+            return false;
         Job job;
         job.op = BrowseOp::Info;
         job.gen = ++gen_;
@@ -3356,13 +3517,19 @@ void PlexUiController::postMark(MarkWatchedOp op) {
         q_.push_back(job);
     }
     qCv_.notify_one();
+    return true;
 }
 
-void PlexUiController::postQueueMark(QueueMark mark) {
+bool PlexUiController::postQueueMark(QueueMark mark) {
+    if (shell_) {
+        if (hooks_.log)
+            hooks_.log("browse-shell: queue unsupported; command not consumed");
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lk(qMu_);
         if (stopping_)
-            return;
+            return false;
         Job job;
         job.op = BrowseOp::Info;
         job.gen = ++gen_;
@@ -3370,6 +3537,7 @@ void PlexUiController::postQueueMark(QueueMark mark) {
         q_.push_back(job);
     }
     qCv_.notify_one();
+    return true;
 }
 
 bool PlexUiController::focusedMarkLeafLocked(PlexItem& item) const {
@@ -3731,13 +3899,18 @@ void PlexUiController::syncEpisodeScroll() {
     episodeScrollRow_ = std::max(0, std::min(episodeScrollRow_, maxRow));
 }
 
-void PlexUiController::postQueueStep(int delta) {
+bool PlexUiController::postQueueStep(int delta) {
+    if (shell_) {
+        if (hooks_.log)
+            hooks_.log("browse-shell: queue step unsupported; command not consumed");
+        return false;
+    }
     if (delta == 0)
-        return;
+        return false;
     {
         std::lock_guard<std::mutex> lk(qMu_);
         if (stopping_)
-            return;
+            return false;
         Job job;
         job.op = BrowseOp::Select;
         job.gen = ++gen_;
@@ -3745,6 +3918,7 @@ void PlexUiController::postQueueStep(int delta) {
         q_.push_back(job);
     }
     qCv_.notify_one();
+    return true;
 }
 
 void PlexUiController::stepActiveQueue(int delta) {
@@ -3790,6 +3964,11 @@ void PlexUiController::stepActiveQueue(int delta) {
 }
 
 bool PlexUiController::armUpNext(const std::string& endedRatingKey) {
+    if (shell_) {
+        if (hooks_.log)
+            hooks_.log("browse-shell: no managed episode queue; normal EOF handling");
+        return false;
+    }
     if (stopping_.load())
         return false;
     uint64_t token = 0;

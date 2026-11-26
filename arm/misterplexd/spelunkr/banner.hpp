@@ -22,5 +22,7 @@ inline constexpr int64_t kSpelunkrBannerFadeMs = kOfficialTvBarFadeMs;
 inline constexpr int64_t kOwenbToastMs = 3000; // owenb_osd_renderer.hpp UiModel::kToastMs
 
 // Banner and guide overlays for Spelunkr use owenb_osd on the same MisterPlex core.
+// Session paging step (not identical to paint `room`, which follows raster/font).
+inline constexpr int kSpelunkrGuidePageRows = 6;
 
 } // namespace misterplex::spelunkr

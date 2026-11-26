@@ -30,6 +30,7 @@ bool YtFrontend::start(const YtConfig&, Sink) {
     return false;
 }
 void YtFrontend::stop() {}
+void YtFrontend::setAdvertise(bool on) { advertise_.store(on); }
 void YtFrontend::report(const std::string&, int64_t, int64_t) {}
 void YtFrontend::ended(bool) {}
 std::string YtFrontend::screenId() const { return std::string(); }
@@ -184,6 +185,14 @@ void YtFrontend::stop() {
 YtFrontend::YtFrontend() {}
 YtFrontend::~YtFrontend() { stop(); }
 
+void YtFrontend::setAdvertise(bool on) {
+    if (advertise_.exchange(on) == on || !running_.load()) return;
+    std::fprintf(stderr, "yt: %s\n", on ? "advertise: SSDP/DIAL on, Lounge re-binding" : "withdrawn: SSDP/DIAL off, Lounge closing");
+    // The in-flight long-poll returns now instead of at its idle timeout.
+    if (!on && pollHttp_) pollHttp_->cancel();
+    cv_.notify_all();
+}
+
 std::string YtFrontend::screenId() const { std::lock_guard<std::mutex> lk(mu_); return screenId_; }
 
 void YtFrontend::ssdpLoop() {
@@ -195,7 +204,7 @@ void YtFrontend::ssdpLoop() {
         ssize_t n = ::recvfrom(ssdpFd_, buf, sizeof buf - 1, 0, reinterpret_cast<sockaddr*>(&from), &fl);
         if (n <= 0) continue;
         const int mx = dial::dialSearchMx(std::string(buf, size_t(n)));
-        if (!mx) continue;
+        if (!mx || !advertise_.load()) continue;
         // GH#8: answer M-SEARCH as soon as DIAL :8008 is up. A phone's first
         // search at boot used to miss us while Lounge was still binding.
         const std::string ip = localAddrFor(from);
@@ -281,6 +290,7 @@ void YtFrontend::dialLoop() {
         ctx.screenId = screenId();
         ctx.appUrl = "http://" + localAddrOf(c) + ":" + std::to_string(cfg_.dialPort) + "/apps/";
         ctx.youtubeReady = loungeUp_.load();
+        ctx.advertise = advertise_.load();
         dial::Reply r = dial::handle(h, body, ctx);
         static const char* reasons[] = {"OK", "Created", "Not Found", "Method Not Allowed", "Payload Too Large"};
         const char* reason = r.status == 200 ? reasons[0] : r.status == 201 ? reasons[1] : r.status == 404 ? reasons[2]
@@ -388,9 +398,16 @@ void YtFrontend::loungeLoop() {
             return false;
         if (lounge::endPollForNewAid(advanced, endAfterAid))
             return false;
-        return running_.load();
+        return running_.load() && advertise_.load();
     };
     while (running_.load()) {
+        if (!advertise_.load()) {
+            loungeWithdraw();
+            clearGrace();
+            failures = 0;
+            while (running_.load() && !advertise_.load()) sleepMs(running_, 200);
+            continue;
+        }
         bool haveTok;
         { std::lock_guard<std::mutex> lk(mu_); haveTok = !loungeToken_.empty(); }
         if (!haveTok && !ensureToken(*pollHttp_)) {
@@ -448,7 +465,7 @@ void YtFrontend::loungeLoop() {
         std::fprintf(stderr, "yt: Lounge connected (screen %s...); waiting for a phone\n", screenId().substr(0, 6).c_str());
         { std::lock_guard<std::mutex> lk(mu_); outq_.push_back(nowPlayingLocked()); cv_.notify_all(); }
         int fails = 0;
-        while (running_.load()) {
+        while (running_.load() && advertise_.load()) {
             lounge::Channel snap;
             { std::lock_guard<std::mutex> lk(mu_); snap = ch_; }
             lounge::ChunkParser cp;
@@ -494,6 +511,26 @@ void YtFrontend::loungeLoop() {
             sleepMs(running_, 1000 * fails);
         }
     }
+}
+
+// Lounge thread only. Linked phones stop listing the screen; the screen id
+// and lounge token are kept for the next bind.
+void YtFrontend::loungeWithdraw() {
+    lounge::BindIds ids;
+    lounge::Channel ch;
+    long rid = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        ch = ch_;
+        ids = lounge::BindIds{uuid_, cfg_.name, loungeToken_};
+        rid = rid_++;
+        ch_.reset();
+        outq_.clear();
+    }
+    loungeUp_.store(false);
+    if (ch.sid.empty()) return;
+    const HttpsResult r = pollHttp_->request("GET", cfg_.loungeHost, lounge::bindTerminatePath(ids, ch, rid, zx()), "", "", 10);
+    std::fprintf(stderr, "yt: Lounge session closed (targets withdrawn) status=%d %s\n", r.status, r.err.c_str());
 }
 
 void YtFrontend::queueOut(const lounge::Out& o) {

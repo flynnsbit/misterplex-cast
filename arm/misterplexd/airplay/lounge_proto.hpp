@@ -798,6 +798,11 @@ inline std::string bindSendPath(const BindIds& b, const Channel& c, long rid, co
     return bindBase(b) + "&SID=" + formEncode(c.sid) + "&RID=" + std::to_string(rid) + "&AID=" + std::to_string(c.aid) +
            "&gsessionid=" + formEncode(c.gsid) + "&zx=" + zx + "&t=1";
 }
+// BrowserChannel close of this SID. The screen id and lounge token stay valid.
+inline std::string bindTerminatePath(const BindIds& b, const Channel& c, long rid, const std::string& zx) {
+    return bindBase(b) + "&SID=" + formEncode(c.sid) + "&RID=" + std::to_string(rid) + "&gsessionid=" +
+           formEncode(c.gsid) + "&TYPE=terminate&zx=" + zx + "&t=1";
+}
 
 }  // namespace lounge
 }  // namespace airplay

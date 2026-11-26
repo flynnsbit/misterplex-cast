@@ -219,8 +219,11 @@ assign LOCKED    = locked & vid_locked;
 //   [23:22]   NTSC Color                     NTSC, PAL60, PAL-M
 //   [24]      Analog Raster                  480i, 240p (MPX-FORK 240p): applies under 15kHz CRT
 //                                            (Auto on a 15 kHz CRT, or Video Output = 15kHz CRT). The 15 kHz raster
-//                                            is the 480i field pair or 262-line progressive 240p.
-//   [25]      Service                        Plex, Spelunkr
+//                                            is the 480i field pair or 262-line progressive 240p. Progressive on a
+//                                            15 kHz analog dest (and no 31 kHz VGA request) is always 240p (Analog
+//                                            Raster 480i is ignored for that mode; reviewer N1 2026-11-07); with
+//                                            vga31_want it stays 480p.
+//   [25]      Service                        Plex, Live TV
 //   [26+]     free
 //
 // FEASIBILITY's O[20]-for-240p is retired. O[24] is the appended 240p bit (MPX-FORK 240p).
@@ -235,7 +238,7 @@ localparam CONF_STR = {
 	"PlexOB;;",
 	"-;",
 	"O[6:5],Video Output,Auto,15kHz CRT,31kHz VGA,HDMI Native;",
-	"O[25],Service,Plex,Spelunkr;",
+	"O[25],Service,Plex,Live TV;",
 	"O[12:11],Refresh Rate,Auto,59.94 Hz,60 Hz,50 Hz;",
 	"O[2:1],Aspect Ratio,Auto,4:3,16:9;",
 	"H0O[4:3],Deinterlace,Weave,Bob,Blend;",
@@ -1365,21 +1368,44 @@ disp_fit disp_fit_inst (
 // From the shown picture (disp_fit's cropped size, aspect_vui's SAR, its coded width), the HDMI
 // display's shape and the refresh standard: display-shaped where it fits, else picture-sized, else
 // the fitted 720 raster (mode 2, word 80). Computes while a picture is shown, or when Native is
-// off (to go back to fitted); between streams it HOLDS -- a seek never flips the raster to 720 and
-// back. Its inputs change at the pickup (sh_*, the latched display and Native): the geometry is
+// off (to go back to fitted); on the pickup where Native turns back on (idle) it recomputes
+// display-shaped dw x dh; between streams it HOLDS -- a seek never flips the raster to 720 and
+// back -- until no picture has been shown for ~2 s (raster_geom's idle timer, clocked by the
+// pickup): then it recomputes display-shaped dw x dh from the CURRENT display, so an idle Home
+// is always the HDMI Native size (last source, a --plex restart, Main's late HDMI mode). Its inputs change at the pickup (sh_*, the latched display and Native): the geometry is
 // ready long before sync_gen takes it at the next frame's first dot.
+wire native_pending  = (video_out_eff == 2'd3) & ~nat_req_l;  // OSD chose Native; nat_req_l latches at pickup
+wire [11:0] geom_dw  = |fit_dw_l ? fit_dw_l : HDMI_WIDTH;   // pickup NBA lags; 0 would mode-2 720x480
+wire [11:0] geom_dh  = |fit_dh_l ? fit_dh_l : HDMI_HEIGHT;
+reg         nat_recompute_pend;
+reg         geom_busy_d;
+wire        geom_busy;
+always @(posedge clk_sys) begin
+	if (!reset_n) begin
+		nat_recompute_pend <= 1'b0;
+		geom_busy_d        <= 1'b0;
+	end else begin
+		geom_busy_d <= geom_busy;
+		if (disp_pick_ph && native_pending)
+			nat_recompute_pend <= 1'b1;
+		else if (nat_recompute_pend && geom_busy_d && !geom_busy)
+			nat_recompute_pend <= 1'b0;
+	end
+end
 raster_geom raster_geom_inst (
 	.clk    (clk_sys),
 	.rst_n  (reset_n),
-	.en     (sh_valid | ~nat_req_l),        // a picture shown (stream_live), or Native off
-	.req    (nat_req_l),
+	.en     (sh_valid | ~nat_req_l | nat_recompute_pend), // hold recompute until raster_geom accepts
+	.req    (nat_req_l | native_pending | nat_recompute_pend),
+	.pic    (sh_valid),                             // idle timer: no picture for ~2 s -> recompute dw x dh
+	.tick   (disp_pick_ph),
 	.wc     (fit_wc),
 	.hc     (fit_hc),
 	.sar_w  (fit_sar_w),
 	.sar_h  (fit_sar_h),
 	.w_mbs  (sh_w),
-	.dw     (fit_dw_l),
-	.dh     (fit_dh_l),
+	.dw     (geom_dw),
+	.dh     (geom_dh),
 	.std    (raster_std),
 	.mode   (geom_mode),
 	.rw     (geom_rw),
@@ -1388,7 +1414,7 @@ raster_geom raster_geom_inst (
 	.l      (geom_l),
 	.nt     (geom_nt),
 	.last   (geom_last),
-	.busy   ()
+	.busy   (geom_busy)
 );
 
 wire  [7:0] pic_r, pic_g, pic_b;
@@ -1649,16 +1675,22 @@ always @(posedge clk_sys or negedge reset_n) begin
 	else if (cfg_seen && !stream_live)  begin analog_want_l <= analog_want_raw; vga31_want_l <= vga31_want_raw; end
 end
 wire [1:0] video_out_mode = status[6:5];     // 0 Auto, 1 Interlaced, 2 Progressive, 3 Native (HDMI: progressive, the picture's own raster)
-assign video_out_eff  = (video_out_mode != 2'd0) ? video_out_mode :
-                        analog_want_l            ? 2'd1 :
-                        vga31_want_l             ? 2'd2 : 2'd3;
-// MPX-FORK 240p: Analog Raster 240p replaces the 480i field pair by a 262-line progressive raster
-// (sync_gen std 3, interlaced 0). It is the same analog raster (video_out_eff == 1), so the
-// reader, fit, overlay and csync keep their 480i short-field (il) path via il_pix_sys / v_pix_il,
-// while interlaced_eff (the field PAIR: disp_ctl's hold, Deinterlace, HDMI Bob) is 0.
-assign il_pix_sys     = (video_out_eff == 2'd1);
-assign p240_eff       = il_pix_sys & status[24];
-assign interlaced_eff = il_pix_sys & ~status[24];
+// Analog pins follow this raster (VGA_SCALER=0). HDMI H-rate is ascal video_mode.
+// Progressive on a 15 kHz analog dest is true 240p (see video_out_resolve.sv).
+video_out_resolve video_out_resolve_inst (
+	.video_out_mode     (video_out_mode),
+	.analog_want        (analog_want_l),
+	.vga31_want         (vga31_want_l),
+	.analog_raster_240p (status[24]),
+	.video_out_eff      (video_out_eff),
+	.il_pix_sys         (il_pix_sys),
+	.p240_eff           (p240_eff),
+	.interlaced_eff     (interlaced_eff)
+);
+// MPX-FORK 240p: Analog Raster 240p, and Progressive on a 15 kHz analog dest, replace the 480i
+// field pair by a 262-line progressive raster (sync_gen std 3, interlaced 0). The analog 15 kHz
+// family is il_pix_sys (reader, fit, overlay, csync keep the short-field path via v_pix_il).
+// interlaced_eff (the field PAIR: disp_ctl's hold, Deinterlace, HDMI Bob) is 0 in 240p.
 
 // Refresh Rate (P6 steps 5 / 6, docs/analog.md §8 / §10; decided 2026-09-29 with the
 // maintainer): 59.94 Hz, 60.00 Hz (the 525-line raster, one line in seven a dot longer:
@@ -1960,7 +1992,7 @@ wire [63:0] st_sys_word, st_mem_word, st_dec_word;
 `ifdef MPX_PLEXOB_BUILD_ID
 wire [31:0] mpx_build_id = `MPX_PLEXOB_BUILD_ID;
 `else
-wire [31:0] mpx_build_id = 32'h0B1101C5;
+wire [31:0] mpx_build_id = 32'h0B112501;
 `endif
 wire [63:0] mpx_ring_sys_word =
     (st_sys_ix == 7'd87) ? {32'd0, 20'd0, 1'b1, status[25], p240_act_sys, status[24], 4'd0, status[23:20]} :

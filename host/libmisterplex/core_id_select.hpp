@@ -204,6 +204,10 @@ inline const char* utilityRbfForBuild(uint32_t id) {
     // as MiSTerPlex.rbf. Fit artifact plexob-yc-0b2403a7.
     case 0x0B2403A7u:
     case 0x0B1101C5u: // shipped id, seed 10, md5 96eb13d2; same installed file name as 0x0B2403A7
+    case 0x0B110715u: // PR #374 analog 15 kHz dest; pending fit; same installed file name
+    case 0x0B110724u: // PR #374 reviewer N1 analog Progressive 240p; pending fit; same installed file name
+    case 0x0B111401u: // PR #374 fleet fit stamp; pending fit; same installed file name
+    case 0x0B112501u: // ascal-baaeff6 HDMI snow fix, seed 14 of 544565ba; same installed file name
         return "/media/fat/_Utility/MiSTerPlex.rbf";
     default:
         return nullptr;
@@ -479,9 +483,9 @@ inline bool menuBounceRecoveryDue(const char* coreName, bool markerPresent) {
     return markerPresent && strandedOnMenuCore(coreName);
 }
 
-// Process start on the menu core, with or without the bounce marker. A
-// mid-session "user opened menu" still uses menuBounceRecoveryDue, which
-// stays false when the marker is absent.
+// The menu core, with or without the bounce marker. Not used by the daemon:
+// process start never loads a core, and the exit path uses
+// menuBounceRecoveryDue, which stays false when the marker is absent.
 inline bool bareDaemonMenuReload(const char* coreName) {
     return strandedOnMenuCore(coreName);
 }

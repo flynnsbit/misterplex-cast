@@ -19,7 +19,9 @@ EXCLUDES=(
   h264/ring_in.sv
   h264/ovl_plane.sv
   h264/ring_stat.sv
+  h264/raster_geom.sv
   h264/sync_gen.sv
+  h264/video_out_resolve.sv
   h264/vid_out.sv
 )
 args=()

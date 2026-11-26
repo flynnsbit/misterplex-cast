@@ -48,6 +48,7 @@ struct MediaPacket {
     std::vector<uint8_t> data;              // Video: one Annex-B AU; Audio: 48 kHz s16le stereo
     int64_t pts90k = h264stream::kNoPts90k;
     bool keyframe = false;                  // Video: an IDR (random access point)
+    bool discontinuity = false;             // tune-class rebase (seek / live disc splice)
 };
 
 // In-place track change. Failed: the caller may reopen the input at the current position.
@@ -105,6 +106,9 @@ public:
     // The audio decoder is allocated and open. The index can stay selected after
     // the decoder is freed; that is silence, not a live track.
     virtual bool audioDecoderOpen() const { return false; }
+    // Loopback live remux (/yt-live.ts). A full ring must not hang the play
+    // thread forever (glass 47abfbbb: zap 6/6 stuck, no tune dial=).
+    virtual bool liveRemux() const { return false; }
     // Identity of the embedded text track whose PMS index may not match this file.
     virtual void setEmbeddedTextIdentity(const misterplex::PlexTextIdentity&) {}
     // NET_RESUME stall watch. The default is a no-op, so a scripted source and a
@@ -145,6 +149,8 @@ struct OpenRequest {
     // >0: abandon this open attempt after this many ms (interrupt deadline); the error then
     // reads "open: Connection timed out (attempt cap)". 0: no cap (libav rw_timeout only).
     int64_t attemptTimeoutMs = 0;
+    // Shared with the prefetch deadline; null preserves the fixed per-attempt cap.
+    std::shared_ptr<std::atomic<int64_t>> attemptExtraBudgetMs;
     std::shared_ptr<PrefetchedInput> prefetched; // Spelunkr only: single-use, opened off-ring
     // Spelunkr header (moov) cache, keyed by (url, size, etag). size < 0: the header cache is
     // off for this open (default; Plex plays never set these) and AvSource opens url normally.
@@ -158,8 +164,19 @@ struct OpenRequest {
         bool cacheHit = false;
         int64_t cachedBytesServed = 0;
         int64_t liveBytesRead = 0;
+        int64_t liveOpenMs = -1;
+        int64_t liveSeekMs = 0;
+        int64_t cacheReadMs = 0;
+        int64_t movParseMs = -1;
+        int liveOpens = 0;
+        int liveSeeks = 0;
+        int liveReconnects = 0;
     };
     HeaderCacheStatsOut* headerCacheStatsOut = nullptr;
+    // Split-rendition live remux (two HLS inputs, e.g. Vevo). Test hook / player
+    // override. AvSource also detects two-program MPEG-TS and LiveRelay's
+    // splitLiveRemuxActive. VOD and muxed Pluto must stay false (FIFO).
+    bool splitLiveRendition = false;
 };
 
 using SourceFactory = std::function<std::unique_ptr<IMediaSource>(const OpenRequest&, std::string& err)>;
@@ -823,6 +840,9 @@ struct SessionConfig {
     std::function<int64_t()> nowNs;     // the rewrite timer's clock (steady_clock when unset; tests inject one)
     unsigned pcmRecordBytes = 3840;     // PCM records of at most 20 ms (48 kHz x 4 bytes x 0.02 s)
     unsigned backoffUs = 2000;          // a full ring: wait, then try again
+    // Live remux: give up a Full ring so a subsequent zap can start (tune dial=).
+    // 0: wait forever (VOD). MUT_LIVE_NO_FULL_GIVEUP forces 0.
+    unsigned liveFullGiveUpMs = 8000;
     unsigned idleUs = 10000;            // paused / draining: the poll period
     unsigned drainTimeoutMs = 30000;    // end of input: give up when the core made NO progress for this long
     unsigned drainMaxMs = 300000;       // end of input: absolute cap on the drain, progress or not

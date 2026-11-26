@@ -3,6 +3,7 @@
 // Item filename is `file` (happy-trees) or `mp4` (saturday-morning). Both are observed.
 
 #include "gcast/mini_json.hpp"
+#include "libmisterplex/pluto_live.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -27,26 +28,116 @@ inline std::string urlHost(const std::string& url) {
     const auto scheme = url.find("://");
     if (scheme == std::string::npos)
         return {};
-    std::string h = url.substr(scheme + 3);
-    const auto slash = h.find('/');
-    if (slash != std::string::npos)
-        h.resize(slash);
-    const auto colon = h.find(':');
-    if (colon != std::string::npos)
-        h.resize(colon);
+    const size_t start = scheme + 3;
+    const size_t end = url.find_first_of("/?#\\", start);
+    std::string h = url.substr(start, (end == std::string::npos ? url.size() : end) - start);
+    const auto at = h.rfind('@');
+    if (at != std::string::npos)
+        h.erase(0, at + 1);
+    if (!h.empty() && h.front() == '[') {
+        const auto rb = h.find(']');
+        if (rb != std::string::npos)
+            h.resize(rb + 1);
+    } else {
+        const auto colon = h.find(':');
+        if (colon != std::string::npos)
+            h.resize(colon);
+    }
+    for (char& c : h) {
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    }
     return h;
 }
 
-inline bool hostAllowed(const std::string& url) {
-    if (url.rfind("https://spelunkr.tv/", 0) == 0)
-        return true;
-    const std::string h = urlHost(url);
+inline bool hostIsArchive(const std::string& h) {
     if (h == "archive.org" || h == "www.archive.org")
         return true;
     const char* suf = ".archive.org";
     const size_t n = std::strlen(suf);
     return h.size() > n && h.compare(h.size() - n, n, suf) == 0;
 }
+
+inline bool hostSuffixMatch(const std::string& h, const char* base, const char* dotSuf) {
+    if (h == base)
+        return true;
+    const size_t n = std::strlen(dotSuf);
+    return h.size() > n && h.compare(h.size() - n, n, dotSuf) == 0;
+}
+
+inline bool plutoHostnameWellFormed(const std::string& h) { return !h.empty() && h.back() != '.'; }
+
+// reviewer SPEC: allowlist + bearer scope = exact suffix pluto.tv | plutotv.net only
+// (host == base or ends with "."+base; rejects evilplutotv.net-style substring tricks).
+inline bool hostIsPlutoTv(const std::string& h) {
+    return plutoHostnameWellFormed(h) && hostSuffixMatch(h, "pluto.tv", ".pluto.tv");
+}
+
+inline bool hostIsPlutoCdn(const std::string& h) {
+    return plutoHostnameWellFormed(h) && hostSuffixMatch(h, "plutotv.net", ".plutotv.net");
+}
+
+inline bool hostIsPlutoOwned(const std::string& h) { return hostIsPlutoTv(h) || hostIsPlutoCdn(h); }
+
+// Reject characters that make urlHost and libav's av_url_split disagree
+// on the host (notably backslash), plus userinfo and controls. A schedule
+// URL containing these must not pass the allow-list and then be fetched.
+inline bool urlHasForbiddenChars(const std::string& url) {
+    for (unsigned char c : url) {
+        if (c <= 0x20 || c == 0x7f || c == '\\' || c == '@')
+            return true;
+    }
+    return false;
+}
+
+// https default port only. No port, or an exact ":443", is allowed.
+inline bool urlPortAllowed(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos)
+        return false;
+    const size_t start = scheme + 3;
+    const size_t end = url.find_first_of("/?#\\", start);
+    std::string auth = url.substr(start, (end == std::string::npos ? url.size() : end) - start);
+    const auto at = auth.rfind('@');
+    if (at != std::string::npos)
+        auth.erase(0, at + 1);
+    if (auth.empty())
+        return false;
+    if (auth.front() == '[') {
+        const auto rb = auth.find(']');
+        if (rb == std::string::npos)
+            return false;
+        if (rb + 1 == auth.size())
+            return true;
+        if (auth[rb + 1] != ':')
+            return false;
+        return auth.compare(rb + 2, std::string::npos, "443") == 0;
+    }
+    const auto colon = auth.find(':');
+    if (colon == std::string::npos)
+        return true;
+    return auth.compare(colon + 1, std::string::npos, "443") == 0;
+}
+
+inline bool hostAllowed(const std::string& url) {
+    if (url.rfind("https://", 0) != 0)
+        return false;
+    if (urlHasForbiddenChars(url))
+        return false;
+    if (!urlPortAllowed(url))
+        return false;
+    const std::string h = urlHost(url);
+    if (h.empty())
+        return false;
+    if (h == "spelunkr.tv" || h == "www.spelunkr.tv")
+        return true;
+    if (h == "backwhen.stream" || h == "www.backwhen.stream")
+        return true;
+    if (misterplex::plutoLiveEnabled() && hostIsPlutoOwned(h))
+        return true;
+    return hostIsArchive(h);
+}
+
 
 inline std::string percentEncodePath(const std::string& s) {
     std::string o;
@@ -232,7 +323,7 @@ struct ArchiveItemMeta {
     std::unordered_map<std::string, ArchiveFileMeta> files;
 };
 
-// GBE #625 P3-6 / P2-1: keep .mp4/.m4v/.mov rows (ch12's item has 2400 files: thumbs, xml,
+// browse-lane #625 P3-6 / P2-1: keep .mp4/.m4v/.mov rows (ch12's item has 2400 files: thumbs, xml,
 // torrents). Dropping .m4v/.mov lost size/etag, so DeadTailMoov never fired on ch28/36/53/204.
 inline bool archiveMetaKeepsRow(const std::string& name) {
     if (name.size() < 4)
@@ -247,7 +338,7 @@ inline bool parseArchiveItemMeta(const std::string& body, ArchiveItemMeta& out) 
     out = {};
     airplay::Json root;
     if (!airplay::parseJson(body, root) || root.type != airplay::Json::Obj) {
-        // GBE #625 P3-5: a body that does not parse (e.g. truncated at maxBody) keeps the old
+        // browse-lane #625 P3-5: a body that does not parse (e.g. truncated at maxBody) keeps the old
         // scanJsonStringField locator fallback: rows stay empty, so every file is "dims unknown".
         return parseArchiveLocator(body, out.d1, out.dir);
     }
@@ -321,6 +412,8 @@ struct Channel {
     int dial = 0;
     std::string color;
     std::string family;
+    std::string section;  // "Spelunkr" or "Back When"
+    std::string kind;     // ia/weather/pluto/board or empty for spelunkr.tv
     std::vector<VersionPtr> versions;
 };
 
@@ -339,12 +432,21 @@ struct Item {
     int durationSec = 0;
     std::string title;
     std::string year;
+    // Back When absolute-clock fields (0 / empty = unused; Spelunkr cycle model).
+    int64_t startUnix = 0;
+    int64_t endUnix = 0;
+    std::string directUrl;
+    std::string fallbackUrl;
+    bool ad = false;
+    bool playable = true;
+    std::string flag;  // unsupported banner text when playable is false
 };
 
 struct Manifest {
     int engine = 0;
     std::string channel;
     int version = 0;
+    bool absoluteClock = false;  // Back When s/e unix times, not cycle/startIndex
     std::vector<Item> items;
 };
 

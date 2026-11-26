@@ -41,6 +41,8 @@ struct AirplayConfig {
     // Production: MediaPlayer::pushAirplayMirrorPcm. Decoded 48k s16 stereo during a mirror session goes here
     // (same ring as the video) instead of being dropped. Unset = mirror stays silent (rc-1027 behaviour).
     std::function<bool(const uint8_t* pcm, size_t len)> onMirrorPcm;
+    // Asked before /play (false: 415) and a mirror SETUP (false: refused). Unset admits.
+    std::function<bool(const char* kind)> castAdmit;
 };
 
 // "http://host:port/..." -> host ("" if not http)
@@ -130,6 +132,10 @@ public:
     bool start(const AirplayConfig& cfg, Sink sink);
     void stop();
     bool running() const { return running_.load(); }
+    // Off: the worker unregisters _airplay._tcp/_raop._tcp (mDNS goodbye) and
+    // does not register again until on. The receiver keeps listening.
+    void setAdvertise(bool on) { advertise_.store(on); }
+    bool castAdmit(const char* kind) const { return !cfg_.castAdmit || cfg_.castAdmit(kind); }
     PlaybackSnapshot& snapshot() { return snap_; }
     EventQueue& queue() { return q_; }
     // RAOP audio entry points (called from UxPlay threads via the C callbacks)
@@ -176,6 +182,8 @@ private:
     AirplayConfig cfg_{};
     unsigned short httpPort_ = 0;
     std::string advertisedAddr_;
+    std::atomic<bool> advertise_{true};
+    bool advertiseApplied_ = true;   // worker thread
     int advertiseWaits_ = 0;
     int64_t nextAdvertiseMs_ = 0;
     bool audioSettled_ = false;

@@ -40,6 +40,12 @@ struct TlsVerifiedResult {
     bool optedOut = false;
     std::string warning;
     bool cancelled = false;
+    // Per-request timers (milliseconds). -1: that phase was not reached or not measured.
+    int64_t dnsMs = -1;
+    int64_t connectMs = -1;
+    int64_t tlsMs = -1;
+    int64_t ttfbMs = -1;
+    int64_t bodyBytes = 0;
 };
 
 TlsVerifiedResult tlsVerifiedGet(const TlsVerifiedRequest& req);

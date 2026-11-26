@@ -19,6 +19,7 @@
 #include "../../assets/plex-profiles/fpga_profile.hpp"
 #include "libmisterplex/p720_transcode_vf.hpp"
 #include "libmisterplex/core_gate.hpp"
+#include "libmisterplex/picture_14_9.hpp"
 #include "libmisterplex/core_id_select.hpp"
 
 #include <algorithm>
@@ -2093,7 +2094,9 @@ std::string decisionCoreMismatch(const DecisionVideo& v, const WeakLadder& weak)
 
 WeakLadder lowerPmsLadder(const WeakLadder& weak) {
     WeakLadder w = weak;
+#ifndef MUT_LOWER_NOT_LOWERED   // test-only mutant: the lowered retry no longer marks the ladder lowered
     w.pmsLowered = true;
+#endif
     // A forced transcode stays on the 30 fps cap. 60 is direct-play only.
 #ifndef MUT_480P60_LOWER_KEEPS60
     w.directPlayFpsCap = 30;
@@ -2521,6 +2524,10 @@ bool hostLooksPrivateLan(const std::string& host) {
 // lan for private PMS; wan for public/shared remote bases (location=lan on a
 // public address confuses some shared PMS transcoders and is wrong metadata).
 const char* plexLocationForBase(const std::string& base) {
+    // MPX_FORCE_REMOTE_PATH=1 (default off, glass/test aid): every server is "wan", so the remote path runs
+    // against a LAN server. See remote_h264_transcode.hpp forceRemotePathEnabled and docs/REMOTE-720P-RUNG.md.
+    if (misterplex::forceRemotePathEnabled())
+        return "wan";
     std::string host;
     auto scheme = base.find("://");
     if (scheme == std::string::npos)
@@ -4241,7 +4248,14 @@ bool ensureUniversalDecision(const std::string& startUrl, const std::string& ses
         tlsLastDecisionVideo = dv;
         const bool checkCore = isFpgaPlexProfile(weak) || weak.h264Profile == "high" ||
                                modeResolveRow(weak.profileName) != nullptr;
-        const std::string mm = checkCore ? decisionCoreMismatch(dv, weak) : std::string();
+        std::string mm = checkCore ? decisionCoreMismatch(dv, weak) : std::string();
+        // MPX_FORCE_REMOTE_RETRY (glass/test aid, default off): the first remote OwenB request counts as failed.
+        // Scoped to the HD first request (HDMI Native /library) and claimed once per daemon run (remote_h264_transcode.hpp).
+        if (mm.empty() &&
+            misterplex::remoteForcedRetryDue(misterplex::forceRemoteRetryEnabled(), wan, weak.owenb, weak.pmsLowered,
+                                             misterplex::tlsForcedRetryHdRung()) &&
+            misterplex::claimForcedRetry())
+            mm = misterplex::kForcedRetryMismatch;
         std::fprintf(stderr,
                      "misterplexd: decision video codec=%s profile=%s level=%d refs=%d %dx%d bitDepth=%d hw=%s "
                      "part=%s check=%s%s%s profileName=%s\n",
@@ -4465,20 +4479,48 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
     const bool fpgaBackend = session == VideoBackend::FpgaH264;
     WeakLadder playWeak =   // BUG1 pre-play: lowered below once the metadata shows a CAVLC source above the hard cap
         ladderForPlaySession(session, weakIn, !plexTargetIsPrivateLan(plexBase));
-    // #207 r3: a forced remote PlexOB play asks for the FPGA 640x480 profile, not 1280x720/6000k.
+    // #207 r3 / #276: a remote PlexOB transcode asks the 640x480 box (<= 2000k with REMOTE_H264_TRANSCODE, else
+    // <= 4000k). 720p-titles fix: /library keys on HDMI Native ask 1280x720 at <= 4000k first so the core publishes
+    // native-hd; remoteObRung keeps 640x480 for a lowered retry, CRT/VGA/interlaced output, an unknown output and
+    // every non-/library key (Live TV unchanged). The resolved Video Output is the daemon's last read of the core
+    // (picture149VoutSlot: 1 interlaced, 2 progressive, 3 native; 0 = unknown -> the 640x480 rung).
     const bool remoteBaseEarly = !plexTargetIsPrivateLan(plexBase);
-    if (playWeak.owenb && misterplex::remoteUsesFpga640(misterplex::remoteH264TranscodeEnabled(),
-                                                        remoteBaseEarly)) {
-        playWeak.videoResolution = "640x480";
-        playWeak.maxVideoBitrateKbps = misterplex::remoteFpgaKbps(playWeak.maxVideoBitrateKbps);
-        std::fprintf(stderr, "misterplexd: remote ladder FPGA 640x480 %dk (REMOTE_H264_TRANSCODE=1)\n",
-                     playWeak.maxVideoBitrateKbps);
-    } else if (playWeak.owenb && remoteBaseEarly) {
-        const int beforeCap = playWeak.maxVideoBitrateKbps;
-        misterplex::applyRemoteOwenbCap(playWeak.videoResolution, playWeak.maxVideoBitrateKbps, true,
-                                        true);
-        std::fprintf(stderr, "misterplexd: remote OwenB cap 640x480 %dk (was %dk)\n",
-                     playWeak.maxVideoBitrateKbps, beforeCap);
+    // MPX_FORCE_REMOTE_RETRY scope: only the HD first request below may be forced; cleared on every exit.
+    struct ForcedRetryScope {
+        ForcedRetryScope() { misterplex::tlsForcedRetryHdRung() = false; }
+        ~ForcedRetryScope() { misterplex::tlsForcedRetryHdRung() = false; }
+    } forcedRetryScope;
+    if (playWeak.owenb && remoteBaseEarly) {
+        const bool libraryKey = urlDecode(rawKeyOrPath).rfind("/library", 0) == 0;
+        const bool nativeHd = misterplex::picture149VoutSlot().load() == misterplex::kRemoteObVoutNative;
+        const int beforeKbps = playWeak.maxVideoBitrateKbps;
+        const misterplex::RemoteObRung rung = misterplex::remoteObRung(
+            misterplex::remoteH264TranscodeEnabled(), nativeHd, playWeak.pmsLowered, libraryKey, beforeKbps);
+        playWeak.videoResolution = rung.res;
+        playWeak.maxVideoBitrateKbps = rung.kbps;
+        misterplex::tlsForcedRetryHdRung() = rung.hd;
+        if (rung.hd) {
+            std::fprintf(stderr, "misterplexd: remote rung %s %dk (HDMI Native, was %dk)\n", rung.res.c_str(),
+                         rung.kbps, beforeKbps);
+        } else if (misterplex::remoteUsesFpga640(misterplex::remoteH264TranscodeEnabled(), true)) {
+            std::fprintf(stderr, "misterplexd: remote ladder FPGA 640x480 %dk (REMOTE_H264_TRANSCODE=1)\n",
+                         rung.kbps);
+        } else {
+            std::fprintf(stderr, "misterplexd: remote OwenB cap 640x480 %dk (was %dk)\n", rung.kbps, beforeKbps);
+        }
+    }
+    {
+        const int was = playWeak.maxVideoBitrateKbps;
+        const int floored = misterplex::nativeHd720pRequestKbps(
+            playWeak.owenb, misterplex::picture149VoutSlot().load(), playWeak.videoResolution, was,
+            misterplex::nativeHd720pMinKbpsFromEnv());
+        if (floored != was) {
+            playWeak.maxVideoBitrateKbps = floored;
+            std::fprintf(stderr,
+                         "misterplexd: HDMI Native 1280x720 request floor %dk (was %dk; below it PMS picks its "
+                         "720x480 tier)\n",
+                         floored, was);
+        }
     }
     const WeakLadder& weak = playWeak;
     bool audioNeedsTranscode = false;   // explicit non-default audio: never hand back a direct Part

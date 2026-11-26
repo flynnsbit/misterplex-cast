@@ -1,5 +1,6 @@
 // OWENB-P1B T5: the daemon's OB play worker (owenb_play.hpp). T7: the long-lived idle session.
 #include "owenb_play.hpp"
+#include "service_switch.hpp"
 
 #include "ob_glass.hpp"
 #include "owenb_aspect.hpp"
@@ -9,6 +10,7 @@
 #include <cerrno>
 #include <chrono>
 #include <memory>
+#include <thread>
 #include <utility>
 
 namespace misterplex::owenb {
@@ -194,11 +196,15 @@ void OwenbPlayer::fireOsdStarted() {
 void OwenbPlayer::teardownLocked() {
     osdStartedFire_ = {};
     if (osd_) {
+        osd_->setHoldOverlayOnShutdown(holdOverlayOnShutdown_.load());
         osd_->stop();
         osdLast_ = osd_->stats();
         osd_.reset();
     }
-    if (fbMapped_ && osdCfg_.unmapFb)
+    // GH#649: unmapFb reattaches fbcon and drops the pages that still show
+    // SWITCHING TO SPELUNKR/PLEX. Leave the map (and fbcon detached) for the
+    // next daemon; process exit unmaps the VA without rebinding the console.
+    if (fbMapped_ && osdCfg_.unmapFb && !holdOverlayOnShutdown_.load())
         osdCfg_.unmapFb();
     fbMapped_ = false;
     session_.reset();
@@ -224,7 +230,7 @@ bool OwenbPlayer::idleBeginLocked() {
     idleUp_ = true;
     ++idleStarts_;
     aspect_.newSession();
-    // GBE N-7: drive Interlaced letterbox guard from Spelunkr state on idle too
+    // browse-lane N-7: drive Interlaced letterbox guard from Spelunkr state on idle too
     {
         const int ar = spelunkrAspect_.load();
         aspect_.setSpelunkrMode(ar == 1 || ar == 2);
@@ -257,12 +263,29 @@ bool OwenbPlayer::claimExternalPlay(std::string& err) {
             err = "an Owenb play session is running";
             return false;
         }
+        if (session_) {
+            // The worker clears active_ only after its last use of mu_ and session_.
+            if (thr_.joinable())
+                thr_.join();
+            session_.reset();
+        }
         if (!openRingLocked(err))
             return false;
         startOsdLocked();
         active_ = true;
         idleUp_ = false;   // keeper skips idle re-arm while active_
         ui_.update([](owenb_osd::UiModel& m) { m.idle = false; });
+        aspect_.configure(aspectCfg_.enabled, aspectCfg_.store, log_);
+        aspect_.newSession(false);
+        picture149BeginPlay();
+        const owenb_osd::OvlStatus st = port_->status();
+        if (st.valid)
+            picture149NoteVout(static_cast<int>(st.raster.videoOut));
+        aspectEnded_ = false;
+        const int armed = pictureArm_.load();
+        applyArmedPicture(armed);
+        pictureLive_.store(armed);
+        pictureDirty_.store(true);
         ok = true;
     }
     fireOsdStarted();
@@ -273,6 +296,8 @@ void OwenbPlayer::releaseExternalPlay() {
     std::lock_guard<std::mutex> g(mu_);
     if (session_)
         return;   // a real play took the handle; leave it
+    endAspect(window_.get());
+    pictureDirty_.store(false);
     active_ = false;
     if (idleWanted_ && ring_) {
         // PLAY-PENDING owns the screen. Re-arming the idle session must not put the card back.
@@ -345,6 +370,11 @@ void OwenbPlayer::stopIdle() {
     if (keeper_.joinable())
         keeper_.join();
     std::lock_guard<std::mutex> g(mu_);
+    if (holdOverlayOnShutdown_.load()) {
+        // GH#649: ~OwenbPlayer / stopIdle after retirePlayback must not hide().
+        teardownLocked();
+        return;
+    }
     ui_.setIdle(false);
     if (!active_ && !session_)
         teardownLocked();   // a running play keeps the handle; its stop() closes it
@@ -446,8 +476,20 @@ bool OwenbPlayer::start(const OpenRequest& req, uint64_t sessionId, SessionConfi
                         std::string& err) {
     // The accept (or playOwenbRoute) already stored this session's gen. Capture it
     // before stop() joins the previous thread, whose epilogue must not adopt it.
+    // GH#648: after first picture, pending is already clear. stop() would
+    // paint "Open the Guide" over the live frame. Re-arm keep-chrome with
+    // the new session's gen, then capture myPending so onFirstPicture still
+    // recognizes this play.
+    {
+        const auto snap = ui_.snapshot();
+        if (snap.spelunkr && !snap.pending && snap.presented)
+            ui_.armPlayPending(sessionId, {}, snap.spelunkrDial, snap.spelunkrName);
+    }
     const uint64_t myPending = ui_.snapshot().pendingGen;
+    const bool retainAspect = retainAspectOnStop_.load();
     stop();
+    if (retainAspect)
+        retainAspectOnStop_.store(false);
     {
         std::lock_guard<std::mutex> g(mu_);
     if (cb.log)
@@ -462,7 +504,7 @@ bool OwenbPlayer::start(const OpenRequest& req, uint64_t sessionId, SessionConfi
     pictureDirty_.store(false);
     const int armed = pictureArm_.exchange(-1);
     // Explicit/remembered picture modes win over Spelunkr Auto aspect defaults.
-    // GBE N-7: shared armAspectAfterNewSessionLocked covers both branches.
+    // browse-lane N-7: shared armAspectAfterNewSessionLocked covers both branches.
     armAspectAfterNewSessionLocked(armed);
     if (port_) {
         const owenb_osd::OvlStatus st = port_->status();
@@ -536,7 +578,9 @@ bool OwenbPlayer::start(const OpenRequest& req, uint64_t sessionId, SessionConfi
         if (session_ && osd_) {   // T6: the overlay follows the play (the thread rate-limits itself)
             const bool st = session_->started(), pa = session_->paused();
             ui_.update([&](owenb_osd::UiModel& m) {
-                m.presented = st;
+                // GH#648 P3-2: a stale started() sampled before first picture
+                // must not drop presented/hadPicture once the picture is up.
+                m.presented = st || m.hadPicture;
                 m.paused = pa;
                 m.positionMs = pos;
             });
@@ -585,9 +629,10 @@ bool OwenbPlayer::start(const OpenRequest& req, uint64_t sessionId, SessionConfi
             if (m.spelunkrTuning)
                 m.armSpelunkrBannerHide(now);
             m.presented = true;
+            m.hadPicture = true;
             m.buffering = false;
-            if (keepIdle)
-                m.idle = false;
+            m.idle = false; // GH#648: always drop the landing, including Spelunkr
+            (void)keepIdle;
         });
         if (ours && userStarted)
             userStarted();
@@ -619,10 +664,17 @@ bool OwenbPlayer::start(const OpenRequest& req, uint64_t sessionId, SessionConfi
                         // P0 11-10: a mid-play failure skips the item; tuning is set BEFORE any idle
                         // paint, so the held frame + banner stay until the next item's first picture.
                         ui_.armPlayPending(sessionId, {},
-                                           snap.spelunkrDial.empty() ? std::string("Spelunkr") : snap.spelunkrDial,
+                                           snap.spelunkrDial.empty() ? misterplex::service::label(true) : snap.spelunkrDial,
                                            snap.spelunkrName);
-                    else
+                    else {
+                        ui_.update([](owenb_osd::UiModel& m) {
+                            m.presented = false;
+                            m.hadPicture = false;
+                            m.bannerGoneMs = 0;
+                            m.bannerShowUntilMs = 0;
+                        });
                         ui_.setIdle(true, idleCfg_.name, idleCfg_.hint);
+                    }
                 }
             }
         }
@@ -635,7 +687,39 @@ bool OwenbPlayer::start(const OpenRequest& req, uint64_t sessionId, SessionConfi
     return true;
 }
 
+void OwenbPlayer::unitTestPrimeAspectRestore() {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!port_)
+        return;
+    aspect_.newSession(true);
+    owenb_osd::StreamAspect src;
+    src.known = true;
+    aspect_.setStream(src);
+    armAspectAfterNewSessionLocked(static_cast<int>(PictureMode::Zoom43));
+    owenb_osd::OvlStatus st = port_->status();
+    st.valid = true;
+    st.session = true;
+    st.osdAnalogAspect = 0;
+    st.osdAspect = 1;
+    st.raster.videoOut = H264RING_VOUT_PROGRESSIVE;
+    OwenbDdrWindow* w = window_.get();
+    aspect_.onStatus(*port_, st, [w](unsigned ms) {
+        if (w)
+            w->sleepUs(ms * 1000u);
+    });
+}
+
+void OwenbPlayer::unitTestSimulatePlayEndAspect(bool retain) {
+    retainAspectOnStop_.store(retain);
+    aspectEnded_.store(false);
+    endAspect(window_.get());
+}
+
 void OwenbPlayer::endAspect(OwenbDdrWindow* w) {
+#ifndef MUT_LIVETV_RETAIN_ASPECT
+    if (retainAspectOnStop_.load())
+        return;
+#endif
     if (aspectEnded_.exchange(true) || !port_)
         return;
     lastAspectEnd_ = aspect_.endSession(*port_, [w](unsigned ms) {
@@ -671,11 +755,15 @@ void OwenbPlayer::unitTestArmPlayAspect(int spelunkrAr, int armedPictureMode) {
 void OwenbPlayer::armAspectAfterNewSessionLocked(int armedPictureMode) {
     armedPictureMode = pictureModeForPlay(armedPictureMode);
     const int spelunkrAr = spelunkrAspect_.load();
-    // GBE N-7: Spelunkr mode after newSession, before PICTURE branch (covers armed + Auto).
+    // browse-lane N-7: Spelunkr mode after newSession, before PICTURE branch (covers armed + Auto).
     if (spelunkrAr == 1 || spelunkrAr == 2)
         aspect_.setSpelunkrMode(true);
+#ifdef MUT_LIVETV_DEFAULT_APPLY
     if (armedPictureMode >= 0) {
-        pictureLive_.store(armedPictureMode);
+#else
+    if (armedPictureMode == kPictureArmLiveTvDefault || armedPictureMode >= 0) {
+#endif
+        pictureLive_.store(armedPictureMode >= 0 ? armedPictureMode : -1);
         applyArmedPicture(armedPictureMode);
     } else {
         pictureLive_.store(-1);
@@ -706,6 +794,27 @@ void OwenbPlayer::requestPicture(int mode) {
     pictureDirty_.store(true);
 }
 
+void OwenbPlayer::pumpPicture() {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!active_.load() || session_ || !port_)
+        return;
+    const owenb_osd::OvlStatus st = port_->status();
+    if (!st.valid || !st.session)
+        return;
+    picture149NoteVout(static_cast<int>(st.raster.videoOut));
+    const bool changed = pictureDirty_.exchange(false);
+    if (changed)
+        applyArmedPicture(pictureLive_.load());
+    auto sleepMs = [](unsigned ms) {
+        if (ms)
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    };
+    if (aspect_.wantsStatus())
+        aspect_.onStatus(*port_, st, sleepMs);
+    else if (changed)
+        aspect_.reapplyPicture(*port_, st);
+}
+
 void OwenbPlayer::applyArmedPicture(int mode) {
     const std::optional<PictureSpec> spec = pictureSpecForArm(mode);
     if (!spec) {
@@ -729,6 +838,11 @@ owenb_osd::RendererStats OwenbPlayer::osdStats() const {
 int OwenbPlayer::readInput(struct ::h264ring_input& in) const {
     std::lock_guard<std::mutex> g(mu_);
     return ring_ ? ring_->input(in) : -ENODEV;
+}
+
+bool OwenbPlayer::overlayMenuOptions(unsigned out[H264RING_OPT_COUNT]) const {
+    std::lock_guard<std::mutex> g(mu_);
+    return ring_ && ring_->liveOsdMenuOptions(out);
 }
 
 int OwenbPlayer::syncService(bool spelunkr, const unsigned* plexSettings) {
@@ -854,6 +968,12 @@ void OwenbPlayer::stop() {
     std::lock_guard<std::mutex> g(mu_);
     endAspect(window_.get());   // 0006: a play thread that never got to its end (teardown)
     active_ = false;
+    // GH#649 P1-1: a pending service switch must not replace SWITCHING with
+    // the idle card or hide the plane. MediaPlayer::stop() arms the hold first.
+    if (holdOverlayOnShutdown_.load()) {
+        teardownLocked();
+        return;
+    }
 #ifdef MUT_IDLE_TEARDOWN_ON_STOP
     if (false) {   // mutant: every stop closes the handle (the idle card gone after a play)
 #else
@@ -861,8 +981,18 @@ void OwenbPlayer::stop() {
 #endif
         session_.reset();
         // PLAY-PENDING (a newer accept, or this play still waiting on HDMI) keeps the chevron.
-        if (!ui_.snapshot().pending)
+        if (!ui_.snapshot().pending) {
+            // GH#648: a real end may show the landing; clear the live-picture
+            // guards so setIdle is not a no-op. start() re-arms pending first
+            // so a cutover never reaches this.
+            ui_.update([](owenb_osd::UiModel& m) {
+                m.presented = false;
+                m.hadPicture = false;
+                m.bannerGoneMs = 0;
+                m.bannerShowUntilMs = 0;
+            });
             ui_.setIdle(true, idleCfg_.name, idleCfg_.hint);
+        }
         return;
     }
     teardownLocked();

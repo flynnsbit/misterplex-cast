@@ -24,6 +24,8 @@ struct PlexServer {
     std::string machineIdentifier;
     std::string accessToken;
     bool owned = false;
+    // plex.tv resources Device attribute; false when remote/shared and owner LAN is unreachable.
+    bool publicAddressMatches = false;
     std::vector<PlexConnection> connections;
     // Chosen base URL (no trailing slash), e.g. http://127.0.0.1:32400
     std::string baseUrl;

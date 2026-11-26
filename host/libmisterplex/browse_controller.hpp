@@ -100,6 +100,7 @@ inline bool browseOpForVisibleCommand(PlaybackCommand c, BrowseOp& op) {
     case PlaybackCommand::ChannelDown:
     case PlaybackCommand::GuideToggle:
     case PlaybackCommand::GuideTune:
+    case PlaybackCommand::GuideClose:
     case PlaybackCommand::None: return false;
     }
     return false;

@@ -60,6 +60,8 @@ enum class PlaybackCommand : uint8_t {
     ChannelDown = 19,
     GuideToggle = 20,
     GuideTune = 21,
+    // Idempotent close (OSD-close-guide, not a toggle). Daemon-only; PLXI cannot send it.
+    GuideClose = 22,
 };
 
 constexpr uint8_t kLegacyMaxInputCommand = static_cast<uint8_t>(PlaybackCommand::Browse);
@@ -378,6 +380,7 @@ inline PlaybackAction mapPlaybackCommand(PlaybackCommand command, bool playing, 
     case PlaybackCommand::ChannelDown:
     case PlaybackCommand::GuideToggle:
     case PlaybackCommand::GuideTune:
+    case PlaybackCommand::GuideClose:
     case PlaybackCommand::None:
         return action;
     }

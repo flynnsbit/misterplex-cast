@@ -19,6 +19,7 @@
 
 #include "idle_raster_credible.hpp"
 #include "owenb_osd_draw.hpp"
+#include "service_switch.hpp"
 #include "pause_dim.hpp"
 #include "spelunkr/banner.hpp"
 
@@ -27,6 +28,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -83,6 +85,11 @@ struct UiModel {
     static constexpr int64_t kErrorMs = 15000;   // T7: an error screen, then back to the idle card (gaps G17)
 
     bool presented = false, paused = false, buffering = false;
+    // GH#648: sticky once a picture has been shown for this tune. Survives
+    // presented being cleared. Only armPlayPending (a new tune) or an explicit
+    // end-to-landing may clear it. resolve() must not show Open the Guide
+    // while this is set.
+    bool hadPicture = false;
     std::string serviceNotice;
     bool serviceFailed = false;
     int bufferingPct = -1;
@@ -108,6 +115,7 @@ struct UiModel {
     std::string spelunkrDial, spelunkrName, spelunkrTitle;
     bool spelunkrTuning = false;
     bool spelunkr = false;
+    bool adBreak = false;       // N14: full-screen stand-by card while Pluto's ad pod is dropped
     int64_t bannerShowUntilMs = 0;
     int64_t bannerGoneMs = 0;
     void clearSpelunkrBannerFields() {
@@ -134,6 +142,7 @@ struct UiModel {
     }
     bool spelunkrGuideOpen = false;
     int spelunkrGuideCursor = -1;
+    int spelunkrGuideViewStart = 0;
     std::vector<LibraryRow> spelunkrGuideRows;
     Menu menu;
     bool idle = false;          // T7: the idle session (no play): the idle card
@@ -188,6 +197,7 @@ struct UiModel {
             }
             u.spelunkrGuide.open = spelunkrGuideOpen && !menu.open && !overscan.open;
             u.spelunkrGuide.cursor = spelunkrGuideCursor;
+            u.spelunkrGuide.viewStart = spelunkrGuideViewStart;
             u.spelunkrGuide.rows = spelunkrGuideRows;
             if (u.spelunkrGuide.open || menu.open || overscan.open || library.open ||
                 (error != ErrorScreen::None && (errorUntilMs == 0 || now < errorUntilMs)))
@@ -203,6 +213,16 @@ struct UiModel {
                 s.pendingLabel = serviceNotice;
             }
             applySpelunkrChrome(s);
+#ifndef MUT_NOTICE_KEEPS_SPELUNKR_CHROME
+            if (!serviceFailed) {
+                // Spelunkr to Plex: the SWITCHING card is the same card Plex paints for the flip to Live TV.
+                // With the Spelunkr flag still set, paint() took its LIVE TV / OPEN THE GUIDE landing for the
+                // pending notice, so the operator saw that landing until the Plex daemon came up (~10 s).
+                s.spelunkr = false;
+                s.spelunkrStatic = false;
+                s.spelunkrGuide = {};   // GH#410: the 2 s channel banner (if still armed) is kept
+            }
+#endif
             return s;
         }
         if (overscan.open) {
@@ -257,7 +277,7 @@ struct UiModel {
             s.transport = transport;
         if (!spelunkr && now < chipUntilMs)
             s.chip = castController;
-        if (idle && !presented && !buffering) {
+        if (idle && !presented && !hadPicture && !buffering) {
             s.idle = true;
             s.idleHint = idleHint;
             s.idleName = idleName;
@@ -289,6 +309,9 @@ struct UiModel {
         while (s.toasts.size() > 2)
             s.toasts.erase(s.toasts.begin());
         applySpelunkrChrome(s);
+        // N14/N15: the ad-break stand-by card replaces the frozen frame (never over a pending tune or an error,
+        // both returned above). The rest of the state rides along: planFrame lets menu / library / guide draw over it.
+        s.adBreak = adBreak;
         return s;
     }
 
@@ -355,21 +378,37 @@ public:
         update([=](UiModel& m) {
             m.spelunkr = on;
             if (on) {
-                m.idleName = "Spelunkr";
+                m.idleName = misterplex::service::label(true);
                 m.idleHint = "Open the Guide";
-                if (!m.presented && !m.pending)
+                // GH#648: after first picture, pending is already clear and
+                // presented may still be false. Do not arm the landing over a
+                // live or in-progress tune.
+                if (!m.hadPicture && !m.presented && !m.pending && !m.spelunkrTuning && m.bannerGoneMs == 0)
                     m.idle = true;
             }
         });
     }
+    // N14: Pluto ad pod dropped (on) / resumed (off). A new tune, a landing or a failed tune also clear it.
+    void setAdBreak(bool on) { update([on](UiModel& m) { m.adBreak = on; }); }
     void showSpelunkrLanding(const std::string& detail = {}) {
         update([&](UiModel& m) {
+            m.adBreak = false;
+            // GH#648: a live picture for this tune must not be replaced by the
+            // landing. Pending (failed tune/resume) and a leftover banner clock
+            // must still fall back to Open the Guide (browse-lane P1-2).
+            if (m.hadPicture || (m.presented && !m.pending)) {
+                std::fprintf(stderr,
+                    "owenb-osd: GH#648 showSpelunkrLanding skipped (hadPicture=%d presented=%d pending=%d bannerGone=%lld)\n",
+                    int(m.hadPicture), int(m.presented), int(m.pending),
+                    static_cast<long long>(m.bannerGoneMs));
+                return;
+            }
             m.spelunkr = true;
             const auto dial = m.spelunkrDial;
             const auto name = m.spelunkrName;
             m.clearSpelunkrBannerFields();
             if (!detail.empty()) {
-                m.spelunkrDial = dial.empty() ? "Spelunkr" : dial;
+                m.spelunkrDial = dial.empty() ? misterplex::service::label(true) : dial;
                 m.spelunkrName = name;
                 m.spelunkrTitle = detail;
                 m.spelunkrTuning = true;
@@ -383,7 +422,7 @@ public:
             m.errorUntilMs = 0;
             m.surface.reset();
             m.idle = true;
-            m.idleName = "Spelunkr";
+            m.idleName = misterplex::service::label(true);
             m.idleHint = "Open the Guide";
             m.presented = m.paused = m.buffering = false;
             m.barUntilMs = 0;
@@ -419,11 +458,13 @@ public:
     void armPlayPending(uint64_t gen, const std::string &label = {}, const std::string &dial = {},
                         const std::string &name = {}) {
         update([=](UiModel &m) {
+            m.adBreak = false;
             m.pending = true;
             m.pendingGen = gen;
             m.pendingLabel = label;
             m.idle = false;
             m.presented = false;
+            m.hadPicture = false; // new tune; landing stays off until a real end
             m.surface.reset();
             m.error = ErrorScreen::None;
             m.errorDetail.clear();
@@ -444,6 +485,11 @@ public:
             m.pending = false;
             m.pendingGen = 0;
             m.pendingLabel.clear();
+            m.idle = false;
+            if (m.spelunkr) {
+                m.presented = true; // GH#648: first picture is not the landing
+                m.hadPicture = true;
+            }
             if (m.spelunkrTuning) {
                 if (now > 0)
                     m.armSpelunkrBannerHide(now);
@@ -452,8 +498,26 @@ public:
             }
         });
     }
+    // A tune job returned without a picture. Drop only this generation's pending
+    // cue. pendingGen 0 is not a wildcard: the Guide landing already cleared
+    // pending, and the first-picture path must not run over it (GH#648).
+    void abandonPlayPending(uint64_t gen) {
+#ifdef MUT_PENDING_CLEAR_IS_FIRST_PICTURE
+        // pre-fix: the guard cleared through the first-picture path
+        clearPlayPending(gen);
+        return;
+#endif
+        update([gen](UiModel& m) {
+            if (!m.pending || m.pendingGen == 0 || m.pendingGen != gen)
+                return;
+            m.pending = false;
+            m.pendingGen = 0;
+            m.pendingLabel.clear();
+        });
+    }
     void failSpelunkrTune(const std::string& detail) {
         update([&](UiModel& m) {
+            m.adBreak = false;
             m.pending = false;
             m.pendingLabel.clear();
             m.buffering = false;
@@ -527,10 +591,11 @@ public:
     void clearSpelunkrBanner() {
         update([](UiModel& m) { m.clearSpelunkrBannerFields(); });
     }
-    void setSpelunkrGuide(bool open, int cursor, std::vector<LibraryRow> rows) {
+    void setSpelunkrGuide(bool open, int cursor, int viewStart, std::vector<LibraryRow> rows) {
         update([=](UiModel& m) mutable {
             m.spelunkrGuideOpen = open;
             m.spelunkrGuideCursor = cursor;
+            m.spelunkrGuideViewStart = viewStart;
             m.spelunkrGuideRows = std::move(rows);
         });
     }
@@ -594,6 +659,15 @@ public:
         update([&](UiModel &m) {
             if (on && m.pending && m.spelunkrTuning)
                 return; // A channel handoff must not resurrect the landing card.
+            // GH#648 / browse-lane P2-2: do not cover a live picture or its banner clock,
+            // even if m.spelunkr was dropped. Real stop() clears these first.
+            if (on && (m.hadPicture || m.presented || m.bannerGoneMs != 0)) {
+                std::fprintf(stderr,
+                    "owenb-osd: GH#648 setIdle(true) skipped (hadPicture=%d presented=%d bannerGone=%lld)\n",
+                    int(m.hadPicture), int(m.presented),
+                    static_cast<long long>(m.bannerGoneMs));
+                return;
+            }
             // GH#27: startIdle / raster re-arm must not resurrect Ready over plexui.
             if (on && m.surface)
                 return;
@@ -679,8 +753,19 @@ struct RendererStats {
     // OB port: the PlexUI surface path
     unsigned surfDraws = 0, surfInPlace = 0, surfTooBig = 0;
     uint64_t surfRows = 0, surfBytes = 0;
+    uint64_t surfVisitedRows = 0;           // rows entered in writeDirtyRows (scan, not only memcpy)
     int64_t surfLastWriteUs = 0, surfMaxWriteUs = 0;
 };
+
+// GH#649: the switching card is composed even when the overlay flip is still
+// in flight, so r_.showing() can lag and the 5 s fallback would fire instead.
+inline bool serviceNoticePainted(const UiModel& m, const UiState& frame) {
+    if (m.serviceNotice.empty())
+        return false;
+    if (m.serviceFailed)
+        return frame.errorDetail == m.serviceNotice;
+    return frame.pending && frame.pendingLabel == m.serviceNotice;
+}
 
 class Renderer {
 public:
@@ -698,6 +783,7 @@ public:
 
     // The end of the session: hide (and give the core up to `ms` to take it).
     void shutdown(const std::function<void(unsigned)>& sleepMs, unsigned ms = 100);
+    void setHoldOverlayOnShutdown(bool hold) { holdOverlayOnShutdown_ = hold; }
 
     const RendererStats& stats() const { return st_; }
     const PagePlan& plan() const { return plan_; }
@@ -705,7 +791,9 @@ public:
     int shownPage() const { return shown_; }
     bool pending() const { return pending_; }
     bool showing(const UiState& ui) const {
-        return layoutValid_ && shown_ >= 0 && !pending_ && !refusedHold_ &&
+        // GH#649: do not require !pending_ (ACK in flight). Waiting for the
+        // ACK made serviceNoticeShown stay false and forced the 5 s fallback.
+        return layoutValid_ && shown_ >= 0 && !refusedHold_ &&
                contentKey(ui, layout_) == shownKey_;
     }
     const Surface& surface() const { return surf_; }
@@ -797,6 +885,7 @@ private:
     bool retiredValid_[2] = {false, false};
     uint32_t retiredAt_[2] = {0, 0};
     bool pending_ = false, pendingHide_ = false, timeoutLogged_ = false;
+    bool holdOverlayOnShutdown_ = false; // GH#649: leave SWITCHING card up
     uint64_t frameScreen_ = 0, pendingScreen_ = 0;
     uint32_t pendingGen_ = 0;
     int64_t pendingSince_ = 0;
@@ -859,6 +948,12 @@ inline int64_t Renderer::doHide(int64_t now) {
 }
 
 inline void Renderer::shutdown(const std::function<void(unsigned)>& sleepMs, unsigned ms) {
+    // GH#649: a pending plex↔Spelunkr switch must not hide the overlay, or the
+    // user sees a black flash before the next daemon paints the same card.
+    if (holdOverlayOnShutdown_) {
+        pending_ = false;
+        return;
+    }
     if (shown_ >= 0 || pending_) {
         const int g = port_.hide();
         if (g > 0) {
@@ -929,11 +1024,19 @@ inline int64_t Renderer::tick(int64_t now, const UiState& ui) {
                      " not taken; retrying hide so the channel banner cannot stick");
                 return doHide(now);
             }
-            if (overlayWaitForAck(pendingHide_, ui.anyVisible(), frameScreen_ != pendingScreen_, timeoutLogged_))
+            if (ui.surface && !pendingHide_ && !surfPendingGen_) {
+                // Idle-card show never acked (GH#27). plexui is ready: live-page
+                // dirty rows do not need that flip. Do not abandon a plexui show
+                // that is itself still pending (S2 first frame).
+                abandonUntaken();
+            } else if (overlayWaitForAck(pendingHide_, ui.anyVisible(), frameScreen_ != pendingScreen_,
+                                         timeoutLogged_)) {
                 return kPollMs;
+            } else {
             logf("overlay: generation " + std::to_string(pendingGen_) +
                  " not taken; drawing the new screen, the retired page stays untouched");
             abandonUntaken();
+            }
         } else {
         pending_ = false;
         if (!pendingHide_ && surfPendingGen_ && s.state != H264RING_OVL_S_REFUSED && onSurfaceShown_)
@@ -1086,7 +1189,39 @@ inline uint64_t Renderer::writeDirtyRows(int page, const FullSurface& S, uint32_
     }
     uint64_t bytes = 0;
     unsigned rows = 0;
+#ifdef MUT_NAV_OSD_FULL_SCAN
+    const bool useDirty = false;
+#elif defined(MUT_OSD_SURF_COALESCE_DIRTY)
+    // Mutant: ignore gen continuity (the B1 bug). A skipped frame's dirty
+    // bands never reach fb0 when two publishes land before one tick.
+    const bool useDirty = !full && S.dirtyN > 0;
+#else
+    // B1 (FPGA Bug): only the last publish's dirty bands are recorded. If
+    // OsdThread missed a gen (parallel poster GETs, back-to-back nav), fall
+    // through to the memcmp scan so every row that differs from shadow/fb0
+    // is blitted. Consecutive gens stay on the cheap dirty path.
+    const bool useDirty = !full && S.dirtyN > 0 && S.gen == surfGen_ + 1;
+#endif
+    auto blitRow = [&](unsigned y, size_t a, size_t b) {
+        const uint8_t* n = src + y * row;
+        uint8_t* o = sh.data() + y * row;
+        std::memcpy(base + size_t(y) * stride + a, n + a, b - a);
+        std::memcpy(o + a, n + a, b - a);
+        bytes += b - a;
+        ++rows;
+    };
+    if (useDirty) {
+        for (unsigned i = 0; i < S.dirtyN; ++i) {
+            const unsigned y0 = std::min(S.dirty[i].y0, S.h);
+            const unsigned y1 = std::min(S.dirty[i].y1, S.h);
+            for (unsigned y = y0; y < y1; ++y) {
+                ++st_.surfVisitedRows;
+                blitRow(y, 0, row);
+            }
+        }
+    } else {
     for (unsigned y = 0; y < S.h; ++y) {
+        ++st_.surfVisitedRows;
         const uint8_t* n = src + y * row;
         uint8_t* o = sh.data() + y * row;
         size_t a = 0, b = row;
@@ -1096,10 +1231,8 @@ inline uint64_t Renderer::writeDirtyRows(int page, const FullSurface& S, uint32_
                 continue;
             while (b > a && std::memcmp(n + b - 4, o + b - 4, 4) == 0) b -= 4;
         }
-        std::memcpy(base + size_t(y) * stride + a, n + a, b - a);
-        std::memcpy(o + a, n + a, b - a);
-        bytes += b - a;
-        ++rows;
+        blitRow(y, a, b);
+    }
     }
     shadowValid_[page & 1] = true;
     st_.surfRows += rows;
@@ -1129,10 +1262,22 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
         shadowValid_[0] = shadowValid_[1] = false;
         plan_ = PagePlan{};
     }
-    if (shown_ >= 0 && S.gen == surfGen_ && wantDim_ == drawnDim_)
+    if (shown_ >= 0 && S.gen == surfGen_ && wantDim_ == drawnDim_) {
+        // Same frame: do not drop back to the idle-card 8 Hz cap. A missed
+        // UiBus wake would otherwise hold the next nav for 125 ms (>50 ms gate).
+#ifdef MUT_NAV_OSD_SURF_8HZ
         return kMinRedrawMs;
+#else
+        return kSurfaceMinMs;
+#endif
+    }
+    // New gen: present on this tick. The 16 ms floor is the same-frame sleep
+    // above. Waiting here held in-window nav for another vsync/timer (glass
+    // HDMI 123-176 ms on lab).
+#ifdef MUT_NAV_OSD_SURF_8HZ
     if (now - lastDrawMs_ < kSurfaceMinMs)
         return lastDrawMs_ + kSurfaceMinMs - now;
+#endif
     const PagePlan np = planPages(fb_.phys, fb_.len, S.w, S.h, 0, S.h - 1, allowDouble_);
     if (np.buf == Buffering::None) {
         ++st_.noPage;
@@ -1148,8 +1293,10 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
             return doHide(now);
         }
         logf(std::string("overlay: plexui ") + bufferingName(np.buf) + "-buffered 8888 " + std::to_string(S.w) + "x" +
-             std::to_string(S.h) + (np.buf == Buffering::Single ? " (in-place dirty rows)" : "") + " in fb0 of " +
-             std::to_string(fb_.len));
+             std::to_string(S.h) +
+             (np.buf == Buffering::Single ? " (in-place dirty rows)"
+                                          : " (live-page dirty rows after first show)") +
+             " in fb0 of " + std::to_string(fb_.len));
         plan_ = np;
         shadowValid_[0] = shadowValid_[1] = false;
     }
@@ -1176,7 +1323,14 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
         drawnDim_ = wantDim_;
         if (onSurfaceShown_)
             onSurfaceShown_(S.gen);
+        // Nav must not inherit the idle-card 8 Hz cap (kMinRedrawMs=125).
+        // Live-page present is done on this tick; 1 ms so the next key is not
+        // another vsync/timer (glass 379146af: kSurfaceMinMs 16 sat in plxh).
+#ifdef MUT_NAV_OSD_SURF_8HZ
         return kMinRedrawMs;
+#else
+        return 1;
+#endif
     }
 #endif
     if (np.buf == Buffering::Single && shown_ == 0) {   // in place: the core keeps reading page 0
@@ -1189,8 +1343,34 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
         drawnDim_ = wantDim_;
         if (onSurfaceShown_)
             onSurfaceShown_(S.gen);
+#ifdef MUT_NAV_OSD_SURF_8HZ
         return kMinRedrawMs;
+#else
+        return 1;
+#endif
     }
+#ifndef MUT_NAV_OSD_DOUBLE_FLIP
+    // lab is double-buffered 8888 1280x720 (8 MiB fb0), not the 720p single-page
+    // path f088b3dc retimed. A nav flip to the free page waits for ovl_gen/vsync
+    // (GH#27: this box may never ack). Write dirty rows on the page the core is
+    // already scanning so HDMI sees the focus move without a later tick.
+    if (np.buf == Buffering::Double && shown_ >= 0 && !surfReplaceLive_) {
+        writeDirtyRows(shown_, S, np.stride);
+        took();
+        ++st_.surfDraws;
+        ++st_.surfInPlace;
+        surfGen_ = S.gen;
+        lastDrawMs_ = now;
+        drawnDim_ = wantDim_;
+        if (onSurfaceShown_)
+            onSurfaceShown_(S.gen);
+#ifdef MUT_NAV_OSD_SURF_8HZ
+        return kMinRedrawMs;
+#else
+        return 1;
+#endif
+    }
+#endif
     int target = 0;
     if (np.buf == Buffering::Double) {
         target = shown_ < 0 ? 0 : 1 - shown_;
@@ -1264,7 +1444,8 @@ public:
         stop_ = false;
         thr_ = std::thread([this] { loop(); });
     }
-    // joins, then hides the overlay (the ring is still open)
+    void setHoldOverlayOnShutdown(bool hold) { r_.setHoldOverlayOnShutdown(hold); }
+    // joins, then hides the overlay unless a service switch asked to hold it
     void stop() {
         if (!thr_.joinable())
             return;
@@ -1284,24 +1465,34 @@ private:
     bool stopping() const { return stop_.load(); }
     void loop() {
         int64_t lastTick = INT64_MIN / 2;
+        uint64_t lastTickedGen = 0;
         while (!stopping()) {
             uint64_t gen = 0;
             UiModel m = bus_.snapshot(&gen);
             int64_t now = clock_();
-            const int64_t pre = osdPreTickSleepMs(now - lastTick, kMinTickMs, m.nextChange(now), now, r_.pending());
+            // A setSurface wake already has a new gen: tick it now. Pretick
+            // waitFor(gen) would wait the rest of 20 ms for a *further* bump.
+            const int64_t pre =
+                (gen != lastTickedGen)
+                    ? 0
+                    : osdPreTickSleepMs(now - lastTick, kMinTickMs, m.nextChange(now), now, r_.pending());
             if (pre > 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(pre));
+                // waitFor, not sleep_for: setSurface (in-window nav) must interrupt
+                // the 20 ms pretick floor or HDMI waits a timer tick after draw.
+                bus_.waitFor(gen, pre, [this] { return stop_.load(); });
                 now = clock_();
                 m = bus_.snapshot(&gen);
             }
             lastTick = now;
+            lastTickedGen = gen;
             if (m.spelunkrTuning && !m.idle && !m.pending && m.bannerGoneMs == 0 && !m.spelunkrDial.empty()) {
                 bus_.healSpelunkrBannerHide(now);
                 m = bus_.snapshot(&gen);
             }
             const UiState frame = m.resolve(now);
             int64_t d = r_.tick(now, frame);
-            if (!m.serviceNotice.empty() && r_.showing(frame))
+            if (serviceNoticePainted(m, frame) ||
+                (!m.serviceNotice.empty() && r_.showing(frame)))
                 bus_.noteServiceShown(m.serviceNotice);
             bus_.noteCanvas(r_.layout().W, r_.layout().H);
             {

@@ -1,6 +1,7 @@
 #include "tls_http.hpp"
 #include "libmisterplex/tls_policy.hpp"
 #include "libmisterplex/curl_argv_token.hpp"
+#include "spelunkr/pluto_live.hpp"
 
 #include <cctype>
 #include <chrono>
@@ -90,21 +91,37 @@ int connectNumeric(const std::string& ip, int port, int timeoutMs, std::string& 
     return fd;
 }
 
-int connectHost(const std::string& host, int port, int timeoutMs, std::string& err) {
+int connectHost(const std::string& host, int port, int timeoutMs, std::string& err,
+                int64_t* dnsMs = nullptr, int64_t* connectMs = nullptr) {
     in_addr lit{};
-    if (ipv4Literal(host, lit))
-        return connectNumeric(host, port, timeoutMs, err);
+    if (ipv4Literal(host, lit)) {
+        if (dnsMs)
+            *dnsMs = 0;
+        const auto tC = std::chrono::steady_clock::now();
+        const int fd = connectNumeric(host, port, timeoutMs, err);
+        if (connectMs)
+            *connectMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - tC)
+                             .count();
+        return fd;
+    }
     const std::string portS = std::to_string(port);
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* res = nullptr;
+    const auto tDns = std::chrono::steady_clock::now();
     const int g = ::getaddrinfo(host.c_str(), portS.c_str(), &hints, &res);
+    if (dnsMs)
+        *dnsMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - tDns)
+                     .count();
     if (g != 0 || !res) {
         err = std::string("resolve ") + host + ": " + gai_strerror(g);
         return -1;
     }
     int fd = -1;
+    const auto tConn = std::chrono::steady_clock::now();
     for (addrinfo* a = res; a; a = a->ai_next) {
         fd = ::socket(a->ai_family, a->ai_socktype | SOCK_CLOEXEC, a->ai_protocol);
         if (fd < 0)
@@ -132,6 +149,10 @@ int connectHost(const std::string& host, int port, int timeoutMs, std::string& e
         ::close(fd);
         fd = -1;
     }
+    if (connectMs)
+        *connectMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - tConn)
+                         .count();
     ::freeaddrinfo(res);
     if (fd < 0)
         err = "connect " + host + " failed";
@@ -262,7 +283,7 @@ Hop oneHop(const TlsUrl& u, const TlsVerifiedRequest& req,
     }
     std::string err;
     const std::string tcp = u.connectHost.empty() ? u.host : u.connectHost;
-    const int fd = connectHost(tcp, u.port, timeoutMs, err);
+    const int fd = connectHost(tcp, u.port, timeoutMs, err, &r.dnsMs, &r.connectMs);
     if (fd < 0) {
         r.err = err;
         return hop;
@@ -312,7 +333,12 @@ Hop oneHop(const TlsUrl& u, const TlsVerifiedRequest& req,
         ::close(fd);
         return hop;
     }
-    if (SSL_connect(ssl) != 1) {
+    const auto tTls = std::chrono::steady_clock::now();
+    const int sslRc = SSL_connect(ssl);
+    r.tlsMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - tTls)
+                  .count();
+    if (sslRc != 1) {
         const long vr = SSL_get_verify_result(ssl);
         r.err = "TLS handshake with " + u.host + ": " + sslErrText();
         if (!optOut && vr != X509_V_OK)
@@ -360,6 +386,8 @@ Hop oneHop(const TlsUrl& u, const TlsVerifiedRequest& req,
     std::string raw;
     char buf[4096];
     const auto t0 = std::chrono::steady_clock::now();
+    const auto tTtfb = t0;
+    bool gotByte = false;
     while (raw.size() < req.maxBody + 65536) {
         if (tlsReqCancelled(req)) {
             r.err = "cancelled";
@@ -384,6 +412,12 @@ Hop oneHop(const TlsUrl& u, const TlsVerifiedRequest& req,
         const int n = SSL_read(ssl, buf, sizeof buf);
         if (n <= 0)
             break;
+        if (!gotByte) {
+            gotByte = true;
+            r.ttfbMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - tTtfb)
+                           .count();
+        }
         raw.append(buf, static_cast<size_t>(n));
         const auto end = raw.find("\r\n\r\n");
         if (end != std::string::npos) {
@@ -425,6 +459,7 @@ Hop oneHop(const TlsUrl& u, const TlsVerifiedRequest& req,
         body.resize(req.maxBody);
     }
     r.body.swap(body);
+    r.bodyBytes = static_cast<int64_t>(r.body.size());
     r.transportOk = r.status > 0;
     hop.location = headerValue(head, "location");
     r.skippedTime = skipTime;
@@ -493,6 +528,7 @@ TlsVerifiedResult tlsVerifiedGet(const TlsVerifiedRequest& req) {
         // Later hops never carry the token (stricter than same-origin), including one
         // that came from the URL query (#340).
         hopHeaders = headersWithoutPlexToken(firstHeaders);
+        misterplex::spelunkr::pluto_live::plutoStripBearerOnRedirectOffScope(hopHeaders, next);
         url = next;
     }
     r.err = "too many redirects";

@@ -57,6 +57,12 @@ std::vector<PlexServer> discoverLocalPlexServers(int timeoutMs);
 std::string serverLinkLabel(const PlexServer& server);
 void resolveServerBases(HttpGetFn get, std::vector<PlexServer>& servers,
                         const BrowseCancelFn& cancel);
+// Ranked unique connection base URLs (plex.direct / address / relay) for select-time retry.
+std::vector<std::string> rankedConnectionBases(const PlexServer& server);
+// Persist a working base so later resolveServerBases skips a dead-for-sections probe winner.
+void rememberServerBase(const std::string& machineId, const std::string& baseUrl);
+// True when library sections failed with a transport/no-response error (retry other bases).
+bool isLibrarySectionsTransportError(const std::string& err);
 // OB port 0011: every server and every address of a server probed in parallel; onUpdate(servers) after each
 // server resolves (baseUrl set, or offline=true), from a probe thread. Returns after all probes ended
 // (bounded by the probe timeouts); servers that never answered stay in the list with offline=true.

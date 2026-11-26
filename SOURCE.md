@@ -8,13 +8,13 @@ or SHA256SUMS. Card install uses the release package (bin/, SHA256SUMS). The
 installer script here is the same one that package uses.
 
 ## cores/MiSTerPlex.rbf
-- RBF md5: 76cde669ad5ab2b42091e8adfc267455 (fit artifact plexob-yc-0b1101c5, BUILD_ID 0x0B1101C5, seed 10)
+- RBF md5: 7f048508861967f857a5aacff79bfb6f (fit artifact plexob-yc-0b112501, BUILD_ID 0x0B112501, seed 14)
 - Sidecar: cores/MiSTerPlex.rbf.md5 (same md5; required by install-misterplex.sh)
-- Pin list in scripts/install-misterplex.sh: 76cde669ad5ab2b42091e8adfc267455
-- FPGA tree pin: c7e929f4b78b9dc1347d298e2a9c0017bcb01fad
-  This is the commit the shipped bitstream was built from (Quartus 17.0.2,
-  fpga/owenb-combo-s9/PlexOB_480p/fit/yc/launch_yc.sh with YC_SEED=10; fit
-  artifact plexob-yc-0b1101c5-s10_20261112_1509.rbf).
+- Ship pin 7f048508861967f857a5aacff79bfb6f is a token in scripts/install-misterplex.sh RBF_PINS (older pins stay accepted)
+- FPGA tree pin: 33c010f5130e869cbe33124f14c1a667cbaaf53e
+  This is the on-branch commit the shipped bitstream corresponds to (cherry-pick
+  of MFD 544565ba). The bitstream file is
+  release_artifacts/plexob-yc-0b112501/MiSTerPlex.rbf on the daemon revision.
   This export does not rebuild it.
 - Fork source in this tree: fpga/owenb-combo-s9/
 - Upstream, vendored where sync_vendor.sh reads it (OWENB_VENDOR_ROOT, default
@@ -27,14 +27,14 @@ installer script here is the same one that package uses.
 - Build: PlexOB_480p/build_plexob_480p.sh (Quartus; run_quartus_docker.sh)
 
 ## Prebuilt core
-cores/MiSTerPlex.rbf (md5 76cde669ad5ab2b42091e8adfc267455) is the bitstream shipped with this export.
-BUILD_ID 0x0B1101C5, seed 10, built from c7e929f4b78b9dc1347d298e2a9c0017bcb01fad. This export does not rebuild the bitstream.
+cores/MiSTerPlex.rbf (md5 7f048508861967f857a5aacff79bfb6f) is the bitstream shipped with this export.
+BUILD_ID 0x0B112501, seed 14, built from 33c010f5130e869cbe33124f14c1a667cbaaf53e. This export does not rebuild the bitstream.
 The installer copies it to /media/fat/_Utility/MiSTerPlex.rbf only (one copy).
 
 ## misterplexd
 - Licence: GPL-3.0-or-later (daemon and the MiSTerPlex FPGA fork).
-- Source revision: 6c3679ae9708210f46902a04305a9c956e2701b1
-- Docs and installer revision: 6c3679ae9708210f46902a04305a9c956e2701b1
+- Source revision: 347863a406ba423a8989d19089bfa1d4bf55e04b
+- Docs and installer revision: 347863a406ba423a8989d19089bfa1d4bf55e04b
 - Paths: arm/misterplexd, host/libmisterplex, third_party/owenb-h264ring, Makefile
 - Host build from this tree alone: `make plexd`
 - Map: release_artifacts/GPL-SOURCE.md

@@ -5,7 +5,7 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I$(ROOT)/host
 FFMPEG_CFLAGS := $(shell pkg-config --cflags libavformat libavcodec libavutil 2>/dev/null)
 FFMPEG_LIBS   := $(shell pkg-config --libs libavformat libavcodec libavutil 2>/dev/null)
 
-.PHONY: all preflight unit unit-unlocked unit-host unit-host-unlocked core-gate-e2e core-gate-mutants resolve-fps-replay rtl-sim rtl-lint quartus-sv-subset define-parity post-fit-hierarchy post-fit-timing timing-exclusion pms-baseline-check pms-nal-stats arm-plexd arm-plexd-daemon arm-plexd-tools arm-ffmpeg arm-ffmpeg-static-check arm-ddr-bench arm-pl330-bench arm-profile-tools ddr-bench profile-tools present-harness clean help plexd package h264-golden-tools glass-baseline glass-baseline-policy v3-stable-320 v3-stable-320-policy plexui_shot
+.PHONY: all preflight unit unit-unlocked unit-host unit-host-unlocked core-gate-e2e core-gate-mutants resolve-fps-replay rtl-sim rtl-lint quartus-sv-subset define-parity post-fit-hierarchy post-fit-timing timing-exclusion pms-baseline-check pms-nal-stats arm-plexd arm-plexd-daemon arm-plexd-tools arm-ffmpeg arm-ffmpeg-static-check arm-ddr-bench arm-pl330-bench arm-profile-tools ddr-bench profile-tools present-harness clean help plexd package h264-golden-tools glass-baseline glass-baseline-policy v3-stable-320 v3-stable-320-policy plexui_shot browse_shell_shot host-preglass host-preglass-pluto host-preglass-browse host-bounce-select-retry-mutant host-browse-title-play-mutant host-preglass-668
 
 all: unit
 
@@ -33,6 +33,9 @@ help:
 	@echo "  make arm-ffmpeg-static-check - reject iconv/module loaders or missing media support"
 	@echo "  make build-rbf  - build Plex.rbf via scripts/build_rbf.sh (long)"
 	@echo "  make unit-host  - host-only unit gate from a clean checkout, SLOT-FORM only (docs/progress/UNIT-HOST.md)"
+	@echo "  make host-preglass - pre-glass entry (browse=browse-lane/LaneD; pluto=480i Lead filled)"
+	@echo "  make host-preglass-pluto - Pluto/Vevo splice+PTS (480i Lead; from 596624df)"
+	@echo "  make host-preglass-browse - browse P1-1/P1-2 + bounce A-E + select-retry mutant + zero-alloc (browse-lane)"
 	@echo "  make test       - alias for unit"
 	@echo "  make package    - dist tarball (ARM + conf + docs + named RBF pairs)"
 	@echo "  make arm-ddr-bench - cross-build DDR write microbenchmark"
@@ -50,7 +53,7 @@ preflight: $(ROOT)/scripts/test_resource_preflight.sh
 unit:
 	@bash $(ROOT)/scripts/run_with_resource_preflight.sh -- $(MAKE) unit-unlocked
 
-UNIT_PREREQS = $(ROOT)/build/test_gdm_filter $(ROOT)/build/test_cast_av_480p_policy $(ROOT)/build/test_p720_audio_keepup $(ROOT)/build/test_p720_transcode_vf $(ROOT)/build/test_transcode_offset $(ROOT)/build/test_spi_txn_complete $(ROOT)/build/test_idle_poll_budget $(ROOT)/build/test_p720_e2e_budget $(ROOT)/build/test_pl330_encode $(ROOT)/build/test_cadence $(ROOT)/build/test_pts_cadence $(ROOT)/build/test_avclock $(ROOT)/build/test_mraudio_status $(ROOT)/build/test_mraudio_oneshot $(ROOT)/build/test_audio_buf_prefill $(ROOT)/build/test_osd_menu $(ROOT)/build/test_plexob_yc $(ROOT)/build/test_playback_overlay $(ROOT)/build/test_overlay_onchange $(ROOT)/build/test_input_mailbox $(ROOT)/build/test_plx_page $(ROOT)/build/input_mailbox_probe_host $(ROOT)/build/test_pixel_format $(ROOT)/build/test_main_guard $(ROOT)/build/test_d52_log $(ROOT)/build/test_ddr_frame_wc $(ROOT)/build/test_core_gate $(ROOT)/build/test_fake_core_caps $(ROOT)/build/test_status_telemetry $(ROOT)/build/test_status_osd_v3 $(ROOT)/build/test_fpga_build_ids $(ROOT)/build/test_sps_relax_gate $(ROOT)/build/test_status_heartbeat $(ROOT)/build/test_wedge_read $(ROOT)/build/test_gate_caps $(ROOT)/build/test_gate_owner $(ROOT)/build/test_gate_error_render $(ROOT)/build/test_idle_pairing_error $(ROOT)/build/test_resolve $(ROOT)/build/test_pms_timeline $(ROOT)/build/test_companion_plant_seek $(ROOT)/build/test_companion_480i_field_rate $(ROOT)/build/test_pts_jump_clamp $(ROOT)/build/test_ttfp_stamps $(ROOT)/build/test_480i_active_height $(ROOT)/build/test_core_id_select $(ROOT)/build/test_sps_reject_high $(ROOT)/build/pms_baseline_probe $(ROOT)/build/test_h264_bitstream_source $(ROOT)/build/test_frame_store_math $(ROOT)/build/test_frame_store_sdram_sim $(ROOT)/build/test_frame_store_ddr_prefetch_sim $(ROOT)/build/test_sdram_memtest_sim $(ROOT)/build/test_sdram_mailbox $(ROOT)/build/test_annexb_count $(ROOT)/build/test_sps_parse $(ROOT)/build/test_slice_hdr $(ROOT)/build/test_cavlc_dc $(ROOT)/build/test_idct_quant $(ROOT)/build/test_p3_host_recon_vectors $(ROOT)/build/test_p3_idct_reference_model $(ROOT)/build/test_p3_inter_pred_vectors $(ROOT)/build/extract_h264_golden $(ROOT)/build/test_idle_fb_map $(ROOT)/build/test_idle_fb_map.mutant-check $(ROOT)/build/test_owenb_ring $(ROOT)/build/test_owenb_ring.mutant-check $(ROOT)/build/test_owenb_core_gate $(ROOT)/build/test_owenb_core_gate.mutant-check $(ROOT)/build/test_owenb_session $(ROOT)/build/test_owenb_session.mutant-check $(ROOT)/build/test_net_resume $(ROOT)/build/test_net_resume.mutant-check $(ROOT)/build/test_owenb_play $(ROOT)/build/test_owenb_timeline_heartbeat $(ROOT)/build/test_queue_preroll $(ROOT)/build/test_queue_preroll.mutant-check $(ROOT)/build/test_markers $(ROOT)/build/test_markers.mutant-check $(ROOT)/build/test_companion_queue_version $(ROOT)/build/test_owenb_weak_profile $(ROOT)/build/test_owenb_weak_profile.mutant-check $(ROOT)/build/test_allow_480p60 $(ROOT)/build/test_allow_480p60.mutant-check $(ROOT)/build/test_pause_dim $(ROOT)/build/test_pause_dim.mutant-check $(ROOT)/build/test_inplay_osd $(ROOT)/build/test_owenb_pms_traits $(ROOT)/build/test_owenb_pms_traits.mutant-check $(ROOT)/build/test_owenb_overlay $(ROOT)/build/test_owenb_aspect $(ROOT)/build/test_owenb_core_select $(ROOT)/build/test_owenb_osd $(ROOT)/build/test_owenb_osd.mutant-check $(ROOT)/build/test_owenb_osd.ovl-ref-check $(ROOT)/build/test_owenb_fbcon $(ROOT)/build/test_owenb_fbcon.mutant-check $(ROOT)/build/test_owenb_input $(ROOT)/build/test_owenb_input.mutant-check
+UNIT_PREREQS = $(ROOT)/build/test_gdm_filter $(ROOT)/build/test_cast_av_480p_policy $(ROOT)/build/test_p720_audio_keepup $(ROOT)/build/test_p720_transcode_vf $(ROOT)/build/test_transcode_offset $(ROOT)/build/test_spi_txn_complete $(ROOT)/build/test_idle_poll_budget $(ROOT)/build/test_p720_e2e_budget $(ROOT)/build/test_pl330_encode $(ROOT)/build/test_cadence $(ROOT)/build/test_pts_cadence $(ROOT)/build/test_avclock $(ROOT)/build/test_mraudio_status $(ROOT)/build/test_mraudio_oneshot $(ROOT)/build/test_audio_buf_prefill $(ROOT)/build/test_osd_menu $(ROOT)/build/test_plexob_yc $(ROOT)/build/test_playback_overlay $(ROOT)/build/test_overlay_onchange $(ROOT)/build/test_input_mailbox $(ROOT)/build/test_plx_page $(ROOT)/build/input_mailbox_probe_host $(ROOT)/build/test_pixel_format $(ROOT)/build/test_main_guard $(ROOT)/build/test_d52_log $(ROOT)/build/test_ddr_frame_wc $(ROOT)/build/test_core_gate $(ROOT)/build/test_fake_core_caps $(ROOT)/build/test_status_telemetry $(ROOT)/build/test_status_osd_v3 $(ROOT)/build/test_fpga_build_ids $(ROOT)/build/test_sps_relax_gate $(ROOT)/build/test_status_heartbeat $(ROOT)/build/test_wedge_read $(ROOT)/build/test_gate_caps $(ROOT)/build/test_gate_owner $(ROOT)/build/test_gate_error_render $(ROOT)/build/test_idle_pairing_error $(ROOT)/build/test_resolve $(ROOT)/build/test_pms_timeline $(ROOT)/build/test_companion_plant_seek $(ROOT)/build/test_companion_480i_field_rate $(ROOT)/build/test_pts_jump_clamp $(ROOT)/build/test_ttfp_stamps $(ROOT)/build/test_480i_active_height $(ROOT)/build/test_core_id_select $(ROOT)/build/test_sps_reject_high $(ROOT)/build/pms_baseline_probe $(ROOT)/build/test_h264_bitstream_source $(ROOT)/build/test_frame_store_math $(ROOT)/build/test_frame_store_sdram_sim $(ROOT)/build/test_frame_store_ddr_prefetch_sim $(ROOT)/build/test_sdram_memtest_sim $(ROOT)/build/test_sdram_mailbox $(ROOT)/build/test_annexb_count $(ROOT)/build/test_sps_parse $(ROOT)/build/test_slice_hdr $(ROOT)/build/test_cavlc_dc $(ROOT)/build/test_idct_quant $(ROOT)/build/test_p3_host_recon_vectors $(ROOT)/build/test_p3_idct_reference_model $(ROOT)/build/test_p3_inter_pred_vectors $(ROOT)/build/extract_h264_golden $(ROOT)/build/test_idle_fb_map $(ROOT)/build/test_idle_fb_map.mutant-check $(ROOT)/build/test_owenb_ring $(ROOT)/build/test_owenb_ring.mutant-check $(ROOT)/build/test_owenb_core_gate $(ROOT)/build/test_owenb_core_gate.mutant-check $(ROOT)/build/test_owenb_session $(ROOT)/build/test_owenb_session.mutant-check $(ROOT)/build/test_net_resume $(ROOT)/build/test_net_resume.mutant-check $(ROOT)/build/test_owenb_play $(ROOT)/build/test_owenb_timeline_heartbeat $(ROOT)/build/test_queue_preroll $(ROOT)/build/test_queue_preroll.mutant-check $(ROOT)/build/test_markers $(ROOT)/build/test_markers.mutant-check $(ROOT)/build/test_companion_queue_version $(ROOT)/build/test_owenb_weak_profile $(ROOT)/build/test_owenb_weak_profile.mutant-check $(ROOT)/build/test_allow_480p60 $(ROOT)/build/test_allow_480p60.mutant-check $(ROOT)/build/test_pause_dim $(ROOT)/build/test_pause_dim.mutant-check $(ROOT)/build/test_inplay_osd $(ROOT)/build/test_owenb_pms_traits $(ROOT)/build/test_owenb_pms_traits.mutant-check $(ROOT)/build/test_owenb_overlay $(ROOT)/build/test_owenb_aspect $(ROOT)/build/test_owenb_core_select $(ROOT)/build/test_owenb_osd $(ROOT)/build/test_owenb_osd.mutant-check $(ROOT)/build/test_owenb_osd.livetv-default-mutant-check $(ROOT)/build/test_owenb_osd.ovl-ref-check $(ROOT)/build/test_owenb_fbcon $(ROOT)/build/test_owenb_fbcon.mutant-check $(ROOT)/build/test_owenb_input $(ROOT)/build/test_owenb_input.mutant-check
 
 unit-unlocked: preflight $(UNIT_PREREQS)
 	python3 $(ROOT)/tests/unit/test_unit_host_coverage.py
@@ -153,6 +156,7 @@ unit-unlocked: preflight $(UNIT_PREREQS)
 	$(ROOT)/build/test_companion_live_clock
 	$(ROOT)/build/test_track_select
 	$(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_track_select_av,@echo "SKIP test_track_select_av (no FFmpeg dev libs)")
+	$(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_owenb_live_remux_audio.check,@echo "SKIP test_owenb_live_remux_audio (no FFmpeg dev libs)")
 	$(ROOT)/build/test_srt_cues
 	$(ROOT)/build/test_ass_to_text
 	$(ROOT)/build/test_subtitle_sink_osd
@@ -276,6 +280,9 @@ unit-unlocked: preflight $(UNIT_PREREQS)
 	$(ROOT)/tests/unit/test_rtl_invariants.sh
 	$(ROOT)/tests/unit/test_mister_ini_plex_guard.sh
 	python3 $(ROOT)/tests/unit/test_plexob_emu_wiring.py
+	bash $(ROOT)/tests/rtl/owenb_analog15/run_analog15_prog.sh
+	bash $(ROOT)/tests/unit/test_glass_native_canvas_rtl_sim.sh
+	bash $(ROOT)/tests/unit/test_native_canvas_idle_hd_rtl_sim.sh
 	$(ROOT)/tests/unit/test_confstr_guard.sh
 	$(ROOT)/tests/unit/test_release_rbf_hash.sh
 	$(ROOT)/tests/unit/test_glass_baseline_pair_policy.sh
@@ -403,6 +410,7 @@ unit-host-unlocked: preflight $(UNIT_PREREQS)
 	$(ROOT)/build/test_companion_live_clock
 	$(ROOT)/build/test_track_select
 	$(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_track_select_av,@echo "SKIP test_track_select_av (no FFmpeg dev libs)")
+	$(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_owenb_live_remux_audio.check,@echo "SKIP test_owenb_live_remux_audio (no FFmpeg dev libs)")
 	$(ROOT)/build/test_srt_cues
 	$(ROOT)/build/test_ass_to_text
 	$(ROOT)/build/test_subtitle_sink_osd
@@ -514,6 +522,9 @@ unit-host-unlocked: preflight $(UNIT_PREREQS)
 	$(ROOT)/tests/unit/test_decode_throughput_gate.sh
 	$(ROOT)/tests/unit/test_mister_ini_plex_guard.sh
 	python3 $(ROOT)/tests/unit/test_plexob_emu_wiring.py
+	bash $(ROOT)/tests/rtl/owenb_analog15/run_analog15_prog.sh
+	bash $(ROOT)/tests/unit/test_glass_native_canvas_rtl_sim.sh
+	bash $(ROOT)/tests/unit/test_native_canvas_idle_hd_rtl_sim.sh
 	$(ROOT)/tests/unit/test_confstr_guard.sh
 	$(ROOT)/tests/unit/test_release_rbf_hash.sh
 	$(ROOT)/tests/unit/test_glass_baseline_pair_policy.sh
@@ -768,25 +779,28 @@ unit-unlocked unit-host-unlocked: $(ROOT)/build/test_ob_glass
 
 # GH#8: AirPlay stays advertised when /probe 404s (health or loopback helper).
 $(ROOT)/build/test_gcast_core: $(ROOT)/tests/unit/test_gcast_core.cpp \
-		$(ROOT)/arm/misterplexd/gcast/cast_resolve.hpp $(ROOT)/arm/misterplexd/main.cpp
+		$(ROOT)/arm/misterplexd/gcast/cast_resolve.hpp $(ROOT)/arm/misterplexd/gcast/airplay_state.hpp \
+		$(ROOT)/arm/misterplexd/gcast/session_arbiter.hpp $(ROOT)/arm/misterplexd/main.cpp
 	@mkdir -p $(ROOT)/build
 	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -pthread -o $@ \
 		$(ROOT)/tests/unit/test_gcast_core.cpp
 $(ROOT)/build/test_gcast_core.ok: $(ROOT)/build/test_gcast_core
 	cd $(ROOT) && $(ROOT)/build/test_gcast_core
 	touch $@
+# v1.0.3: a held re-sent AirPlay /play undoes its PlaybackSnapshot::loading() (airplay_state.hpp), and so does a held
+# play reopened at its playhead (FPGA Bug N1 on 2d49edab: MUT_AP_REOPEN_NO_UNDO).
+GCAST_CORE_MUTANTS := MUT_GH8_PROBE_HIDES MUT_YT_LOOPBACK_AS_REMOTE \
+	MUT_AP_UNDO_NOOP MUT_AP_UNDO_ANY_STATE MUT_AP_LOADING_NO_SAVE MUT_AP_LOADING_RESAVE MUT_AP_REOPEN_NO_UNDO
 $(ROOT)/build/test_gcast_core.mutant-check: $(ROOT)/build/test_gcast_core
 	@cd $(ROOT) && $(ROOT)/build/test_gcast_core > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
-	@$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -pthread -DMUT_GH8_PROBE_HIDES \
-		-o $(ROOT)/build/test_gcast_core.mut $(ROOT)/tests/unit/test_gcast_core.cpp
-	@if cd $(ROOT) && $(ROOT)/build/test_gcast_core.mut > $@.mut.log 2>&1; then \
-		echo "test_gcast_core: MUT_GH8_PROBE_HIDES SURVIVED"; exit 1; fi
-	@$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -pthread -DMUT_YT_LOOPBACK_AS_REMOTE \
-		-o $(ROOT)/build/test_gcast_core.ytlb $(ROOT)/tests/unit/test_gcast_core.cpp
-	@if cd $(ROOT) && $(ROOT)/build/test_gcast_core.ytlb > $@.ytlb.log 2>&1; then \
-		echo "test_gcast_core: MUT_YT_LOOPBACK_AS_REMOTE SURVIVED"; exit 1; fi
-	@echo "test_gcast_core: MUT_GH8_PROBE_HIDES MUT_YT_LOOPBACK_AS_REMOTE FAIL as required" | tee $@
-	@rm -f $(ROOT)/build/test_gcast_core.mut $(ROOT)/build/test_gcast_core.ytlb
+	@for m in $(GCAST_CORE_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -pthread -D$$m \
+			-o $(ROOT)/build/test_gcast_core.$$m $(ROOT)/tests/unit/test_gcast_core.cpp || exit 1; \
+		if (cd $(ROOT) && $(ROOT)/build/test_gcast_core.$$m > $@.$$m.log 2>&1); then \
+			echo "test_gcast_core: $$m SURVIVED"; exit 1; fi; \
+		rm -f $(ROOT)/build/test_gcast_core.$$m; \
+	done
+	@echo "test_gcast_core: $(GCAST_CORE_MUTANTS) FAIL as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_gcast_core.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_gcast_core.mutant-check
 
@@ -1412,7 +1426,7 @@ OWENB_GATE_DEPS := $(ROOT)/tests/unit/test_owenb_core_gate.cpp $(ROOT)/host/libm
 OWENB_GATE_FLAGS := -I$(OWENB_RING_DIR)/include -pthread -DMPX_SOURCE_ROOT='"$(ROOT)"'
 OWENB_GATE_MUTANTS := accept_h264:MUT_OWENB_GATE_ACCEPT_H264 skip_heartbeat:MUT_OWENB_ID_SKIP_HEARTBEAT \
 		legacy_open:MUT_OWENB_GATE_LEGACY_OPEN backend_ignore_gate:MUT_BACKEND_IGNORE_GATE \
-		drop_t10:MUT_OWENB_GATE_DROP_T10
+		drop_t10:MUT_OWENB_GATE_DROP_T10 no_fresh_fallback:MUT_CORE_GATE_NO_FRESH_FALLBACK
 OWENB_GATE_MUT_BINS := $(foreach m,$(OWENB_GATE_MUTANTS),$(ROOT)/build/test_owenb_core_gate_mut_$(word 1,$(subst :, ,$(m))))
 
 $(ROOT)/build/test_owenb_core_gate: $(OWENB_GATE_DEPS)
@@ -1431,7 +1445,7 @@ $(ROOT)/build/test_owenb_core_gate.mutant-check: $(ROOT)/build/test_owenb_core_g
 		if $(ROOT)/build/test_owenb_core_gate_mut_$$m > $@.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; done
 	@if $(ROOT)/build/test_owenb_core_gate --mutate-paint-order > $@.log 2>&1; then \
 		echo "MUTANT SURVIVED: test_owenb_core_gate --mutate-paint-order"; exit 1; fi
-	@echo "test_owenb_core_gate: 5 mutants + paint-order mutant FAIL as required" | tee $@
+	@echo "test_owenb_core_gate: 6 mutants + paint-order mutant FAIL as required" | tee $@
 
 # OWENB-P1B T5: the OB play route. OwenbPlaySession (host/libmisterplex/owenb_session.*: AUs with PTS through the
 # library's CAVLC->CABAC rewrite, the OB_CAVLC_MAX_KBPS guard, 48 kHz PCM records with PTS, pause / held seek / stop /
@@ -1540,6 +1554,28 @@ $(ROOT)/build/test_owenb_play.timeout-mutant-check: $(ROOT)/build/test_owenb_pla
 	@grep -q 'FAIL .*MBB slow IDR beyond 5 s' $@.mut.log
 	@grep -q 'FAIL .*timeout requests normal start, not hard failure' $@.mut.log
 	@echo "test_owenb_play: 5 s hard timeout without fallback FAILs as required" | tee $@
+
+$(ROOT)/build/test_owenb_play_mut_livetv_zap: $(ROOT)/build/test_owenb_play
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_LIVETV_RETAIN_ASPECT -o $@ \
+		$(ROOT)/tests/unit/test_owenb_play.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) -lm
+
+$(ROOT)/build/test_owenb_osd_mut_livetv_default: $(ROOT)/build/test_owenb_osd
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -I$(ROOT)/arm/misterplexd -DMUT_LIVETV_DEFAULT_APPLY -o $@ \
+		$(ROOT)/tests/unit/test_owenb_osd.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) -lm
+
+$(ROOT)/build/test_owenb_osd.livetv-default-mutant-check: $(ROOT)/build/test_owenb_osd_mut_livetv_default
+	@$(ROOT)/build/test_owenb_osd --livetv-default-only > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
+	@if $(ROOT)/build/test_owenb_osd_mut_livetv_default --livetv-default-only > $@.mut.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVETV_DEFAULT_APPLY"; exit 1; fi
+	@grep -q 'FAIL .*MUT_LIVETV_DEFAULT_APPLY must fail' $@.mut.log
+	@echo "test_owenb_osd: MUT_LIVETV_DEFAULT_APPLY FAILs as required" | tee $@
+
+$(ROOT)/build/test_owenb_play.livetv-zap-mutant-check: $(ROOT)/build/test_owenb_play_mut_livetv_zap
+	@$(ROOT)/build/test_owenb_play --livetv-zap-only > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
+	@if $(ROOT)/build/test_owenb_play_mut_livetv_zap --livetv-zap-only > $@.mut.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVETV_RETAIN_ASPECT"; exit 1; fi
+	@grep -q 'FAIL .*MUT_LIVETV_RETAIN_ASPECT must fail' $@.mut.log
+	@echo "test_owenb_play: MUT_LIVETV_RETAIN_ASPECT FAILs as required" | tee $@
 
 $(ROOT)/build/test_owenb_timeline_heartbeat: $(ROOT)/tests/unit/test_owenb_timeline_heartbeat.cpp \
 		$(ROOT)/tests/unit/fake_owenb_core.hpp $(OWENB_PLAY_SRCS) $(OWENB_PLAY_HDRS) $(OWENB_RING_OBJS) \
@@ -1674,7 +1710,11 @@ OWENB_OSD_MUTANTS := premult:MUT_OSD_PREMULT reuse_before_gen:MUT_OSD_REUSE_BEFO
 		f3_card_see_through:MUT_F3_CARD_SEE_THROUGH f5_card_centred:MUT_F5_CARD_CENTRED \
 		rearm_req_ignored:MUT_IDLE_REARM_REQ_IGNORED \
 		pending_keeps_card:MUT_PENDING_KEEPS_CARD \
-		pending_no_label:MUT_PENDING_NO_LABEL
+		pending_no_label:MUT_PENDING_NO_LABEL \
+		gh46_hd_skip_pct:MUT_GH46_HD_SKIP_PCT \
+		nearhd_off:MUT_NEARHD_OFF nearhd_or:MUT_NEARHD_OR nearhd_w1263:MUT_NEARHD_W_1263 \
+		nearhd_w1265:MUT_NEARHD_W_1265 nearhd_h710:MUT_NEARHD_H_710 nearhd_h712:MUT_NEARHD_H_712 \
+		nearhd_nowcap:MUT_NEARHD_NO_WCAP nearhd_wcap1295:MUT_NEARHD_WCAP_1295 nearhd_wcap1297:MUT_NEARHD_WCAP_1297
 OWENB_OSD_MUT_BINS := $(foreach m,$(OWENB_OSD_MUTANTS),$(ROOT)/build/test_owenb_osd_mut_$(word 1,$(subst :, ,$(m))))
 OVL_REF_TOOLS ?= $(ROOT)/../umd-review/src-h264dec/tools
 
@@ -1756,17 +1796,44 @@ $(ROOT)/build/test_owenb_osd_plexui: $(OWENB_OSD_DEPS) $(ROOT)/tests/unit/test_o
 	@mkdir -p $(ROOT)/build
 	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -o $@ $(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
 
+# Review #1: OB PlexUI ping-pong back buffer (seeded, never shared with the OSD).
+OB_PINGPONG_MUTANTS := MUT_OB_PINGPONG_NO_SEED MUT_OB_PINGPONG_REUSE_SHARED MUT_OB_PINGPONG_DROP_BANDS
+$(ROOT)/build/test_ob_plexui_pingpong: $(ROOT)/tests/unit/test_ob_plexui_pingpong.cpp \
+		$(ROOT)/host/libmisterplex/owenb_plexui_pingpong.hpp $(ROOT)/host/libmisterplex/owenb_osd_draw.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -o $@ $(ROOT)/tests/unit/test_ob_plexui_pingpong.cpp
+.PHONY: test-ob-plexui-pingpong
+test-ob-plexui-pingpong: $(ROOT)/build/test_ob_plexui_pingpong
+	$(ROOT)/build/test_ob_plexui_pingpong
+	@for m in $(OB_PINGPONG_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -D$$m -o $(ROOT)/build/test_ob_plexui_pingpong.$$m \
+			$(ROOT)/tests/unit/test_ob_plexui_pingpong.cpp || exit 1; \
+		if $(ROOT)/build/test_ob_plexui_pingpong.$$m > /dev/null; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $(ROOT)/build/test_ob_plexui_pingpong.$$m; \
+	done
+	@echo "test_ob_plexui_pingpong: $(OB_PINGPONG_MUTANTS) FAIL as required"
+unit-unlocked unit-host-unlocked: test-ob-plexui-pingpong
+
 .PHONY: test-owenb-osd-plexui
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_owenb_osd_plexui
 
 test-owenb-osd-plexui: $(ROOT)/build/test_owenb_osd_plexui
 	$(ROOT)/build/test_owenb_osd_plexui
-	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_OSD_SURF_ONE_SHADOW -o $(ROOT)/build/test_owenb_osd_plexui_mut \
-		$(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
-	! $(ROOT)/build/test_owenb_osd_plexui_mut > /dev/null && echo "test_owenb_osd_plexui: mutant FAILS as required"
 	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_OSD_SURF_FLIP_IDLE -o $(ROOT)/build/test_owenb_osd_plexui_mut_flip \
 		$(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
 	! $(ROOT)/build/test_owenb_osd_plexui_mut_flip > /dev/null && echo "test_owenb_osd_plexui: FLIP_IDLE mutant FAILS as required"
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_NAV_OSD_SURF_8HZ -o $(ROOT)/build/test_owenb_osd_plexui_mut_8hz \
+		$(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
+	! $(ROOT)/build/test_owenb_osd_plexui_mut_8hz > /dev/null && echo "test_owenb_osd_plexui: SURF_8HZ mutant FAILS as required"
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_NAV_OSD_DOUBLE_FLIP -o $(ROOT)/build/test_owenb_osd_plexui_mut_dflip \
+		$(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
+	! $(ROOT)/build/test_owenb_osd_plexui_mut_dflip > /dev/null && echo "test_owenb_osd_plexui: DOUBLE_FLIP mutant FAILS as required"
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_NAV_OSD_FULL_SCAN -o $(ROOT)/build/test_owenb_osd_plexui_mut_fullscan \
+		$(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
+	! $(ROOT)/build/test_owenb_osd_plexui_mut_fullscan > /dev/null && echo "test_owenb_osd_plexui: FULL_SCAN mutant FAILS as required"
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_OSD_SURF_COALESCE_DIRTY -o $(ROOT)/build/test_owenb_osd_plexui_mut_coalesce \
+		$(ROOT)/tests/unit/test_owenb_osd_plexui.cpp $(OWENB_RING_OBJS) -lm
+	! $(ROOT)/build/test_owenb_osd_plexui_mut_coalesce > /dev/null && echo "test_owenb_osd_plexui: COALESCE_DIRTY mutant FAILS as required"
 
 # Idle ready card: no browse-key row, uncut, inside the 5% frame at 480p / 480i / 240p.
 # Each mutant must FAIL; -DBH_OLD_HINT (the pre-fix one-line hint) must FAIL too.
@@ -1816,6 +1883,11 @@ $(ROOT)/build/test_owenb_osd_mut_%: $(OWENB_OSD_DEPS)
 		-D$(word 2,$(subst :, ,$(filter $*:%,$(OWENB_OSD_MUTANTS)))) -o $@ \
 		$(ROOT)/tests/unit/test_owenb_osd.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) -lm
 
+# CLI repro (near-HD classifier): `build/owenb_raster_class_cli 1276 718` prints native-sd before the fix, native-hd after.
+$(ROOT)/build/owenb_raster_class_cli: $(ROOT)/tests/unit/owenb_raster_class_cli.cpp $(ROOT)/host/libmisterplex/owenb_osd_layout.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -o $@ $<
+
 $(ROOT)/build/test_owenb_osd.mutant-check: $(ROOT)/build/test_owenb_osd $(OWENB_OSD_MUT_BINS)
 	@$(ROOT)/build/test_owenb_osd > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
 	@for m in $(foreach x,$(OWENB_OSD_MUTANTS),$(word 1,$(subst :, ,$(x)))); do \
@@ -1853,7 +1925,8 @@ $(ROOT)/build/test_owenb_pms_traits.mutant-check: $(ROOT)/build/test_owenb_pms_t
 # Each mutant must FAIL at its pinned check.
 OWENB_WP_MUTANTS := MUT_OWENB_CAVLC_RETRY_NO_CAP:B1 MUT_OB_PREPLAY_ANY_ENTROPY:Q4 MUT_OB_PREPLAY_NO_RATE_CHECK:Q3 \
 		MUT_OB_PREPLAY_PROFILE_IGNORED:Q0 MUT_OB_PREPLAY_LEGACY_TOO:Q6 MUT_OB_TSAFE_LEGACY_TOO:T5 \
-		MUT_OB_TSAFE_H264_TOO:T3 MUT_OB_CAP_DROPPED:B5
+		MUT_OB_TSAFE_H264_TOO:T3 MUT_OB_CAP_DROPPED:B5 \
+		MUT_RH264_WRONG_CONTEXT:D1 MUT_RH264_IGNORED:D3 MUT_RSTART_DIRECT:D3 MUT_RH264_OFF_BINDS:W1
 $(ROOT)/build/test_owenb_weak_profile.mutant-check: $(ROOT)/build/test_owenb_weak_profile
 	@$(ROOT)/build/test_owenb_weak_profile > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
 	@for mc in $(OWENB_WP_MUTANTS); do m=$${mc%%:*}; c=$${mc##*:}; \
@@ -1972,7 +2045,8 @@ OWENB_INPUT_MUTANTS := act_in_osd:MUT_INPUT_ACT_IN_OSD level:MUT_INPUT_LEVEL men
 		home_stops_play:MUT_ROUTE_HOME_STOPS_PLAY window_from_top:MUT_LIBRARY_WINDOW_FROM_TOP \
 		info_selectable:MUT_LIBRARY_INFO_SELECTABLE play_no_transport:MUT_ROUTE_PLAY_NO_TRANSPORT \
 		info_browse_always:MUT_ROUTE_INFO_BROWSE_ALWAYS info_stops_play:MUT_ROUTE_INFO_STOPS_PLAY \
-		dpad_activate:MUT_RC1037_DPAD_ACTIVATE menu_mark_off:MUT_MW_MENU_WHEN_OFF
+		dpad_activate:MUT_RC1037_DPAD_ACTIVATE menu_mark_off:MUT_MW_MENU_WHEN_OFF \
+		guide_lr_off:MUT_SPELUNKR_GUIDE_LR_OFF guide_lr_swap:MUT_SPELUNKR_GUIDE_LR_SWAP
 OWENB_INPUT_MUT_BINS := $(foreach m,$(OWENB_INPUT_MUTANTS),$(ROOT)/build/test_owenb_input_mut_$(word 1,$(subst :, ,$(m))))
 $(ROOT)/build/test_owenb_input: $(ROOT)/tests/unit/test_owenb_input.cpp $(OWENB_INPUT_HDRS) $(OWENB_RING_OBJS)
 	@mkdir -p $(ROOT)/build
@@ -2033,18 +2107,58 @@ unit-unlocked unit-host-unlocked: $(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_owe
 
 # P2: the Spelunkr header (moov) cache end-to-end through the real AvSource::open() wiring
 # (OpenRequest::headerCacheSize/headerCacheEtag), not just HeaderCacheAvio in isolation.
-$(ROOT)/build/test_spelunkr_header_cache_av: $(ROOT)/tests/unit/test_spelunkr_header_cache_integration.cpp \
+SPELUNKR_HDR_CACHE_AV_DEPS := $(ROOT)/tests/unit/test_spelunkr_header_cache_integration.cpp \
 		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(ROOT)/arm/misterplexd/owenb_av_source.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/header_cache.hpp $(ROOT)/arm/misterplexd/spelunkr/header_cache_avio.hpp \
 		$(OWENB_PLAY_SRCS) $(OWENB_PLAY_HDRS) $(OWENB_RING_OBJS)
+define SPELUNKR_HDR_CACHE_AV_CMD
 	@mkdir -p $(ROOT)/build
-	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd \
-		$(shell pkg-config --cflags $(L2_DEMUX_AV)) -o $@ $(ROOT)/tests/unit/test_spelunkr_header_cache_integration.cpp \
+	$(CXX) $(1) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -DMPX_SOURCE_ROOT='"$(ROOT)"' -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) -o $(2) $(ROOT)/tests/unit/test_spelunkr_header_cache_integration.cpp \
 		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) \
 		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm
-
-$(ROOT)/build/test_spelunkr_header_cache_av.ok: $(ROOT)/build/test_spelunkr_header_cache_av
+endef
+$(ROOT)/build/test_spelunkr_header_cache_av: $(SPELUNKR_HDR_CACHE_AV_DEPS)
+	$(call SPELUNKR_HDR_CACHE_AV_CMD,$(CXXFLAGS),$@)
+$(ROOT)/build/test_spelunkr_header_cache_av_asan: $(SPELUNKR_HDR_CACHE_AV_DEPS)
+	$(call SPELUNKR_HDR_CACHE_AV_CMD,$(PLEXUI_ASAN_CXXFLAGS),$@)
+$(ROOT)/build/test_spelunkr_header_cache_av.ok: $(ROOT)/build/test_spelunkr_header_cache_av \
+		$(ROOT)/build/test_spelunkr_header_cache_av.mutant-check
 	$(ROOT)/build/test_spelunkr_header_cache_av
+	touch $@
+$(ROOT)/build/test_spelunkr_header_cache_av_asan.ok: $(ROOT)/build/test_spelunkr_header_cache_av_asan
+	ASAN_OPTIONS=detect_leaks=1:quarantine_size_mb=0 $(ROOT)/build/test_spelunkr_header_cache_av_asan
+	touch $@
+$(ROOT)/build/test_spelunkr_header_cache_av.mutant-check: $(SPELUNKR_HDR_CACHE_AV_DEPS)
+	$(call SPELUNKR_HDR_CACHE_AV_CMD,$(CXXFLAGS) -DMUT_HDR_KNOWN_ZERO_AS_SIZE,$(ROOT)/build/test_spelunkr_header_cache_av.MUT_HDR_KNOWN_ZERO_AS_SIZE)
+	@if $(ROOT)/build/test_spelunkr_header_cache_av.MUT_HDR_KNOWN_ZERO_AS_SIZE >/dev/null 2>&1; then \
+	  echo 'SURVIVED: MUT_HDR_KNOWN_ZERO_AS_SIZE'; exit 1; fi
+	@echo 'test_spelunkr_header_cache_av: MUT_HDR_KNOWN_ZERO_AS_SIZE FAIL as required'
+	touch $@
+unit-unlocked unit-host-unlocked: $(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_spelunkr_header_cache_av_asan.ok)
+
+# browse-lane #647 P2-5: keep-alive / offset / Range-ignore behaviour against a local HTTP server.
+$(ROOT)/build/test_spelunkr_header_cache_keepalive: $(ROOT)/tests/unit/test_spelunkr_header_cache_keepalive.cpp \
+		$(ROOT)/arm/misterplexd/spelunkr/header_cache.hpp $(ROOT)/arm/misterplexd/spelunkr/header_cache_avio.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) -o $@ $(ROOT)/tests/unit/test_spelunkr_header_cache_keepalive.cpp \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm -pthread
+
+$(ROOT)/build/test_spelunkr_header_cache_keepalive.ok: $(ROOT)/build/test_spelunkr_header_cache_keepalive
+	$(ROOT)/build/test_spelunkr_header_cache_keepalive
+	touch $@
+
+$(ROOT)/build/test_header_partial_spill_ram: $(ROOT)/tests/unit/test_header_partial_spill_ram.cpp \
+		$(ROOT)/arm/misterplexd/spelunkr/header_cache.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/header_cache_avio.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd -I$(ROOT)/host \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' $(shell pkg-config --cflags $(L2_DEMUX_AV)) \
+		-o $@ $(ROOT)/tests/unit/test_header_partial_spill_ram.cpp \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm -pthread
+$(ROOT)/build/test_header_partial_spill_ram.ok: $(ROOT)/build/test_header_partial_spill_ram
+	$(ROOT)/build/test_header_partial_spill_ram
 	touch $@
 
 # #231 Glass G: the premature-EOF reopen retries a refused/reset/unreachable open (real libav input).
@@ -2087,6 +2201,102 @@ $(ROOT)/build/test_owenb_probe_mem.check: $(ROOT)/build/test_owenb_probe_mem
 	$(ROOT)/build/test_owenb_probe_mem $(OWENB_PROBE_MEM_FIX)
 
 unit-unlocked unit-host-unlocked: $(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_owenb_probe_mem.check)
+
+# glass2 VEVO: live remux must open AAC on muxed (0:a:0) AND split (1:a:0 / fmtA_).
+# MUT_LIVE_SPLIT_NO_AIDX reverts the aidx_ assignment and must FAIL.
+$(ROOT)/build/test_owenb_live_remux_audio: $(ROOT)/tests/unit/test_owenb_live_remux_audio.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(ROOT)/arm/misterplexd/owenb_av_source.hpp \
+		$(OWENB_PLAY_SRCS) $(OWENB_PLAY_HDRS) $(OWENB_RING_OBJS)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) -o $@ $(ROOT)/tests/unit/test_owenb_live_remux_audio.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm
+
+$(ROOT)/build/test_owenb_live_remux_audio.check: $(ROOT)/build/test_owenb_live_remux_audio
+	$(ROOT)/build/test_owenb_live_remux_audio
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -DMUT_LIVE_SPLIT_NO_AIDX -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) -o $(ROOT)/build/test_owenb_live_remux_audio.mut \
+		$(ROOT)/tests/unit/test_owenb_live_remux_audio.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm
+	@if $(ROOT)/build/test_owenb_live_remux_audio.mut >/dev/null 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_SPLIT_NO_AIDX"; exit 1; fi
+	@echo "test_owenb_live_remux_audio: MUT_LIVE_SPLIT_NO_AIDX FAIL as required"
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -DMUT_LIVE_PACE_HOLD_AUDIO -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) -o $(ROOT)/build/test_owenb_live_remux_audio.mut_hold \
+		$(ROOT)/tests/unit/test_owenb_live_remux_audio.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm
+	@if $(ROOT)/build/test_owenb_live_remux_audio.mut_hold >/dev/null 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_PACE_HOLD_AUDIO"; exit 1; fi
+	@echo "test_owenb_live_remux_audio: MUT_LIVE_PACE_HOLD_AUDIO FAIL as required"
+	@touch $@
+
+unit-unlocked unit-host-unlocked: $(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_owenb_live_remux_audio.check)
+
+# Cancel/stall during the first-spawn PCM fill must not be swallowed as FillTimeout.
+# MUT_LIVE_FILL_SWALLOWS_CANCEL restores that classification and must FAIL.
+# A hang is killed by `timeout 20` (nonzero). Exit 0 is MUTANT SURVIVED.
+.PHONY: host-v101-prefetch-cancel
+PREFETCH_CANCEL_SRC := $(ROOT)/tests/unit/test_live_prefetch_cancel.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(ROOT)/arm/misterplexd/owenb_av_source.hpp \
+		$(OWENB_PLAY_SRCS) $(OWENB_PLAY_HDRS) $(OWENB_RING_OBJS)
+PREFETCH_CANCEL_CMD = $(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) $(1) -o $(2) \
+		$(ROOT)/tests/unit/test_live_prefetch_cancel.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm
+$(ROOT)/build/test_live_prefetch_cancel: $(PREFETCH_CANCEL_SRC)
+	@mkdir -p $(ROOT)/build
+	$(call PREFETCH_CANCEL_CMD,,$@)
+host-v101-prefetch-cancel: $(ROOT)/build/test_live_prefetch_cancel
+	$(ROOT)/build/test_live_prefetch_cancel
+	$(call PREFETCH_CANCEL_CMD,-DMUT_LIVE_FILL_SWALLOWS_CANCEL,$(ROOT)/build/test_live_prefetch_cancel.mut)
+	@if timeout 20 $(ROOT)/build/test_live_prefetch_cancel.mut >$(ROOT)/build/test_live_prefetch_cancel.mut.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_FILL_SWALLOWS_CANCEL"; exit 1; fi
+	@echo "test_live_prefetch_cancel: MUT_LIVE_FILL_SWALLOWS_CANCEL FAIL as required"
+
+# Split Pluto first spawn: hold the opening key until audio, skip a late GOP.
+# MUT_LIVE_AV_START_NO_GATE must fail G2. MUT_LIVE_AV_START_GATE_UNBOUNDED must
+# fail G3. MUT_LIVE_AV_START_DROP_WHILE_SKIPPING must fail G6.
+# MUT_LIVE_AV_START_PRESENT_ON_NO_AUDIO_TIMEOUT must fail G3/G7.
+# MUT_LIVE_AV_START_PRESENT_ON_LONG_LEAD_TIMEOUT must fail G6.
+# (timeout 60; exit 0 is MUTANT SURVIVED). The long-lead reopen waits ~8 s.
+.PHONY: host-v101-av-start-gate
+AV_START_SRC := $(ROOT)/tests/unit/test_live_av_start_gate.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(ROOT)/arm/misterplexd/owenb_av_source.hpp \
+		$(OWENB_PLAY_SRCS) $(OWENB_PLAY_HDRS) $(OWENB_RING_OBJS)
+AV_START_CMD = $(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd \
+		$(shell pkg-config --cflags $(L2_DEMUX_AV)) $(1) -o $(2) \
+		$(ROOT)/tests/unit/test_live_av_start_gate.cpp \
+		$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_OBJS) \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm
+$(ROOT)/build/test_live_av_start_gate: $(AV_START_SRC)
+	@mkdir -p $(ROOT)/build
+	$(call AV_START_CMD,,$@)
+host-v101-av-start-gate: $(ROOT)/build/test_live_av_start_gate
+	$(ROOT)/build/test_live_av_start_gate
+	$(call AV_START_CMD,-DMUT_LIVE_AV_START_NO_GATE,$(ROOT)/build/test_live_av_start_gate.no_gate)
+	@if timeout 60 $(ROOT)/build/test_live_av_start_gate.no_gate >$(ROOT)/build/test_live_av_start_gate.no_gate.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_AV_START_NO_GATE"; exit 1; fi
+	@echo "test_live_av_start_gate: MUT_LIVE_AV_START_NO_GATE FAIL as required"
+	$(call AV_START_CMD,-DMUT_LIVE_AV_START_GATE_UNBOUNDED,$(ROOT)/build/test_live_av_start_gate.unbounded)
+	@if timeout 60 $(ROOT)/build/test_live_av_start_gate.unbounded >$(ROOT)/build/test_live_av_start_gate.unbounded.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_AV_START_GATE_UNBOUNDED"; exit 1; fi
+	@echo "test_live_av_start_gate: MUT_LIVE_AV_START_GATE_UNBOUNDED FAIL as required"
+	$(call AV_START_CMD,-DMUT_LIVE_AV_START_DROP_WHILE_SKIPPING,$(ROOT)/build/test_live_av_start_gate.drop_skip)
+	@if timeout 60 $(ROOT)/build/test_live_av_start_gate.drop_skip >$(ROOT)/build/test_live_av_start_gate.drop_skip.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_AV_START_DROP_WHILE_SKIPPING"; exit 1; fi
+	@echo "test_live_av_start_gate: MUT_LIVE_AV_START_DROP_WHILE_SKIPPING FAIL as required"
+	$(call AV_START_CMD,-DMUT_LIVE_AV_START_PRESENT_ON_NO_AUDIO_TIMEOUT,$(ROOT)/build/test_live_av_start_gate.present_silent)
+	@if timeout 60 $(ROOT)/build/test_live_av_start_gate.present_silent >$(ROOT)/build/test_live_av_start_gate.present_silent.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_AV_START_PRESENT_ON_NO_AUDIO_TIMEOUT"; exit 1; fi
+	@echo "test_live_av_start_gate: MUT_LIVE_AV_START_PRESENT_ON_NO_AUDIO_TIMEOUT FAIL as required"
+	$(call AV_START_CMD,-DMUT_LIVE_AV_START_PRESENT_ON_LONG_LEAD_TIMEOUT,$(ROOT)/build/test_live_av_start_gate.present_long)
+	@if timeout 60 $(ROOT)/build/test_live_av_start_gate.present_long >$(ROOT)/build/test_live_av_start_gate.present_long.log 2>&1; then \
+		echo "MUTANT SURVIVED: MUT_LIVE_AV_START_PRESENT_ON_LONG_LEAD_TIMEOUT"; exit 1; fi
+	@echo "test_live_av_start_gate: MUT_LIVE_AV_START_PRESENT_ON_LONG_LEAD_TIMEOUT FAIL as required"
 
 # Gate 7 host RSS: repeated fake-core plays of the short CABAC clip plus poster
 # churn. ASan+LSan, quarantine off, so a leak or a queue that retains shows up
@@ -2529,7 +2739,7 @@ $(ROOT)/build/test_plexob_yc.mutant-check: $(ROOT)/build/test_plexob_yc
 		-o $(ROOT)/build/test_plexob_yc.mut1101 $(ROOT)/tests/unit/test_plexob_yc.cpp
 	@if $(ROOT)/build/test_plexob_yc.mut1101 > $@.mut1101.log 2>&1; then \
 		echo "test_plexob_yc: MUT_YC_NO_1101 SURVIVED"; exit 1; fi
-	@grep -q "the release id, the #278 id, and the older Y/C ids are accepted" $@.mut1101.log || \
+	@grep -q "the release id, the #278 id, the #374 ids, s14 0B112501, and the older Y/C ids are accepted" $@.mut1101.log || \
 		{ echo "MUTANT MUT_YC_NO_1101 KILLED BY THE WRONG CHECK"; cat $@.mut1101.log; exit 1; }
 	@echo "test_plexob_yc: MUT_YC_WORD_82 MUT_YC_NO_1101 FAIL as required" | tee $@
 	@rm -f $(ROOT)/build/test_plexob_yc.mut $(ROOT)/build/test_plexob_yc.mut1101
@@ -2992,6 +3202,12 @@ $(ROOT)/build/test_core_id_select.mutant-check: $(ROOT)/tests/unit/test_core_id_
 		echo "test_core_id_select: MUT_GH10_ALLOW_LCD SURVIVED"; exit 1; fi
 	@echo "test_core_id_select: MUT_GH10_ALLOW_LCD FAIL as required"
 	@rm -f $(ROOT)/build/test_core_id_select.lcd
+	$(CXX) $(CXXFLAGS) -DMUT_NO_112501 -I$(ROOT)/host -o $(ROOT)/build/test_core_id_select.no112501 \
+		$(ROOT)/tests/unit/test_core_id_select.cpp
+	@if $(ROOT)/build/test_core_id_select.no112501 >/dev/null 2>&1; then \
+		echo "test_core_id_select: MUT_NO_112501 SURVIVED"; exit 1; fi
+	@echo "test_core_id_select: MUT_NO_112501 FAIL as required"
+	@rm -f $(ROOT)/build/test_core_id_select.no112501
 	@touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_core_id_select.mutant-check
 
@@ -3661,9 +3877,15 @@ PLEXUI_SRC := \
 	$(ROOT)/host/libmisterplex/plexui/plexui_font.cpp \
 	$(ROOT)/host/libmisterplex/plexui/plexui_images.cpp \
 	$(ROOT)/host/libmisterplex/plexui/plexui_disk_cache.cpp \
-	$(ROOT)/host/libmisterplex/plexui/plexui_render.cpp
+	$(ROOT)/host/libmisterplex/plexui/plexui_render.cpp \
+	$(ROOT)/host/libmisterplex/browse_shell_paint.cpp \
+	$(ROOT)/host/libmisterplex/browse_shell_controller.cpp
+
+ARM_BROWSE_SRC := $(wildcard $(ROOT)/host/libmisterplex/browse_shell_*.cpp)
+ARM_BROWSE_FLAGS := -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -O2
 
 MPLEX_SRC := \
+	$(ROOT)/arm/misterplexd/pluto_hls_probe.cpp \
 	$(ROOT)/arm/misterplexd/main.cpp \
 	$(ROOT)/arm/misterplexd/wall_clock.cpp \
 	$(ROOT)/arm/misterplexd/tls_http.cpp \
@@ -3708,7 +3930,22 @@ $(ROOT)/build/test_plex_meta_text.check: $(ROOT)/build/test_plex_meta_text
 
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_plex_meta_text.check
 # Stamped into misterplexd so GET /misterplex/status can show the commit. Empty when git is absent.
-MPX_GIT_COMMIT := $(shell git -C $(ROOT) rev-parse HEAD 2>/dev/null)
+# Only an explicit command-line `make MPX_GIT_COMMIT=<sha>` (as scripts/repro_arm_build.sh passes) or git at
+# $(ROOT) as the work-tree top counts. A leftover environment MPX_GIT_COMMIT is ignored (override beats -e too).
+# git is only trusted when $(ROOT) is itself the work-tree top; an archive extracted inside another repo
+# (e.g. a home-dir repo) would otherwise stamp that repo's HEAD.
+ifneq ($(origin MPX_GIT_COMMIT),command line)
+override MPX_GIT_COMMIT := $(shell cd $(ROOT) 2>/dev/null && [ "$$(git rev-parse --show-toplevel 2>/dev/null)" = "$$(pwd -P)" ] && git rev-parse HEAD 2>/dev/null)
+endif
+# Hex guard (pure make, so a crafted value never reaches a shell): non-empty must be one word of 7-40 lowercase hex.
+mpx_strip_hex = $(subst f,,$(subst e,,$(subst d,,$(subst c,,$(subst b,,$(subst a,,$(subst 9,,$(subst 8,,$(subst 7,,$(subst 6,,$(subst 5,,$(subst 4,,$(subst 3,,$(subst 2,,$(subst 1,,$(subst 0,,$(1)))))))))))))))))
+mpx_split_hex = $(subst f,f ,$(subst e,e ,$(subst d,d ,$(subst c,c ,$(subst b,b ,$(subst a,a ,$(subst 9,9 ,$(subst 8,8 ,$(subst 7,7 ,$(subst 6,6 ,$(subst 5,5 ,$(subst 4,4 ,$(subst 3,3 ,$(subst 2,2 ,$(subst 1,1 ,$(subst 0,0 ,$(1)))))))))))))))))
+ifneq ($(MPX_GIT_COMMIT),)
+mpx_commit_bad := $(if $(filter 1,$(words $(MPX_GIT_COMMIT))),,multiword)$(call mpx_strip_hex,$(MPX_GIT_COMMIT))$(if $(filter $(words $(call mpx_split_hex,$(MPX_GIT_COMMIT))),7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40),,badlen)
+ifneq ($(strip $(mpx_commit_bad)),)
+$(error MPX_GIT_COMMIT must be a 7-40 char lowercase hex sha)
+endif
+endif
 MPX_GIT_DEFINE := $(if $(MPX_GIT_COMMIT),-DMPX_GIT_COMMIT=\"$(MPX_GIT_COMMIT)\",)
 # OWENB-P1B T5: the daemon links the vendored owenb ring lib and the OB play (host: no libav, so the OB route
 # refuses play; arm-plexd-daemon with libav: the full OB route with owenb_av_source.cpp).
@@ -4333,6 +4570,40 @@ $(ROOT)/build/test_plexui_remote_browse_focus.mutant-check: $(ROOT)/build/test_p
 	@echo "test_plexui_remote_browse_focus: 1 mutant FAILS as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_plexui_remote_browse_focus.ok $(ROOT)/build/test_plexui_remote_browse_focus_asan.ok $(ROOT)/build/test_plexui_remote_browse_focus.mutant-check
 
+# HOME-UX: sidebar list/logo geometry, hub tile fit, Home focus bar rules.
+$(ROOT)/build/test_plexui_home_ux_geom: $(ROOT)/tests/unit/test_plexui_home_ux_geom.cpp $(PLEXUI_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_PLEXUI_UNIT_TEST -I$(ROOT)/host -I$(ROOT)/host/libmisterplex/plexui \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -o $@ \
+		$(ROOT)/tests/unit/test_plexui_home_ux_geom.cpp $(PLEXUI_SRC)
+$(ROOT)/build/test_plexui_home_ux_geom.ok: $(ROOT)/build/test_plexui_home_ux_geom
+	cd $(ROOT) && ./build/test_plexui_home_ux_geom
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_plexui_home_ux_geom.ok
+
+# HOME-UX r3: device 960x480 HDMI Native geometry (3 tiles), 480p 2, cached scroll == fresh,
+# relayout on output-size change both ways, B on a Home tile -> Home bar, LEFT col 0 -> bar.
+$(ROOT)/build/test_plexui_home_ux_r3: $(ROOT)/tests/unit/test_plexui_home_ux_r3.cpp $(PLEXUI_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_PLEXUI_UNIT_TEST -I$(ROOT)/host -I$(ROOT)/host/libmisterplex/plexui \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -o $@ \
+		$(ROOT)/tests/unit/test_plexui_home_ux_r3.cpp $(PLEXUI_SRC)
+$(ROOT)/build/test_plexui_home_ux_r3.ok: $(ROOT)/build/test_plexui_home_ux_r3
+	cd $(ROOT) && ./build/test_plexui_home_ux_r3
+	touch $@
+HUX_R3_MUTANTS := MUT_HUX_BACK_SKIPS_HOME_BAR MUT_HUX_SHIFT_RIGHT_REVEAL_ONLY MUT_HUX_NO_FRAME_RELAYOUT MUT_HUX_NO_SPREAD MUT_HUX_TITLE_AT_CONTENT_LEFT
+$(ROOT)/build/test_plexui_home_ux_r3.MUT_%: $(ROOT)/tests/unit/test_plexui_home_ux_r3.cpp $(PLEXUI_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_PLEXUI_UNIT_TEST -DMUT_$* -I$(ROOT)/host \
+		-I$(ROOT)/host/libmisterplex/plexui -I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -o $@ \
+		$(ROOT)/tests/unit/test_plexui_home_ux_r3.cpp $(PLEXUI_SRC)
+$(ROOT)/build/test_plexui_home_ux_r3.mutant-check: $(addprefix $(ROOT)/build/test_plexui_home_ux_r3.,$(HUX_R3_MUTANTS))
+	cd $(ROOT) && for m in $(HUX_R3_MUTANTS); do \
+		if ./build/test_plexui_home_ux_r3.$$m > build/test_plexui_home_ux_r3.$$m.log 2>&1; then \
+			echo "test_plexui_home_ux_r3: mutant $$m PASSED (must fail)"; exit 1; fi; done
+	@echo "test_plexui_home_ux_r3: $(words $(HUX_R3_MUTANTS)) mutants FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_plexui_home_ux_r3.ok $(ROOT)/build/test_plexui_home_ux_r3.mutant-check
+
 # #206 GLASS-211: Home vertical scroll + column clamp on DOWN (A plays on row 6).
 $(ROOT)/build/test_plexui_home_vscroll: $(ROOT)/tests/unit/test_plexui_home_vscroll.cpp $(PLEXUI_SRC)
 	@mkdir -p $(ROOT)/build
@@ -4536,6 +4807,178 @@ $(ROOT)/build/test_grid_page.mutant-check: $(ROOT)/build/test_grid_page
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_grid_page.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_grid_page_asan.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_grid_page.mutant-check
+
+# Library Browse redesign (reviewer 1121): paging, layout tables, search debounce,
+# cache LRU, generation-cancel, no-network-on-nav, BROWSE_MS. Mutant PAGE_HALF.
+BROWSE_SHELL_HDR := $(wildcard $(ROOT)/host/libmisterplex/browse_shell*.hpp)
+$(ROOT)/build/browse_shell_bench: $(ROOT)/tools/browse_shell_bench.cpp $(PLEXUI_SRC) $(BROWSE_SHELL_HDR)
+	@mkdir -p $(ROOT)/build
+	$(CXX) -std=c++17 -O2 -pthread -DMPX_BROWSE_SHELL_UNIT_TEST $(MPLEX_INC) -o $@ \
+		$(ROOT)/tools/browse_shell_bench.cpp $(PLEXUI_SRC)
+.PHONY: browse_shell_bench
+browse_shell_bench: $(ROOT)/build/browse_shell_bench
+	cd $(ROOT) && ./build/browse_shell_bench --require-no-alloc
+
+ARM_BROWSE_BENCH_OBJS := $(addprefix $(ROOT)/build/arm/browse-bench/,$(notdir $(ARM_BROWSE_SRC:.cpp=.o)))
+$(ARM_BROWSE_BENCH_OBJS): $(ROOT)/build/arm/browse-bench/%.o: $(ROOT)/host/libmisterplex/%.cpp $(BROWSE_SHELL_HDR) force-arm-browse
+	@mkdir -p $(dir $@)
+	$(ARM_CXX) -std=c++17 -pthread -Wno-psabi -DMPX_BROWSE_SHELL_UNIT_TEST $(MPLEX_INC) \
+		$(ARM_BROWSE_FLAGS) -c -o $@ $<
+$(ROOT)/build/arm/browse_shell_bench: $(ROOT)/tools/browse_shell_bench.cpp $(PLEXUI_SRC) $(BROWSE_SHELL_HDR) $(ARM_BROWSE_BENCH_OBJS)
+	$(ARM_CXX) -std=c++17 -O2 -static -pthread -Wno-psabi -DMPX_BROWSE_SHELL_UNIT_TEST $(MPLEX_INC) \
+		-o $@ $(ROOT)/tools/browse_shell_bench.cpp $(filter-out $(ARM_BROWSE_SRC),$(PLEXUI_SRC)) \
+		$(ARM_BROWSE_BENCH_OBJS) -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
+.PHONY: browse_shell_bench_arm
+browse_shell_bench_arm: $(ROOT)/build/arm/browse_shell_bench
+	cd $(ROOT) && qemu-arm-static -cpu cortex-a9 ./build/arm/browse_shell_bench --require-no-alloc
+
+$(ROOT)/build/test_browse_shell: $(ROOT)/tests/unit/test_browse_shell.cpp $(PLEXUI_SRC) \
+		$(BROWSE_SHELL_HDR)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_BROWSE_SHELL_UNIT_TEST $(MPLEX_INC) -o $@ \
+		$(ROOT)/tests/unit/test_browse_shell.cpp $(PLEXUI_SRC)
+$(ROOT)/build/test_browse_shell.ok: $(ROOT)/build/test_browse_shell
+	cd $(ROOT) && ./build/test_browse_shell
+	touch $@
+BROWSE_SHELL_MUTANTS := MUT_BROWSE_SHELL_PAGE_HALF MUT_BROWSE_SHELL_NO_LOGO \
+	MUT_BROWSE_INTERLACED_240 MUT_BROWSE_NATIVE_5COL MUT_BROWSE_ROW_NO_ELLIPSIZE \
+	MUT_BROWSE_TEXT_NO_ORIGIN MUT_BROWSE_THUMBS_SERIAL MUT_BROWSE_BLOCKING_CATALOG
+$(ROOT)/build/test_browse_shell.mutant-check: $(ROOT)/build/test_browse_shell
+	@$(ROOT)/build/test_browse_shell > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
+	@for m in $(BROWSE_SHELL_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -pthread -DMPX_BROWSE_SHELL_UNIT_TEST -D$$m \
+			$(MPLEX_INC) -o $(ROOT)/build/test_browse_shell.$$m \
+			$(ROOT)/tests/unit/test_browse_shell.cpp $(PLEXUI_SRC) || exit 1; \
+		if (cd $(ROOT) && $(ROOT)/build/test_browse_shell.$$m > $@.$$m.log 2>&1); then \
+			echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $(ROOT)/build/test_browse_shell.$$m; \
+	done
+	@echo "test_browse_shell: $(BROWSE_SHELL_MUTANTS) FAIL as required" | tee $@
+	$(MAKE) host-browse-title-play-mutant
+$(ROOT)/build/test_browse_shell_asan: $(ROOT)/tests/unit/test_browse_shell.cpp $(PLEXUI_SRC) $(BROWSE_SHELL_HDR)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(PLEXUI_ASAN_CXXFLAGS) -pthread -DMPX_BROWSE_SHELL_UNIT_TEST $(MPLEX_INC) -o $@ \
+		$(ROOT)/tests/unit/test_browse_shell.cpp $(PLEXUI_SRC)
+$(ROOT)/build/test_browse_shell_asan.ok: $(ROOT)/build/test_browse_shell_asan
+	cd $(ROOT) && ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./build/test_browse_shell_asan
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_browse_shell.ok
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_browse_shell.mutant-check
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_browse_shell_asan.ok
+
+$(ROOT)/build/browse_shell_shot: $(ROOT)/tools/browse_shell_shot.cpp $(PLEXUI_SRC) $(BROWSE_SHELL_HDR)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread $(MPLEX_INC) -o $@ \
+		$(ROOT)/tools/browse_shell_shot.cpp $(PLEXUI_SRC)
+.PHONY: browse_shell_shot
+browse_shell_shot: $(ROOT)/build/browse_shell_shot
+
+# Lane pre-glass host regression (PLAN-PARALLEL-LANES-1121).
+# Split: browse-lane owns browse; 480i Lead owns Pluto/Vevo splice+PTS.
+# Every lane: `make host-preglass` (or host-preglass-browse) before the lab MiSTer.
+.PHONY: host-preglass host-preglass-pluto host-preglass-browse host-preglass-668
+# 480i Lead — Pluto/Vevo splice+PTS (yt_live resilience/adbreak, pluto_live, PTS).
+# Do not add browse work here. Mutants for pluto_live are inside .ok recipe.
+host-preglass-pluto: $(ROOT)/build/test_spelunkr_pluto_live.ok \
+		$(ROOT)/build/test_yt_live_resilience.ok $(ROOT)/build/test_yt_live_resilience.mutant-check \
+		$(ROOT)/build/test_yt_live_adbreak.ok $(ROOT)/build/test_yt_live_adbreak.mutant-check \
+		$(ROOT)/build/test_pts_jump_clamp $(ROOT)/build/test_pts_cadence $(ROOT)/build/test_pts_wrap
+	@$(ROOT)/build/test_pts_jump_clamp
+	@$(ROOT)/build/test_pts_cadence
+	@$(ROOT)/build/test_pts_wrap
+	@echo "host-preglass-pluto: PASS (pluto_live + resilience + adbreak + PTS)"
+
+# browse-lane — P1-1 refresh; P1-2 PageDown clamp; bounce A–E + select-retry mutant; zero-alloc bench.
+# Bounce compile rule kept from 53278c6c (5ff merge dropped it while filling pluto).
+$(ROOT)/build/test_browse_bounce: $(ROOT)/tests/unit/test_browse_bounce.cpp $(PLEXUI_SRC) \
+		$(BROWSE_SHELL_HDR)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_BROWSE_SHELL_UNIT_TEST $(MPLEX_INC) -o $@ \
+		$(ROOT)/tests/unit/test_browse_bounce.cpp $(PLEXUI_SRC)
+$(ROOT)/build/test_browse_bounce.ok: $(ROOT)/build/test_browse_bounce
+	cd $(ROOT) && ./build/test_browse_bounce
+	touch $@
+
+host-preglass-browse: $(ROOT)/build/test_browse_shell.ok $(ROOT)/build/test_browse_shell.mutant-check $(ROOT)/build/test_browse_bounce
+	@$(ROOT)/build/test_browse_shell 2>&1 | tee $(ROOT)/build/host-preglass-browse-last.log | grep -E 'REGRESSION P1-|REGRESSION bounce|passed|failed' || true
+	@grep -q 'REGRESSION P1-1 refresh survives input' $(ROOT)/build/host-preglass-browse-last.log
+	@grep -q 'REGRESSION P1-2 last full page' $(ROOT)/build/host-preglass-browse-last.log
+	@grep -q 'REGRESSION title-play NO_PICTURE' $(ROOT)/build/host-preglass-browse-last.log
+	@echo "---- browse-bounce remote server select ----"
+	@set -o pipefail; $(ROOT)/build/test_browse_bounce 2>&1 | tee $(ROOT)/build/host-preglass-bounce-last.log
+	@grep -E 'REGRESSION bounce|REACHED|BOUNCE|test_browse_bounce' $(ROOT)/build/host-preglass-bounce-last.log || true
+	@grep -q 'REGRESSION bounce remote server select' $(ROOT)/build/host-preglass-bounce-last.log
+	@grep -q 'test_browse_bounce ok' $(ROOT)/build/host-preglass-bounce-last.log
+	@grep -q 'REGRESSION bounce select-retry' $(ROOT)/build/host-preglass-bounce-last.log
+	$(MAKE) host-bounce-select-retry-mutant
+	$(MAKE) host-browse-title-play-mutant
+	$(MAKE) browse_shell_bench
+
+# Cheap-b mutant: without select-time alt retry, scenario E must bounce (non-zero exit).
+# 63332105 title-play NO_PICTURE: without snap-off-dead-focus / stay-on-play, the
+# new tests must FAIL (glass: ENTER on plex-kube "…" never left Servers).
+.PHONY: host-browse-title-play-mutant
+host-browse-title-play-mutant: $(PLEXUI_SRC) $(BROWSE_SHELL_HDR) \
+		$(ROOT)/tests/unit/test_browse_shell.cpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_BROWSE_SHELL_UNIT_TEST -DMUT_BROWSE_TITLE_PLAY_NOPICTURE $(MPLEX_INC) \
+		-o $(ROOT)/build/test_browse_shell_nopicture \
+		$(ROOT)/tests/unit/test_browse_shell.cpp $(PLEXUI_SRC)
+	@set +e; set -o pipefail; $(ROOT)/build/test_browse_shell_nopicture 2>&1 | \
+		tee $(ROOT)/build/host-browse-title-play-mutant.log; ec=$$?; \
+		if [ $$ec -eq 0 ]; then echo "FAIL: title-play NO_PICTURE mutant unexpectedly passed"; exit 1; fi
+	@grep -q 'REGRESSION title-play NO_PICTURE' $(ROOT)/build/host-browse-title-play-mutant.log
+	@grep -q 'played.ratingKey == "10"' $(ROOT)/build/host-browse-title-play-mutant.log
+	@echo "host-browse-title-play-mutant: NO_PICTURE path FAILed as required"
+
+.PHONY: host-bounce-select-retry-mutant
+host-bounce-select-retry-mutant: $(PLEXUI_SRC) $(BROWSE_SHELL_HDR) \
+		$(ROOT)/tests/unit/test_browse_bounce.cpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -DMPX_BROWSE_SHELL_UNIT_TEST -DMUT_BROWSE_NO_SELECT_RETRY $(MPLEX_INC) \
+		-o $(ROOT)/build/test_browse_bounce_no_select_retry \
+		$(ROOT)/tests/unit/test_browse_bounce.cpp $(PLEXUI_SRC)
+	@set +e; set -o pipefail; $(ROOT)/build/test_browse_bounce_no_select_retry 2>&1 | \
+		tee $(ROOT)/build/host-bounce-select-retry-mutant.log; ec=$$?; \
+		if [ $$ec -eq 0 ]; then echo "FAIL: mutant unexpectedly passed"; exit 1; fi
+	@grep -q 'BOUNCE (expected only under MUT_BROWSE_NO_SELECT_RETRY)' $(ROOT)/build/host-bounce-select-retry-mutant.log
+	@echo "host-bounce-select-retry-mutant: E bounced without cheap-b OK"
+
+# browse-lane — #668 Z2 channel-UP PREFETCH TIMEOUT (4/6) + G11 p240 flip.
+# Folded from 9d614aac onto 939018c4. Suite stays red until the zap-up remux
+# retry hook is true and a tip proves p240_active 0→1. Mutants must FAIL.
+# Recipe avoids `set -o pipefail` (this tree's /bin/sh is dash).
+.PHONY: host-preglass-668
+host-preglass-668: $(ROOT)/build/test_spelunkr_668_host $(ROOT)/build/test_spelunkr_668_host.mutant-check
+	@$(ROOT)/build/test_spelunkr_668_host > $(ROOT)/build/host-preglass-668-last.log 2>&1; ec=$$?; \
+		cat $(ROOT)/build/host-preglass-668-last.log; \
+		grep -q 'REGRESSION 668-Z2-prefetch-timeout' $(ROOT)/build/host-preglass-668-last.log || exit 1; \
+		grep -q 'REGRESSION 668-G11-p240-flip' $(ROOT)/build/host-preglass-668-last.log || exit 1; \
+		if [ $$ec -ne 0 ]; then \
+			echo "host-preglass-668: suite-red EXIT $$ec (expected until zap-up retry and a proven p240 flip)"; \
+			exit $$ec; \
+		fi; \
+		echo "host-preglass-668: PASS (668 Z2 prefetch + G11 p240 + mutants)"
+
+S668_SRC := $(ROOT)/tests/unit/test_spelunkr_668_host.cpp $(ROOT)/host/libmisterplex/spelunkr_668_host.hpp \
+	$(ROOT)/arm/misterplexd/main.cpp $(ROOT)/arm/misterplexd/spelunkr/pluto_live.hpp
+S668_MUTANTS := MUT_SPELUNKR_NO_ZAP_UP_PREFETCH_RETRY MUT_SPELUNKR_G11_ACCEPT_NO_FLIP
+$(ROOT)/build/test_spelunkr_668_host: $(S668_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-o $@ $(ROOT)/tests/unit/test_spelunkr_668_host.cpp
+$(ROOT)/build/test_spelunkr_668_host.mutant-check: $(ROOT)/build/test_spelunkr_668_host $(S668_SRC)
+	@for m in $(S668_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+			-D$$m -o $@.$$m $(ROOT)/tests/unit/test_spelunkr_668_host.cpp || exit 1; \
+		if $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_spelunkr_668_host: $(S668_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_spelunkr_668_host \
+	$(ROOT)/build/test_spelunkr_668_host.mutant-check
+
+host-preglass:
+	@bash $(ROOT)/scripts/host_preglass.sh
 
 # AZ_JUMP default off: library grid has no letter bar and no firstCharacter.
 # On: Select on the bar requests that letter; GRID_PAGE pages it. Four mutants
@@ -4770,17 +5213,39 @@ $(ROOT)/build/test_remember_picture.mutant-check: $(ROOT)/build/test_remember_pi
 	@for m in MUT_REMEMBER_PICTURE_FLAG_DEFAULT_ON MUT_REMEMBER_PICTURE_OFF_STILL_SAVES \
 		MUT_REMEMBER_PICTURE_OFF_STILL_APPLIES MUT_REMEMBER_PICTURE_IGNORED \
 		MUT_REMEMBER_PICTURE_MENU_WHEN_OFF MUT_REMEMBER_PICTURE_DROP_149 \
-		MUT_REMEMBER_PICTURE_NO_DEBOUNCE MUT_REMEMBER_PICTURE_NO_STOP_FLUSH MUT_REMEMBER_PICTURE_NO_WRITE_LOCK; do \
+		MUT_REMEMBER_PICTURE_DROP_LIVETV MUT_REMEMBER_PICTURE_NO_DEBOUNCE MUT_REMEMBER_PICTURE_NO_STOP_FLUSH \
+		MUT_REMEMBER_PICTURE_NO_WRITE_LOCK; do \
 		$(CXX) $(CXXFLAGS) -pthread -DMPX_SOURCE_ROOT='"$(ROOT)"' -I$(OWENB_RING_DIR)/include -D$$m \
 			-o $(ROOT)/build/test_remember_picture.$$m \
 			$(ROOT)/tests/unit/test_remember_picture.cpp $(OWENB_RING_OBJS); \
 		if $(ROOT)/build/test_remember_picture.$$m > $@.$$m.log 2>&1; then \
 			echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
 	done
-	@echo "test_remember_picture: 9 mutants FAIL as required" | tee $@
+	@echo "test_remember_picture: 10 mutants FAIL as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remember_picture.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remember_picture_asan.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remember_picture.mutant-check
+
+# Picture modes on the shared OwenbRing scaler for AirPlay / Plex / YouTube / mirror.
+$(ROOT)/build/test_picture_any_source: $(ROOT)/tests/unit/test_picture_any_source.cpp \
+		$(ROOT)/host/libmisterplex/picture_any_source.hpp $(ROOT)/host/libmisterplex/owenb_menu.hpp \
+		$(OWENB_RING_OBJS)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(OWENB_RING_DIR)/include -o $@ $(ROOT)/tests/unit/test_picture_any_source.cpp $(OWENB_RING_OBJS)
+$(ROOT)/build/test_picture_any_source.ok: $(ROOT)/build/test_picture_any_source
+	cd $(ROOT) && $(ROOT)/build/test_picture_any_source
+	touch $@
+$(ROOT)/build/test_picture_any_source.mutant-check: $(ROOT)/build/test_picture_any_source
+	@cd $(ROOT) && $(ROOT)/build/test_picture_any_source > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
+	@for m in MUT_PIC_ANY_MENU_PLEX_ONLY MUT_PIC_ANY_NO_PUMP; do \
+		$(CXX) $(CXXFLAGS) -I$(OWENB_RING_DIR)/include -D$$m -o $(ROOT)/build/test_picture_any_source.$$m \
+			$(ROOT)/tests/unit/test_picture_any_source.cpp $(OWENB_RING_OBJS); \
+		if cd $(ROOT) && $(ROOT)/build/test_picture_any_source.$$m > $@.$$m.log 2>&1; then \
+			echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+	done
+	@echo "test_picture_any_source: 2 mutants FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_picture_any_source.ok
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_picture_any_source.mutant-check
 
 # PICTURE_14_9 default off. On: SPS side crop to DAR 14:9, Letterbox fit unchanged
 # when the flag is unset. Seven mutants must FAIL.
@@ -5268,19 +5733,53 @@ $(ROOT)/build/test_remote_h264_transcode_asan.ok: $(ROOT)/build/test_remote_h264
 	touch $@
 $(ROOT)/build/test_remote_h264_transcode.mutant-check: $(ROOT)/build/test_remote_h264_transcode
 	@$(ROOT)/build/test_remote_h264_transcode > $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
-	@for m in MUT_RH264_DEFAULT_ON MUT_RH264_OFF_BINDS MUT_RH264_IGNORED MUT_RH264_WRONG_CONTEXT MUT_RSTART_DIRECT MUT_RFPGA_OFF MUT_ROSD_MISS MUT_RHDR_TRUNC MUT_RDIRECT_10BIT MUT_RDIRECT_HD MUT_RDIRECT_OFF_TAKES MUT_RDIRECT_FPS MUT_RDIRECT_FPS0 MUT_RDIRECT_BD_UNKNOWN MUT_RDIRECT_FB_LOOP MUT_RDIRECT_FB_NOPIC MUT_RDIRECT_LEVEL_CAP MUT_RDIRECT_REFS_UNKNOWN MUT_RDIRECT_REFS_CAP MUT_RDIRECT_SEEK_NOARM MUT_RDIRECT_GEN_RACE MUT_RMISS_AS_XCODE; do \
+	@for m in MUT_RH264_DEFAULT_ON MUT_RH264_OFF_BINDS MUT_RH264_IGNORED MUT_RH264_WRONG_CONTEXT MUT_RSTART_DIRECT MUT_RFPGA_OFF MUT_ROSD_MISS MUT_RHDR_TRUNC MUT_RDIRECT_10BIT MUT_RDIRECT_HD MUT_RDIRECT_OFF_TAKES MUT_RDIRECT_FPS MUT_RDIRECT_FPS0 MUT_RDIRECT_BD_UNKNOWN MUT_RDIRECT_FB_LOOP MUT_RDIRECT_FB_NOPIC MUT_RDIRECT_LEVEL_CAP MUT_RDIRECT_REFS_UNKNOWN MUT_RDIRECT_REFS_CAP MUT_RDIRECT_SEEK_NOARM MUT_RDIRECT_GEN_RACE MUT_RMISS_AS_XCODE MUT_RUNG_ALWAYS_480 MUT_RUNG_IGNORES_NATIVE MUT_RUNG_NO_LOWER_STEP MUT_RUNG_ANY_KEY MUT_RUNG_KBPS_UNCAPPED MUT_FORCE_REMOTE_IGNORED MUT_FORCE_REMOTE_DEFAULT_ON MUT_FORCE_RETRY_DEFAULT_ON MUT_FORCE_RETRY_IGNORED MUT_FORCE_RETRY_LAN MUT_FORCE_RETRY_EVERY MUT_FORCE_RETRY_ANY_SCOPE MUT_RETRY_FORCED_SKIP_ERRORS MUT_FORCE_RETRY_EVERY_PLAY; do \
 		$(CXX) $(CXXFLAGS) -DMPX_SOURCE_ROOT='"$(ROOT)"' -D$$m -o $(ROOT)/build/test_remote_h264_transcode.$$m \
 			$(ROOT)/tests/unit/test_remote_h264_transcode.cpp; \
 		if $(ROOT)/build/test_remote_h264_transcode.$$m > $@.$$m.log 2>&1; then \
 			echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
 		case $$m in MUT_RH264_DEFAULT_ON) c=F0 ;; MUT_RH264_OFF_BINDS) c=F1 ;; \
-			MUT_RH264_IGNORED) c=F2 ;; MUT_RH264_WRONG_CONTEXT) c=F3 ;; MUT_RSTART_DIRECT) c=F6 ;; MUT_RFPGA_OFF) c=F7 ;; MUT_ROSD_MISS) c=F8 ;; MUT_RHDR_TRUNC) c=F10 ;; MUT_RDIRECT_10BIT|MUT_RDIRECT_HD|MUT_RDIRECT_OFF_TAKES|MUT_RDIRECT_FPS) c=F11 ;; MUT_RDIRECT_FPS0) c=F12 ;; MUT_RDIRECT_BD_UNKNOWN) c=F13 ;; MUT_RDIRECT_FB_LOOP|MUT_RDIRECT_FB_NOPIC) c=F14 ;; MUT_RDIRECT_LEVEL_CAP) c=F15 ;; MUT_RDIRECT_REFS_UNKNOWN|MUT_RDIRECT_REFS_CAP) c=F16 ;; MUT_RDIRECT_SEEK_NOARM) c=F17 ;; MUT_RDIRECT_GEN_RACE) c=F18 ;; MUT_RMISS_AS_XCODE) c=F19 ;; esac; \
+			MUT_RH264_IGNORED) c=F2 ;; MUT_RH264_WRONG_CONTEXT) c=F3 ;; MUT_RSTART_DIRECT) c=F6 ;; MUT_RFPGA_OFF) c=F7 ;; MUT_ROSD_MISS) c=F8 ;; MUT_RHDR_TRUNC) c=F10 ;; MUT_RDIRECT_10BIT|MUT_RDIRECT_HD|MUT_RDIRECT_OFF_TAKES|MUT_RDIRECT_FPS) c=F11 ;; MUT_RDIRECT_FPS0) c=F12 ;; MUT_RDIRECT_BD_UNKNOWN) c=F13 ;; MUT_RDIRECT_FB_LOOP|MUT_RDIRECT_FB_NOPIC) c=F14 ;; MUT_RDIRECT_LEVEL_CAP) c=F15 ;; MUT_RDIRECT_REFS_UNKNOWN|MUT_RDIRECT_REFS_CAP) c=F16 ;; MUT_RDIRECT_SEEK_NOARM) c=F17 ;; MUT_RDIRECT_GEN_RACE) c=F18 ;; MUT_RMISS_AS_XCODE) c=F19 ;; \
+			MUT_RUNG_ALWAYS_480) c=F20 ;; MUT_RUNG_IGNORES_NATIVE) c=F21 ;; MUT_RUNG_NO_LOWER_STEP) c=F22 ;; \
+			MUT_RUNG_ANY_KEY) c=F23 ;; MUT_RUNG_KBPS_UNCAPPED) c=F24 ;; MUT_FORCE_REMOTE_IGNORED) c=F25 ;; \
+			MUT_FORCE_REMOTE_DEFAULT_ON) c=F26 ;; \
+			MUT_FORCE_RETRY_DEFAULT_ON) c=F27 ;; MUT_FORCE_RETRY_IGNORED) c=F28 ;; MUT_FORCE_RETRY_LAN) c=F29 ;; \
+			MUT_FORCE_RETRY_EVERY) c=F30 ;; \
+			MUT_FORCE_RETRY_ANY_SCOPE) c=F31 ;; MUT_RETRY_FORCED_SKIP_ERRORS) c=F32 ;; MUT_FORCE_RETRY_EVERY_PLAY) c=F33 ;; esac; \
 		grep -q "FAIL: $$c " $@.$$m.log || { echo "MUTANT $$m KILLED BY THE WRONG CHECK (want $$c)"; cat $@.$$m.log; exit 1; }; \
 	done
-	@echo "test_remote_h264_transcode: 22 mutants FAIL as required" | tee $@
+	@echo "test_remote_h264_transcode: 36 mutants FAIL as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remote_h264_transcode.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remote_h264_transcode_asan.ok
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remote_h264_transcode.mutant-check
+
+# 720p titles publish native-sd: the resolver-level repro/guard for the remote OwenB rung (curl shim + metadata hook,
+# synthetic, no live PMS). Fails on a58f3dd4 (R1: 640x480 2000k on HDMI Native); each mutant dies on its own check.
+RUNGRES_MUTANTS := MUT_RUNG_ALWAYS_480:R1 MUT_RUNG_IGNORES_NATIVE:R2 MUT_RUNG_NO_LOWER_STEP:R3 \
+		MUT_RUNG_KBPS_UNCAPPED:R1 MUT_FORCE_REMOTE_IGNORED:R5 MUT_FORCE_REMOTE_DEFAULT_ON:R6 \
+		MUT_FORCE_RETRY_IGNORED:R7 MUT_FORCE_RETRY_LAN:R9 MUT_FORCE_RETRY_DEFAULT_ON:resolve \
+		MUT_FORCE_RETRY_ANY_SCOPE:R12 MUT_FORCE_RETRY_EVERY_PLAY:R13 MUT_LOWER_NOT_LOWERED:R3 \
+		MUT_PLEX_NATIVE_REQ_SD:N1
+RUNGRES_DEPS := $(ROOT)/tests/unit/test_remote_rung_resolve.cpp $(ROOT)/arm/misterplexd/plex_resolve.cpp \
+		$(ROOT)/arm/misterplexd/plex_resolve.hpp $(ROOT)/host/libmisterplex/remote_h264_transcode.hpp \
+		$(ROOT)/host/libmisterplex/picture_14_9.hpp
+$(ROOT)/build/test_remote_rung_resolve: $(RUNGRES_DEPS)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -pthread -o $@ \
+		$(ROOT)/tests/unit/test_remote_rung_resolve.cpp $(ROOT)/arm/misterplexd/plex_resolve.cpp
+$(ROOT)/build/test_remote_rung_resolve.ok: $(ROOT)/build/test_remote_rung_resolve
+	$(ROOT)/build/test_remote_rung_resolve
+	touch $@
+$(ROOT)/build/test_remote_rung_resolve.mutant-check: $(ROOT)/build/test_remote_rung_resolve
+	@for mc in $(RUNGRES_MUTANTS); do m=$${mc%%:*}; c=$${mc##*:}; \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -pthread -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_remote_rung_resolve.cpp $(ROOT)/arm/misterplexd/plex_resolve.cpp || exit 1; \
+		if $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		grep -q "FAIL: $$c " $@.$$m.log || { echo "MUTANT $$m KILLED BY THE WRONG CHECK (want $$c)"; cat $@.$$m.log; exit 1; }; \
+	done
+	@echo "test_remote_rung_resolve: $(words $(RUNGRES_MUTANTS)) mutants FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remote_rung_resolve.ok
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_remote_rung_resolve.mutant-check
 
 OBENV_DEPS := $(ROOT)/tests/unit/test_ob_decode_envelope.cpp $(ROOT)/host/libmisterplex/ob_decode_envelope.hpp \
 	$(ROOT)/arm/misterplexd/plex_resolve.cpp $(ROOT)/arm/misterplexd/main.cpp $(ROOT)/assets/misterplex.conf.example
@@ -5581,7 +6080,10 @@ $(ROOT)/build/test_yt_dlp.mutant-check: $(ROOT)/build/test_yt_dlp $(ROOT)/tests/
 	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -DMUT_GH8_NO_COOKIES \
 		-o $@.nocookie $(ROOT)/tests/unit/test_yt_dlp.cpp
 	@if $@.nocookie > $@.nocookie.log 2>&1; then echo "MUTANT SURVIVED: MUT_GH8_NO_COOKIES"; exit 1; fi
-	@echo "test_yt_dlp: MUT_YT_NO_CLIENT_RETRY MUT_YT_CLIENT_RETRY_WALK MUT_GH8_NO_COOKIES FAIL as required" | tee $@
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -DMUT_YT_PROGRESSIVE_FIRST \
+		-o $@.progfirst $(ROOT)/tests/unit/test_yt_dlp.cpp
+	@if $@.progfirst > $@.progfirst.log 2>&1; then echo "MUTANT SURVIVED: MUT_YT_PROGRESSIVE_FIRST"; exit 1; fi
+	@echo "test_yt_dlp: MUT_YT_NO_CLIENT_RETRY MUT_YT_CLIENT_RETRY_WALK MUT_GH8_NO_COOKIES MUT_YT_PROGRESSIVE_FIRST FAIL as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_dlp.ok $(ROOT)/build/test_yt_dlp.mutant-check
 # Resolve timeout 90 s total default, YT_RESOLVE_TIMEOUT override, clamp.
 $(ROOT)/build/test_yt_resolve_timeout: $(ROOT)/tests/unit/test_yt_resolve_timeout.cpp $(ROOT)/arm/misterplexd/gcast/yt_dlp.hpp
@@ -5613,7 +6115,8 @@ unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_resolve_speed.ok $(ROOT)
 # YT_LIVE: livestream HLS is remuxed to loopback MPEG-TS. Unset keeps the VOD selector.
 YTLIVE_SRC := $(ROOT)/tests/unit/test_yt_live.cpp $(ROOT)/arm/misterplexd/gcast/yt_live.hpp \
 	$(ROOT)/arm/misterplexd/gcast/yt_dlp.hpp $(ROOT)/arm/misterplexd/gcast/yt_captions.hpp \
-	$(ROOT)/arm/misterplexd/main.cpp
+	$(ROOT)/arm/misterplexd/main.cpp $(ROOT)/host/libmisterplex/live_disc_rebase.hpp \
+	$(ROOT)/host/libmisterplex/pluto_ad_skip.hpp
 $(ROOT)/build/test_yt_live: $(YTLIVE_SRC)
 	@mkdir -p $(ROOT)/build
 	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -DMPX_SOURCE_ROOT='"$(ROOT)"' -o $@ \
@@ -5651,6 +6154,298 @@ $(ROOT)/build/test_yt_live.mutant-check: $(ROOT)/build/test_yt_live $(YTLIVE_SRC
 	@echo "test_yt_live: six YT_LIVE mutants FAIL as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_live.ok $(ROOT)/build/test_yt_live_asan.ok \
 	$(ROOT)/build/test_yt_live.mutant-check
+
+# N13 (#685 glass 10a21b2e): the live relay survives a silent / exited / failing-first ffmpeg
+# (null-packet keepalive, stall restart, bounded re-spawn, first-byte retry, redacted exit log).
+YTLIVERES_SRC := $(ROOT)/tests/unit/test_yt_live_resilience.cpp $(ROOT)/arm/misterplexd/airplay/yt_live.hpp \
+	$(ROOT)/host/libmisterplex/live_disc_rebase.hpp $(ROOT)/host/libmisterplex/pluto_ad_skip.hpp
+YTLIVERES_MUTANTS := MUT_LIVE_NO_KEEPALIVE MUT_LIVE_NO_STALL_RESTART MUT_LIVE_NO_RESPAWN \
+	MUT_LIVE_RESPAWN_UNBOUNDED MUT_LIVE_NO_FIRST_BYTE_RETRY MUT_LIVE_NO_TS_OFFSET MUT_LIVE_NO_PAD \
+	MUT_PLUTO_NO_RECONNECT MUT_LIVE_NO_HOLDBACK MUT_LIVE_NO_GCONV_STUB MUT_LIVE_NO_VIDEO_STALL MUT_PLUTO_RESPAWN_KEEP_COPYTS \
+	MUT_HDMI_AUDIO_NO_RESPAWN_CB MUT_LIVE_NO_CLIENT_RETRY
+$(ROOT)/build/test_yt_live_resilience: $(YTLIVERES_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -o $@ $(ROOT)/tests/unit/test_yt_live_resilience.cpp
+$(ROOT)/build/test_yt_live_resilience.ok: $(ROOT)/build/test_yt_live_resilience
+	( ulimit -c 0; $(ROOT)/build/test_yt_live_resilience )
+	touch $@
+$(ROOT)/build/test_yt_live_resilience.mutant-check: $(ROOT)/build/test_yt_live_resilience.ok $(YTLIVERES_SRC)
+	@ulimit -c 0; for m in $(YTLIVERES_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_yt_live_resilience.cpp || exit 1; \
+		if timeout 300 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_yt_live_resilience: $(YTLIVERES_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_live_resilience.ok \
+	$(ROOT)/build/test_yt_live_resilience.mutant-check
+
+# v1.0.3 (v1.0.2 RC 6e55d1ce glass, 1066 resume after Plex->Live TV): the 6 s first-stall default killed healthy
+# Pluto remux opens (first byte at 5959 ms) twice; first_picture 54405 ms. Runs on the default knobs (~20 s).
+YTLIVEFS_SRC := $(ROOT)/tests/unit/test_yt_live_first_stall.cpp $(ROOT)/arm/misterplexd/airplay/yt_live.hpp \
+	$(ROOT)/arm/misterplexd/spelunkr/prefetch_timeout.hpp $(ROOT)/host/libmisterplex/live_disc_rebase.hpp
+YTLIVEFS_MUTANTS := MUT_LIVE_FIRST_STALL_TOO_SHORT MUT_LIVE_NO_STALL_RESTART
+$(ROOT)/build/test_yt_live_first_stall: $(YTLIVEFS_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -o $@ $(ROOT)/tests/unit/test_yt_live_first_stall.cpp
+$(ROOT)/build/test_yt_live_first_stall_asan: $(YTLIVEFS_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -pthread \
+		-I$(ROOT)/arm/misterplexd -I$(ROOT)/host -o $@ $(ROOT)/tests/unit/test_yt_live_first_stall.cpp
+$(ROOT)/build/test_yt_live_first_stall.ok: $(ROOT)/build/test_yt_live_first_stall $(ROOT)/build/test_yt_live_first_stall_asan
+	( ulimit -c 0; $(ROOT)/build/test_yt_live_first_stall )
+	( ulimit -c 0; ASAN_OPTIONS=detect_leaks=0 $(ROOT)/build/test_yt_live_first_stall_asan )
+	touch $@
+$(ROOT)/build/test_yt_live_first_stall.mutant-check: $(ROOT)/build/test_yt_live_first_stall.ok $(YTLIVEFS_SRC)
+	@ulimit -c 0; for m in $(YTLIVEFS_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_yt_live_first_stall.cpp || exit 1; \
+		if timeout 120 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_yt_live_first_stall: $(YTLIVEFS_MUTANTS) FAIL as required" | tee $@
+.PHONY: host-v103-1066-first-stall
+host-v103-1066-first-stall: $(ROOT)/build/test_yt_live_first_stall.mutant-check
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_live_first_stall.ok \
+	$(ROOT)/build/test_yt_live_first_stall.mutant-check
+
+# v1.0.1 glass 1063/1066 (2026-11-23): slow metadata ate the Pluto remux open's 8 s (1063 open got 3.1 s;
+# 1066 resume after Plex->Live TV: advance timeout x3, PREFETCH TIMEOUT). The open window re-arms at prefetch start.
+PLUTOOPEN_SRC := $(ROOT)/tests/unit/test_pluto_open_budget.cpp $(ROOT)/arm/misterplexd/spelunkr/prefetch_timeout.hpp \
+	$(ROOT)/arm/misterplexd/main.cpp
+PLUTOOPEN_MUTANTS := MUT_PLUTO_OPEN_BUDGET_FROM_JOB_START MUT_PLUTO_REMUX_OPEN_8S
+$(ROOT)/build/test_pluto_open_budget: $(PLUTOOPEN_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' -o $@ \
+		$(ROOT)/tests/unit/test_pluto_open_budget.cpp
+$(ROOT)/build/test_pluto_open_budget.ok: $(ROOT)/build/test_pluto_open_budget
+	( ulimit -c 0; $(ROOT)/build/test_pluto_open_budget )
+	touch $@
+$(ROOT)/build/test_pluto_open_budget.mutant-check: $(ROOT)/build/test_pluto_open_budget.ok $(PLUTOOPEN_SRC)
+	@ulimit -c 0; for m in $(PLUTOOPEN_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_pluto_open_budget.cpp || exit 1; \
+		if timeout 120 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m $@.$$m.log; done
+	@echo "test_pluto_open_budget: $(PLUTOOPEN_MUTANTS) FAIL as required" | tee $@
+.PHONY: host-v101-1066-resume host-v102-1066-resume
+host-v101-1066-resume host-v102-1066-resume: $(ROOT)/build/test_pluto_open_budget.mutant-check $(ROOT)/build/test_spelunkr_pluto_live.ok
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_pluto_open_budget.ok \
+	$(ROOT)/build/test_pluto_open_budget.mutant-check
+
+# Cold boot (first core open, !preferCurrent) always lands on the guide even when
+# SPELUNKR_LAST_CHANNEL is set; in-session reopen keeps resuming current/last.
+COLDBOOT_LAND_SRC := $(ROOT)/tests/unit/test_cold_boot_land_guide.cpp \
+	$(ROOT)/arm/misterplexd/spelunkr/fe.hpp $(ROOT)/arm/misterplexd/main.cpp
+COLDBOOT_LAND_MUTANTS := MUT_COLD_BOOT_RESUMES_LAST_CHANNEL
+$(ROOT)/build/test_cold_boot_land_guide: $(COLDBOOT_LAND_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' -o $@ \
+		$(ROOT)/tests/unit/test_cold_boot_land_guide.cpp
+$(ROOT)/build/test_cold_boot_land_guide.ok: $(ROOT)/build/test_cold_boot_land_guide
+	( ulimit -c 0; $(ROOT)/build/test_cold_boot_land_guide )
+	touch $@
+$(ROOT)/build/test_cold_boot_land_guide.mutant-check: $(ROOT)/build/test_cold_boot_land_guide.ok $(COLDBOOT_LAND_SRC)
+	@ulimit -c 0; for m in $(COLDBOOT_LAND_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_cold_boot_land_guide.cpp || exit 1; \
+		if timeout 120 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m $@.$$m.log; done
+	@echo "test_cold_boot_land_guide: $(COLDBOOT_LAND_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_cold_boot_land_guide.ok \
+	$(ROOT)/build/test_cold_boot_land_guide.mutant-check
+
+# Pluto 55 s timeout fix (r2-03f ch-8 HeaderCacheAvio progress poisoning + exhausted
+# zapWindowRestarts on tryPlutoLiveOpenRetry + Trial e 15.83 s skip_gop progress + guideThr yield).
+PLUTO55S_SRC := $(ROOT)/tests/unit/test_pluto_55s_timeout_fix.cpp \
+	$(ROOT)/arm/misterplexd/spelunkr/header_cache.hpp \
+	$(ROOT)/arm/misterplexd/spelunkr/header_cache_avio.hpp \
+	$(ROOT)/arm/misterplexd/spelunkr/prefetch_timeout.hpp \
+	$(ROOT)/arm/misterplexd/owenb_av_source.cpp \
+	$(ROOT)/arm/misterplexd/main.cpp
+PLUTO55S_MUTANTS := MUT_HEADER_PROGRESS_AFTER_FINALIZE MUT_PLUTO_RETRY_REUSES_RESTART_CAP MUT_NO_LIVE_REMUX_SKIP_GOP_PROGRESS
+$(ROOT)/build/test_pluto_55s_timeout_fix: $(PLUTO55S_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd -I$(ROOT)/host \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' $(shell pkg-config --cflags $(L2_DEMUX_AV)) \
+		-o $@ $(ROOT)/tests/unit/test_pluto_55s_timeout_fix.cpp \
+		$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm -pthread
+$(ROOT)/build/test_pluto_55s_timeout_fix.ok: $(ROOT)/build/test_pluto_55s_timeout_fix
+	( ulimit -c 0; $(ROOT)/build/test_pluto_55s_timeout_fix )
+	touch $@
+$(ROOT)/build/test_pluto_55s_timeout_fix.mutant-check: $(ROOT)/build/test_pluto_55s_timeout_fix.ok $(PLUTO55S_SRC)
+	@ulimit -c 0; for m in $(PLUTO55S_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -DMPX_HAVE_LIBAV -I$(ROOT)/arm/misterplexd -I$(ROOT)/host \
+			-DMPX_SOURCE_ROOT='"$(ROOT)"' -D$$m $(shell pkg-config --cflags $(L2_DEMUX_AV)) \
+			-o $@.$$m $(ROOT)/tests/unit/test_pluto_55s_timeout_fix.cpp \
+			$(shell pkg-config --libs $(L2_DEMUX_AV)) -lm -pthread || exit 1; \
+		if timeout 120 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m $@.$$m.log; done
+	@echo "test_pluto_55s_timeout_fix: $(PLUTO55S_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(if $(OWENB_AV_E2E_OK),$(ROOT)/build/test_pluto_55s_timeout_fix.ok \
+	$(ROOT)/build/test_pluto_55s_timeout_fix.mutant-check)
+
+# N14: the Pluto ad-break stand-by card. Relay trigger (threshold / respawn / resume / clear) against the fake
+# ffmpeg, and the card itself (gate, scaler, UiBus -> planFrame -> paint, the shipped asset).
+ADBREAK_RELAY_SRC := $(ROOT)/tests/unit/test_yt_live_adbreak.cpp $(ROOT)/arm/misterplexd/airplay/yt_live.hpp \
+	$(ROOT)/host/libmisterplex/ad_break_card.hpp $(ROOT)/host/libmisterplex/live_disc_rebase.hpp \
+	$(ROOT)/host/libmisterplex/pluto_ad_skip.hpp
+ADBREAK_RELAY_MUTANTS := MUT_ADBREAK_THRESHOLD_0 MUT_ADBREAK_NEVER_CLEAR MUT_ADBREAK_NO_SIGNAL MUT_LIVE_NO_PLAY_ALL MUT_ADBREAK_CLEAR_ON_BYTES MUT_ADBREAK_DROP_AT_RESPAWN MUT_ADBREAK_NO_LOG \
+	MUT_N16_NO_BACKOFF MUT_N16_NO_BACKOFF_CAP MUT_N16_NO_FAIL_CAP MUT_N16_CARD_DROP_IN_BACKOFF MUT_N16_DYING_CHILD_HEALTHY \
+	MUT_N17_NO_SCORE_CAP MUT_N17_NO_DECAY MUT_N17_COUNT_LONG
+$(ROOT)/build/test_yt_live_adbreak: $(ADBREAK_RELAY_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -o $@ $(ROOT)/tests/unit/test_yt_live_adbreak.cpp
+$(ROOT)/build/test_yt_live_adbreak.ok: $(ROOT)/build/test_yt_live_adbreak
+	( ulimit -c 0; $(ROOT)/build/test_yt_live_adbreak )
+	touch $@
+$(ROOT)/build/test_yt_live_adbreak.mutant-check: $(ROOT)/build/test_yt_live_adbreak.ok $(ADBREAK_RELAY_SRC)
+	@ulimit -c 0; for m in $(ADBREAK_RELAY_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_yt_live_adbreak.cpp || exit 1; \
+		if timeout 300 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_yt_live_adbreak: $(ADBREAK_RELAY_MUTANTS) FAIL as required" | tee $@
+
+# AD-REC A/B/C/D/E/F/G/H (#1066 Vevo): play-all ads + audio/PTS rebase + split-HLS audio interleave.
+# First spawn 0 (first_picture); respawn 1 s (5 s EXTINF starve is post-stall).
+# Split-rendition post-first-key-AU 1.5 s PCM pipeline covers the D 1.12 s first-spawn hole
+# and the F 1.39 s mid-soak fetch hole; fill does not block the first-key prefix (zap vs B).
+# After the first key, A+V go to the ring by PTS (G held PCM; HDMI idle floor).
+# MUT_LIVE_NO_DISC_REBASE / MUT_LIVE_NO_PLAY_ALL / MUT_LIVE_NO_EMIT_CLAMP /
+# MUT_LIVE_ZERO_INTERLEAVE / MUT_LIVE_FIRST_SPAWN_INTERLEAVE / MUT_LIVE_NO_PIC_RETRY /
+# MUT_LIVE_NO_FIRST_SPAWN_PACE / MUT_LIVE_PACE_HOLD_AUDIO /
+# MUT_LIVE_NO_VIDEO_LEAD_CAP / MUT_LIVE_FLUSH_PCM_ON_DISC /
+# MUT_LIVE_NO_CRYPTO_PREFETCH_RETRY / MUT_LIVE_NO_NONEXT_RETRY must FAIL.
+LIVEDISC_SRC := $(ROOT)/tests/unit/test_live_disc_rebase.cpp $(ROOT)/host/libmisterplex/live_disc_rebase.hpp \
+	$(ROOT)/arm/misterplexd/owenb_av_source.cpp $(ROOT)/arm/misterplexd/airplay/yt_live.hpp \
+	$(ROOT)/host/libmisterplex/owenb_session.hpp $(ROOT)/host/libmisterplex/owenb_session.cpp \
+	$(ROOT)/arm/misterplexd/main.cpp $(ROOT)/arm/misterplexd/spelunkr/fe.hpp \
+	$(ROOT)/arm/misterplexd/spelunkr/pluto_live.hpp \
+	$(ROOT)/host/libmisterplex/owenb_prefetch.hpp $(ROOT)/host/libmisterplex/pluto_ad_skip.hpp
+LIVEDISC_MUTANTS := MUT_LIVE_NO_DISC_REBASE MUT_LIVE_NO_PLAY_ALL MUT_LIVE_NO_EMIT_CLAMP \
+	MUT_LIVE_ZERO_INTERLEAVE MUT_LIVE_FIRST_SPAWN_INTERLEAVE MUT_LIVE_NO_PIC_RETRY \
+	MUT_LIVE_NO_FIRST_SPAWN_PACE MUT_LIVE_PACE_HOLD_AUDIO \
+	MUT_LIVE_NO_VIDEO_LEAD_CAP MUT_LIVE_FLUSH_PCM_ON_DISC \
+	MUT_LIVE_NO_CRYPTO_PREFETCH_RETRY MUT_LIVE_NO_NONEXT_RETRY
+$(ROOT)/build/test_live_disc_rebase: $(LIVEDISC_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-o $@ $(ROOT)/tests/unit/test_live_disc_rebase.cpp
+$(ROOT)/build/test_live_disc_rebase.ok: $(ROOT)/build/test_live_disc_rebase
+	$(ROOT)/build/test_live_disc_rebase
+	touch $@
+$(ROOT)/build/test_live_disc_rebase.mutant-check: $(ROOT)/build/test_live_disc_rebase.ok $(LIVEDISC_SRC)
+	@for m in $(LIVEDISC_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+			-D$$m -o $@.$$m $(ROOT)/tests/unit/test_live_disc_rebase.cpp || exit 1; \
+		if $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_live_disc_rebase: $(LIVEDISC_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_live_disc_rebase.ok \
+	$(ROOT)/build/test_live_disc_rebase.mutant-check
+
+# Pluto ad skip (#1066): segment-path pod detect, hold the ad-break card for the whole pod, resume on content
+# from a growing live reserve; MPX_PLUTO_ADSKIP=0 / MPX_LIVE_RESERVE_S=0 restore v1.0.1 play-all.
+PLUTOADSKIP_SRC := $(ROOT)/tests/unit/test_pluto_ad_skip.cpp $(ROOT)/host/libmisterplex/pluto_ad_skip.hpp \
+	$(ROOT)/arm/misterplexd/airplay/mini_json.hpp $(ROOT)/arm/misterplexd/main.cpp \
+	$(ROOT)/arm/misterplexd/airplay/yt_live.hpp \
+	$(ROOT)/tests/fixtures/pluto_ad_skip_1066/1066-pods-redacted.json \
+	$(ROOT)/tests/fixtures/pluto_ad_skip_1066/1066-polls-redacted.json
+PLUTOADSKIP_MUTANTS := MUT_ADSKIP_PLAYS_AD MUT_ADSKIP_CARD_DROPS_EARLY MUT_ADSKIP_NEVER_RESUMES \
+	MUT_LIVE_RESERVE_NO_GROW MUT_LIVE_RESPAWN_DROPS_RESERVE
+$(ROOT)/build/test_pluto_ad_skip: $(PLUTOADSKIP_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-o $@ $(ROOT)/tests/unit/test_pluto_ad_skip.cpp
+$(ROOT)/build/test_pluto_ad_skip.ok: $(ROOT)/build/test_pluto_ad_skip
+	$(ROOT)/build/test_pluto_ad_skip
+	touch $@
+$(ROOT)/build/test_pluto_ad_skip.mutant-check: $(ROOT)/build/test_pluto_ad_skip.ok $(PLUTOADSKIP_SRC)
+	@for m in $(PLUTOADSKIP_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+			-D$$m -o $@.$$m $(ROOT)/tests/unit/test_pluto_ad_skip.cpp || exit 1; \
+		if $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_pluto_ad_skip: $(PLUTOADSKIP_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_pluto_ad_skip.ok \
+	$(ROOT)/build/test_pluto_ad_skip.mutant-check
+
+# Same, end to end: the live relay against a fake split-HLS ffmpeg + playlist fetcher and a paced player
+# (0 presentation holes, no ad bytes, card for the whole pod, fast zap while held, kill switch argv).
+PLUTOADSKIPRELAY_SRC := $(ROOT)/tests/unit/test_pluto_adskip_relay.cpp $(ROOT)/arm/misterplexd/airplay/yt_live.hpp \
+	$(ROOT)/host/libmisterplex/pluto_ad_skip.hpp $(ROOT)/host/libmisterplex/live_disc_rebase.hpp
+PLUTOADSKIPRELAY_MUTANTS := $(PLUTOADSKIP_MUTANTS) MUT_TUNE_BLOCKS_INPUT MUT_PLUTO_POLL_AT_START
+$(ROOT)/build/test_pluto_adskip_relay: $(PLUTOADSKIPRELAY_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -o $@ $(ROOT)/tests/unit/test_pluto_adskip_relay.cpp
+$(ROOT)/build/test_pluto_adskip_relay.ok: $(ROOT)/build/test_pluto_adskip_relay
+	( ulimit -c 0; timeout 300 $(ROOT)/build/test_pluto_adskip_relay )
+	touch $@
+$(ROOT)/build/test_pluto_adskip_relay.mutant-check: $(ROOT)/build/test_pluto_adskip_relay.ok $(PLUTOADSKIPRELAY_SRC)
+	@ulimit -c 0; for m in $(PLUTOADSKIPRELAY_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_pluto_adskip_relay.cpp || exit 1; \
+		if timeout 300 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_pluto_adskip_relay: $(PLUTOADSKIPRELAY_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_pluto_adskip_relay.ok \
+	$(ROOT)/build/test_pluto_adskip_relay.mutant-check
+
+# Tune into a Pluto ad pod: adHoldActive covers the hold until content reaches the
+# player, the first-picture watchdog waits that hold out, and a failed tune drops
+# only its pending gen (the Guide landing stays). The ad-hold exemption ends when
+# the relay leaves Holding. MUT_FPW_NO_AD_HOLD_EXEMPT, MUT_PENDING_NEVER_CLEARS,
+# MUT_PENDING_CLEAR_IS_FIRST_PICTURE, and MUT_FPW_AD_HOLD_THROUGH_RESUMING must FAIL.
+.PHONY: host-v101-tune-in-pod
+TUNE_IN_POD_SRC := $(ROOT)/tests/unit/test_spelunkr_tune_in_pod.cpp \
+	$(ROOT)/arm/misterplexd/airplay/yt_live.hpp $(ROOT)/host/libmisterplex/pluto_ad_skip.hpp \
+	$(ROOT)/host/libmisterplex/live_disc_rebase.hpp $(ROOT)/arm/misterplexd/spelunkr/fe.hpp \
+	$(ROOT)/host/libmisterplex/owenb_osd_renderer.hpp \
+	$(ROOT)/host/libmisterplex/owenb_reopen.hpp
+TUNE_IN_POD_MUTANTS := MUT_FPW_NO_AD_HOLD_EXEMPT MUT_PENDING_NEVER_CLEARS \
+	MUT_PENDING_CLEAR_IS_FIRST_PICTURE MUT_FPW_AD_HOLD_THROUGH_RESUMING \
+	MUT_OWENB_REOPEN_KEEPS_STALE_PICTURE
+$(ROOT)/build/test_spelunkr_tune_in_pod: $(TUNE_IN_POD_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host \
+		-I$(ROOT)/host/libmisterplex/plexui -I$(ROOT)/third_party/owenb-h264ring/include \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-o $@ $(ROOT)/tests/unit/test_spelunkr_tune_in_pod.cpp
+$(ROOT)/build/test_spelunkr_tune_in_pod.ok: $(ROOT)/build/test_spelunkr_tune_in_pod
+	( ulimit -c 0; timeout 60 $(ROOT)/build/test_spelunkr_tune_in_pod )
+	touch $@
+$(ROOT)/build/test_spelunkr_tune_in_pod.mutant-check: $(ROOT)/build/test_spelunkr_tune_in_pod.ok $(TUNE_IN_POD_SRC)
+	@ulimit -c 0; for m in $(TUNE_IN_POD_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -I$(ROOT)/host \
+			-I$(ROOT)/host/libmisterplex/plexui -I$(ROOT)/third_party/owenb-h264ring/include \
+			-DMPX_SOURCE_ROOT='"$(ROOT)"' \
+			-D$$m -o $@.$$m $(ROOT)/tests/unit/test_spelunkr_tune_in_pod.cpp || exit 1; \
+		if timeout 60 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_spelunkr_tune_in_pod: $(TUNE_IN_POD_MUTANTS) FAIL as required" | tee $@
+host-v101-tune-in-pod: $(ROOT)/build/test_spelunkr_tune_in_pod.mutant-check
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_spelunkr_tune_in_pod.ok \
+	$(ROOT)/build/test_spelunkr_tune_in_pod.mutant-check
+
+ADCARD_SRC := $(ROOT)/tests/unit/test_ad_break_card.cpp $(ROOT)/host/libmisterplex/ad_break_card.hpp \
+	$(ROOT)/host/libmisterplex/ad_break_card_load.hpp $(ROOT)/host/libmisterplex/owenb_osd_draw.hpp \
+	$(ROOT)/host/libmisterplex/owenb_osd_renderer.hpp $(ROOT)/assets/plexui/misterplex-ad-break.jpg
+ADCARD_MUTANTS := MUT_ADBREAK_NO_CARD MUT_ADBREAK_NEVER_CLEAR MUT_ADBREAK_NOT_VISIBLE MUT_ADBREAK_HIDES_MENU MUT_N16_HOLD_NO_EXPIRE MUT_N16_HOLD_UNGATED
+ADCARD_FLAGS = $(CXXFLAGS) -pthread -I$(ROOT)/host -I$(ROOT)/third_party/owenb-h264ring/include -I$(ROOT)/arm/misterplexd \
+	-DMPX_SOURCE_ROOT='"$(ROOT)"'
+$(ROOT)/build/test_ad_break_card: $(ADCARD_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(ADCARD_FLAGS) -o $@ $(ROOT)/tests/unit/test_ad_break_card.cpp
+$(ROOT)/build/test_ad_break_card.ok: $(ROOT)/build/test_ad_break_card
+	( ulimit -c 0; $(ROOT)/build/test_ad_break_card )
+	touch $@
+$(ROOT)/build/test_ad_break_card.mutant-check: $(ROOT)/build/test_ad_break_card.ok $(ADCARD_SRC)
+	@ulimit -c 0; for m in $(ADCARD_MUTANTS); do \
+		$(CXX) $(ADCARD_FLAGS) -D$$m -o $@.$$m $(ROOT)/tests/unit/test_ad_break_card.cpp || exit 1; \
+		if timeout 120 $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_ad_break_card: $(ADCARD_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_live_adbreak.ok $(ROOT)/build/test_yt_live_adbreak.mutant-check \
+	$(ROOT)/build/test_ad_break_card.ok $(ROOT)/build/test_ad_break_card.mutant-check
 
 # YT_CAST_TITLE: OSD / now-playing uses the extract title already on the yt-dlp child. Unset stays the tip path.
 # #214 glass 10/31: caption yt-dlp child timeout + real VTT fixtures (fake yt-dlp sleeps 22 s).
@@ -5755,7 +6550,19 @@ $(ROOT)/build/test_yt_warm.ok: $(ROOT)/build/test_yt_warm $(ROOT)/tests/unit/tes
 	$(ROOT)/build/test_yt_warm
 	PYTHONDONTWRITEBYTECODE=1 python3 $(ROOT)/tests/unit/test_yt_warm_helper.py
 	touch $@
-unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_warm.ok
+$(ROOT)/build/test_yt_warm.mutant-check: $(ROOT)/tests/unit/test_yt_warm_helper.py \
+		$(ROOT)/assets/linux/misterplex/yt_warm_helper.py
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$(ROOT) python3 -m unittest \
+		tests.unit.test_yt_warm_helper.Tests.test_adaptive_pair_beats_progressive \
+		> $@.base.log 2>&1 || { cat $@.base.log; exit 1; }
+	@if MUT_YT_WARM_PROGRESSIVE_FIRST=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$(ROOT) python3 -m unittest \
+		tests.unit.test_yt_warm_helper.Tests.test_adaptive_pair_beats_progressive \
+		> $@.prog.log 2>&1; then echo "MUTANT SURVIVED: MUT_YT_WARM_PROGRESSIVE_FIRST"; exit 1; fi
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-DMUT_YT_HD_RETRY_OFF -o $@.noretry $(ROOT)/tests/unit/test_yt_warm.cpp
+	@if $@.noretry > $@.noretry.log 2>&1; then echo "MUTANT SURVIVED: MUT_YT_HD_RETRY_OFF"; exit 1; fi
+	@echo "test_yt_warm: MUT_YT_WARM_PROGRESSIVE_FIRST MUT_YT_HD_RETRY_OFF FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_warm.ok $(ROOT)/build/test_yt_warm.mutant-check
 
 # Header-only CA lookup: env, shipped bundle, distro store, stock MiSTer cacert.pem and cert.pem.
 $(ROOT)/build/test_ca_bundle: $(ROOT)/tests/unit/test_ca_bundle.cpp $(ROOT)/arm/misterplexd/ca_bundle.hpp
@@ -5776,6 +6583,10 @@ $(ROOT)/build/test_log_redact: $(ROOT)/tests/unit/test_log_redact.cpp $(ROOT)/ar
 		$(ROOT)/tests/unit/test_log_redact.cpp
 $(ROOT)/build/test_log_redact.ok: $(ROOT)/build/test_log_redact
 	$(ROOT)/build/test_log_redact
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/arm/misterplexd -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_LOG_REDACT_NO_JWT \
+		-o $(ROOT)/build/test_log_redact.mut_jwt $(ROOT)/tests/unit/test_log_redact.cpp
+	if $(ROOT)/build/test_log_redact.mut_jwt >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_LOG_REDACT_NO_JWT'; exit 1; fi
+	@echo 'test_log_redact: MUT_LOG_REDACT_NO_JWT FAIL as required'
 	touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_log_redact.ok
 # airplay_xcode.py access logs: X-Plex-Token query/%3D/%253D never keep the live value.
@@ -5809,6 +6620,79 @@ $(ROOT)/build/test_gcast_open_retry.ok: $(ROOT)/build/test_gcast_open_retry
 	touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_gcast_open_retry.ok
 
+# AirPlay FoxOne time to first byte (2026-11-18 lab): a repeat play of the same stream must not abort the open
+# in flight (daemon OpenGuard), and the helper shares plan + probe and keeps an orphaned ffmpeg for the repeat open.
+# v1.0.2 glass: and must not restart the play once it is a picture (re-sent /play every 2-5 s for the whole play).
+OPEN_COALESCE_MUTANTS := MUT_OPEN_NO_COALESCE MUT_OPEN_EXACT_ID MUT_OPEN_COALESCE_ANY MUT_OPEN_NO_EXPIRE MUT_OPEN_STOP_NOW MUT_OPEN_STOP_NO_CANCEL MUT_OPEN_SETTLE_IGNORED MUT_OPEN_IGNORE_START \
+	MUT_OPEN_NO_PLAYING_HOLD MUT_OPEN_MARK_PLAYING_NOOP MUT_OPEN_MARK_RESURRECTS MUT_OPEN_HOLD_IGNORED MUT_OPEN_SETTLE_KEEPS_HOLD \
+	MUT_OPEN_BEGIN_KEEPS_HOLD MUT_OPEN_PLAYING_EXPIRE MUT_OPEN_HOLD_ANY_ID MUT_OPEN_HOLD_IGNORE_START MUT_OPEN_NO_PLAYHEAD \
+	MUT_OPEN_MARK_IGNORE_GEN MUT_OPEN_REFRESH_ID_ONLY MUT_OPEN_REFRESH_SAME_URL MUT_OPEN_BEGIN_KEEPS_URL MUT_OPEN_HELPER_ANY_GEN \
+	MUT_OPEN_HOLD_NOT_OK MUT_OPEN_REOPEN_IN_FLIGHT MUT_OPEN_REOPEN_NO_GAP MUT_OPEN_REOPEN_ANY_TTL MUT_OPEN_REOPEN_TAKES_PLAYHEAD
+$(ROOT)/build/test_airplay_open_coalesce.ok: $(ROOT)/tests/unit/test_airplay_open_coalesce.cpp \
+		$(ROOT)/tests/unit/hpp_mutant_runner.sh $(ROOT)/arm/misterplexd/airplay/open_coalesce.hpp
+	@mkdir -p $(ROOT)/build
+	SAN=1 ROOT=$(ROOT) bash $(ROOT)/tests/unit/hpp_mutant_runner.sh tests/unit/test_airplay_open_coalesce.cpp $(OPEN_COALESCE_MUTANTS)
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_open_coalesce.ok
+
+AIRPLAY_TTFB_MUTANTS := noplancache nottl plantrusted exactid noadopt nopreempt steal slowstart rawstderr noprobestderr
+$(ROOT)/build/test_airplay_ladder_ttfb.ok: $(ROOT)/tools/airplay/test_airplay_ladder_ttfb.py \
+		$(ROOT)/tools/airplay/airplay_xcode.py
+	@mkdir -p $(ROOT)/build
+	python3 $(ROOT)/tools/airplay/test_airplay_ladder_ttfb.py
+	@for m in $(AIRPLAY_TTFB_MUTANTS); do \
+		if AIRPLAY_MUT=$$m python3 $(ROOT)/tools/airplay/test_airplay_ladder_ttfb.py >/dev/null 2>&1; then \
+			echo "MUTANT SURVIVED: AIRPLAY_MUT=$$m"; exit 1; fi; done
+	@echo "test_airplay_ladder_ttfb: $(words $(AIRPLAY_TTFB_MUTANTS)) mutants FAIL as required"
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_ladder_ttfb.ok
+
+AIRPLAY_EIO_MUTANTS := noretry noslowmemo x264retry retryfast slowstart
+$(ROOT)/build/test_airplay_ladder_eio.ok: $(ROOT)/tools/airplay/test_airplay_ladder_eio.py \
+		$(ROOT)/tools/airplay/airplay_xcode.py
+	@mkdir -p $(ROOT)/build
+	python3 $(ROOT)/tools/airplay/test_airplay_ladder_eio.py
+	@for m in $(AIRPLAY_EIO_MUTANTS); do \
+		if AIRPLAY_MUT=$$m python3 $(ROOT)/tools/airplay/test_airplay_ladder_eio.py >/dev/null 2>&1; then \
+			echo "MUTANT SURVIVED: AIRPLAY_MUT=$$m"; exit 1; fi; done
+	@echo "test_airplay_ladder_eio: $(words $(AIRPLAY_EIO_MUTANTS)) mutants FAIL as required"
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_ladder_eio.ok
+
+# v1.0.1 glass (device, 2026-11-23) / FPGA Bug N4: the plan cache reused an expired signed variant URL (403 at 78.7 s).
+AIRPLAY_PLANEXP_MUTANTS := noexpcap noreplan noflag no4xx
+$(ROOT)/build/test_airplay_plan_expiry.ok: $(ROOT)/tools/airplay/test_airplay_plan_expiry.py \
+		$(ROOT)/tools/airplay/airplay_xcode.py
+	@mkdir -p $(ROOT)/build
+	python3 $(ROOT)/tools/airplay/test_airplay_plan_expiry.py
+	@for m in $(AIRPLAY_PLANEXP_MUTANTS); do \
+		if AIRPLAY_MUT=$$m python3 $(ROOT)/tools/airplay/test_airplay_plan_expiry.py >/dev/null 2>&1; then \
+			echo "MUTANT SURVIVED: AIRPLAY_MUT=$$m"; exit 1; fi; done
+	@echo "test_airplay_plan_expiry: $(words $(AIRPLAY_PLANEXP_MUTANTS)) mutants FAIL as required"
+	touch $@
+.PHONY: host-v101-airplay-403
+host-v101-airplay-403: $(ROOT)/build/test_airplay_plan_expiry.ok $(ROOT)/build/test_airplay_ladder_ttfb.ok \
+	$(ROOT)/build/test_airplay_ladder_eio.ok
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_plan_expiry.ok
+
+# v1.0.3 glass (2026-11-24): a held re-sent /play kept the first signed URL; it expired at 75 s (2 x 403).
+# FPGA Bug FIX-FIRST on cda4ae41: cookie-gated sources (F1), VOD read once (F2), /refresh from a LAN peer (F3).
+# FPGA Bug N6 on 2d49edab: /refresh of unknown streams created entries and evicted a running play's (refreshcreate).
+# FPGA Bug R1 on 3e3910b3: /admit of other streams evicted a running play's entry (evictjob).
+AIRPLAY_HELDREFRESH_MUTANTS := norefresh nolivehls norewrite liveorder liveanypeer rawaccess nocookiefall vodok refreshloop \
+	refreshcreate evictjob
+$(ROOT)/build/test_airplay_held_refresh.ok: $(ROOT)/tools/airplay/test_airplay_held_refresh.py \
+		$(ROOT)/tools/airplay/airplay_xcode.py $(ROOT)/arm/misterplexd/main.cpp
+	@mkdir -p $(ROOT)/build
+	python3 $(ROOT)/tools/airplay/test_airplay_held_refresh.py
+	@for m in $(AIRPLAY_HELDREFRESH_MUTANTS); do \
+		if AIRPLAY_MUT=$$m HELD_REAL=0 python3 $(ROOT)/tools/airplay/test_airplay_held_refresh.py >/dev/null 2>&1; then \
+			echo "MUTANT SURVIVED: AIRPLAY_MUT=$$m"; exit 1; fi; done
+	@echo "test_airplay_held_refresh: $(words $(AIRPLAY_HELDREFRESH_MUTANTS)) mutants FAIL as required"
+	touch $@
+host-v101-airplay-403: $(ROOT)/build/test_airplay_held_refresh.ok
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_held_refresh.ok
+
 $(ROOT)/build/test_yt_screen_id: $(ROOT)/tests/unit/test_yt_screen_id.cpp \
 		$(ROOT)/arm/misterplexd/gcast/yt_screen_id.hpp
 	@mkdir -p $(ROOT)/build
@@ -5830,7 +6714,8 @@ $(ROOT)/build/test_yt_lounge_token.ok: $(ROOT)/tests/unit/test_yt_lounge_token.c
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_lounge_token.ok
 
 $(ROOT)/build/test_ffmpeg_header_relay: $(ROOT)/tests/unit/test_ffmpeg_header_relay.cpp \
-		$(ROOT)/host/libmisterplex/ffmpeg_header_relay.hpp $(ROOT)/arm/misterplexd/media_player.cpp
+		$(ROOT)/host/libmisterplex/ffmpeg_header_relay.hpp $(ROOT)/arm/misterplexd/log_redact.hpp \
+		$(ROOT)/arm/misterplexd/media_player.cpp
 	@mkdir -p $(ROOT)/build
 	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
 		-DMPX_SOURCE_ROOT='"$(ROOT)"' -o $@ $(ROOT)/tests/unit/test_ffmpeg_header_relay.cpp
@@ -5936,7 +6821,7 @@ $(ROOT)/build/test_release_tar_no_hardlinks.ok: $(ROOT)/tests/unit/test_release_
 	touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_package_spelunkr_distinct.ok
 $(ROOT)/build/test_package_spelunkr_distinct.ok: $(ROOT)/tests/unit/test_package_spelunkr_distinct.sh \
-		$(ROOT)/scripts/package_release.sh
+		$(ROOT)/scripts/package_release.sh $(ROOT)/tests/unit/clean_install_lib.sh
 	bash $(ROOT)/tests/unit/test_package_spelunkr_distinct.sh
 	@mkdir -p $(ROOT)/build
 	touch $@
@@ -5945,10 +6830,37 @@ $(ROOT)/build/test_uninstall_misterplex.ok: $(ROOT)/tests/unit/test_uninstall_mi
 	sh $(ROOT)/tests/unit/test_uninstall_misterplex.sh
 	@mkdir -p $(ROOT)/build
 	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_ffmpeg_launch_sites.ok
+.PHONY: $(ROOT)/build/test_ffmpeg_launch_sites.ok
+$(ROOT)/build/test_ffmpeg_launch_sites.ok: $(ROOT)/tests/unit/test_ffmpeg_launch_sites.sh
+	sh $(ROOT)/tests/unit/test_ffmpeg_launch_sites.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_no_utilities_path.ok
 .PHONY: $(ROOT)/build/test_no_utilities_path.ok
 $(ROOT)/build/test_no_utilities_path.ok: $(ROOT)/tests/unit/test_no_utilities_path.sh
 	sh $(ROOT)/tests/unit/test_no_utilities_path.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_runtime_set_db_mirror.ok
+$(ROOT)/build/test_runtime_set_db_mirror.ok: $(ROOT)/tests/unit/test_runtime_set_db_mirror.sh $(ROOT)/packaging/runtime-files.txt \
+		$(ROOT)/mister-db/build_payload.sh $(ROOT)/mister-db/validate_db.py
+	sh $(ROOT)/tests/unit/test_runtime_set_db_mirror.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_scripts_menu.ok
+$(ROOT)/build/test_scripts_menu.ok: $(ROOT)/tests/unit/test_scripts_menu.sh $(ROOT)/packaging/Scripts/configure-misterplex.sh \
+		$(ROOT)/scripts/build_scripts_menu.sh $(ROOT)/scripts/menu/configure-misterplex.head.sh \
+		$(ROOT)/scripts/configure-misterplex.sh $(ROOT)/mister-db/misterplex_setup.sh $(ROOT)/scripts/uninstall-misterplex.sh
+	sh $(ROOT)/tests/unit/test_scripts_menu.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_install_lean_cleanup.ok
+$(ROOT)/build/test_install_lean_cleanup.ok: $(ROOT)/tests/unit/test_install_lean_cleanup.sh $(ROOT)/scripts/install-misterplex.sh \
+		$(ROOT)/packaging/Scripts/configure-misterplex.sh \
+		$(ROOT)/assets/linux/misterplex/yt_warm_helper.py
+	sh $(ROOT)/tests/unit/test_install_lean_cleanup.sh
 	@mkdir -p $(ROOT)/build
 	touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_install_release_card.ok
@@ -5958,6 +6870,68 @@ $(ROOT)/build/test_install_release_card.ok: $(ROOT)/tests/unit/test_install_rele
 	sh $(ROOT)/tests/unit/test_install_release_card.sh
 	@mkdir -p $(ROOT)/build
 	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_minimal_install_plexob.ok
+$(ROOT)/build/test_minimal_install_plexob.ok: $(ROOT)/tests/unit/test_minimal_install_plexob.sh \
+		$(ROOT)/packaging/minimal/install-misterplex.sh $(ROOT)/scripts/misterplexd-boot-rc3.sh
+	sh $(ROOT)/tests/unit/test_minimal_install_plexob.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_minimal_install_adcard.ok
+$(ROOT)/build/test_minimal_install_adcard.ok: $(ROOT)/tests/unit/test_minimal_install_adcard.sh \
+		$(ROOT)/packaging/minimal/install-misterplex.sh
+	sh $(ROOT)/tests/unit/test_minimal_install_adcard.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+$(ROOT)/build/test_minimal_install_adcard.mutant-check: $(ROOT)/tests/unit/test_minimal_install_adcard_mutants.sh \
+		$(ROOT)/tests/unit/test_minimal_install_adcard.sh $(ROOT)/packaging/minimal/install-misterplex.sh
+	sh $(ROOT)/tests/unit/test_minimal_install_adcard_mutants.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_retire_plexob.ok
+$(ROOT)/build/test_retire_plexob.ok: $(ROOT)/tests/unit/test_retire_plexob.sh \
+		$(ROOT)/scripts/misterplexd-boot-rc3.sh
+	sh $(ROOT)/tests/unit/test_retire_plexob.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_retire_plexob_mutants.ok
+$(ROOT)/build/test_retire_plexob_mutants.ok: $(ROOT)/tests/unit/test_retire_plexob_mutants.sh \
+		$(ROOT)/tests/unit/test_retire_plexob.sh $(ROOT)/scripts/misterplexd-boot-rc3.sh
+	sh $(ROOT)/tests/unit/test_retire_plexob_mutants.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+
+# Spelunkr fast channel change: no player.stop() before stageMs("metadata")
+# outside the firstPictureAttempt retry block (old play keeps the ring open).
+# MUT_TUNE_EARLY_STOP / MUT_TUNE_GUARD_ANY_IF must FAIL.
+TUNE_GUARD_SRC := $(ROOT)/tests/unit/test_spelunkr_tune_no_early_stop.cpp $(ROOT)/arm/misterplexd/main.cpp \
+	$(ROOT)/arm/misterplexd/spelunkr/fe.hpp
+TUNE_GUARD_FLAGS = -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -pthread -DMPX_SOURCE_ROOT='"$(ROOT)"'
+TUNE_GUARD_MUTANTS := MUT_TUNE_EARLY_STOP MUT_TUNE_GUARD_ANY_IF
+$(ROOT)/build/test_spelunkr_tune_no_early_stop: $(TUNE_GUARD_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(TUNE_GUARD_FLAGS) -o $@ $(ROOT)/tests/unit/test_spelunkr_tune_no_early_stop.cpp
+$(ROOT)/build/test_spelunkr_tune_no_early_stop_asan: $(TUNE_GUARD_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+		-fno-omit-frame-pointer $(TUNE_GUARD_FLAGS) -o $@ $(ROOT)/tests/unit/test_spelunkr_tune_no_early_stop.cpp
+$(ROOT)/build/test_spelunkr_tune_no_early_stop.ok: $(ROOT)/build/test_spelunkr_tune_no_early_stop \
+		$(ROOT)/build/test_spelunkr_tune_no_early_stop_asan
+	$(ROOT)/build/test_spelunkr_tune_no_early_stop
+	ASAN_OPTIONS=detect_leaks=1 $(ROOT)/build/test_spelunkr_tune_no_early_stop_asan
+	touch $@
+$(ROOT)/build/test_spelunkr_tune_no_early_stop.mutant-check: $(ROOT)/build/test_spelunkr_tune_no_early_stop.ok \
+		$(TUNE_GUARD_SRC)
+	@for m in $(TUNE_GUARD_MUTANTS); do \
+		$(CXX) $(CXXFLAGS) $(TUNE_GUARD_FLAGS) -D$$m -o $@.$$m \
+			$(ROOT)/tests/unit/test_spelunkr_tune_no_early_stop.cpp || exit 1; \
+		if $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		rm -f $@.$$m; done
+	@echo "test_spelunkr_tune_no_early_stop: $(TUNE_GUARD_MUTANTS) FAIL as required" | tee $@
+.PHONY: host-v101-tune-guard
+host-v101-tune-guard: $(ROOT)/build/test_spelunkr_tune_no_early_stop.ok \
+	$(ROOT)/build/test_spelunkr_tune_no_early_stop.mutant-check
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_spelunkr_tune_no_early_stop.ok \
+	$(ROOT)/build/test_spelunkr_tune_no_early_stop.mutant-check
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_export_vendor_source.ok
 $(ROOT)/build/test_export_vendor_source.ok: $(ROOT)/tests/unit/test_export_vendor_source.sh \
 		$(ROOT)/tools/export/make-export.sh $(ROOT)/tools/export/EXPORT-ALLOWLIST.md
@@ -5974,6 +6948,64 @@ $(ROOT)/build/test_clean_install.ok: $(ROOT)/tests/unit/test_clean_install.sh $(
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_notice_source_offer.ok
 $(ROOT)/build/test_boot_rc3.ok: $(ROOT)/tests/unit/test_boot_rc3.sh $(ROOT)/scripts/misterplexd-boot-rc3.sh
 	bash $(ROOT)/tests/unit/test_boot_rc3.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_boot_rc3_cold_menu.ok
+$(ROOT)/build/test_boot_rc3_cold_menu.ok: $(ROOT)/tests/unit/test_boot_rc3_cold_menu.sh $(ROOT)/scripts/misterplexd-boot-rc3.sh
+	bash $(ROOT)/tests/unit/test_boot_rc3_cold_menu.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_no_boot_autoload.ok $(ROOT)/build/test_no_boot_autoload.mutant-check
+$(ROOT)/build/test_no_boot_autoload.ok: $(ROOT)/tests/unit/test_no_boot_autoload.sh $(ROOT)/scripts/misterplexd-boot-rc3.sh \
+		$(ROOT)/scripts/misterplex_mode.sh $(ROOT)/arm/misterplexd/media_player.cpp $(ROOT)/arm/misterplexd/main.cpp \
+		$(ROOT)/host/libmisterplex/cast_advertise_gate.hpp
+	sh $(ROOT)/tests/unit/test_no_boot_autoload.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+# <mutant>:<case id that must report the FAIL>
+NO_BOOT_AUTOLOAD_MUTANTS = MUT_BOOT_AUTOLOAD_DEFAULTED:NB1 \
+	MUT_BOOT_CARD_ON_MENU:NB1 MUT_DAEMON_START_BARE_RELOAD:NB7 MUT_DAEMON_START_DEFAULTED:NB7 \
+	MUT_CAST_ENSURE_CORE:NB9
+$(ROOT)/build/test_no_boot_autoload.mutant-check: $(ROOT)/build/test_no_boot_autoload.ok
+	@for mc in $(NO_BOOT_AUTOLOAD_MUTANTS); do \
+		m=$${mc%%:*}; want=$${mc##*:}; \
+		if MUT=$$m sh $(ROOT)/tests/unit/test_no_boot_autoload.sh > $@.$$m.log 2>&1; then \
+			echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		grep -q "^FAIL $$want" $@.$$m.log || { echo "MUTANT $$m did not fail $$want:"; cat $@.$$m.log; exit 1; }; \
+		echo "$$m: $$(grep -m1 '^FAIL ' $@.$$m.log)"; \
+	done
+	@echo "test_no_boot_autoload: mutants $(NO_BOOT_AUTOLOAD_MUTANTS) FAIL as required" | tee $@
+# Cast targets are advertised only while a MiSTerPlex core is loaded; a cast never loads one.
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_cast_advertise_gate.ok $(ROOT)/build/test_cast_advertise_gate.mutant-check
+CAST_ADVERTISE_GATE_SRCS = $(ROOT)/tests/unit/test_cast_advertise_gate.cpp $(ROOT)/host/libmisterplex/cast_advertise_gate.hpp \
+	$(ROOT)/arm/misterplexd/airplay/dial_proto.hpp $(ROOT)/arm/misterplexd/airplay/lounge_proto.hpp \
+	$(ROOT)/arm/misterplexd/main.cpp $(ROOT)/arm/misterplexd/media_player.cpp $(ROOT)/arm/misterplexd/companion.cpp \
+	$(ROOT)/arm/misterplexd/airplay/yt_fe.cpp $(ROOT)/arm/misterplexd/airplay/airplay_fe.cpp
+CAST_ADVERTISE_GATE_CXX = $(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/arm/misterplexd -DMPX_SOURCE_ROOT='"$(ROOT)"'
+$(ROOT)/build/test_cast_advertise_gate: $(CAST_ADVERTISE_GATE_SRCS)
+	@mkdir -p $(ROOT)/build
+	$(CAST_ADVERTISE_GATE_CXX) -o $@ $(ROOT)/tests/unit/test_cast_advertise_gate.cpp
+$(ROOT)/build/test_cast_advertise_gate.ok: $(ROOT)/build/test_cast_advertise_gate
+	$(ROOT)/build/test_cast_advertise_gate
+	touch $@
+# <mutant>:<case id that must report the FAIL>
+CAST_ADVERTISE_GATE_MUTANTS = MUT_ADVERTISE_WITHOUT_CORE:AG2 MUT_NO_WITHDRAW_ON_UNLOAD:AG3 MUT_NO_DEBOUNCE:AG3 \
+	MUT_NO_SWITCH_HOLD:AG4 MUT_NO_HOLD_CAP:AG4 MUT_CAST_LOADS_CORE:AG6
+$(ROOT)/build/test_cast_advertise_gate.mutant-check: $(ROOT)/build/test_cast_advertise_gate.ok
+	@for mc in $(CAST_ADVERTISE_GATE_MUTANTS); do m=$${mc%%:*}; want=$${mc##*:}; \
+		$(CAST_ADVERTISE_GATE_CXX) -D$$m -o $@.$$m $(ROOT)/tests/unit/test_cast_advertise_gate.cpp || exit 1; \
+		if $@.$$m > $@.$$m.log 2>&1; then echo "MUTANT SURVIVED: $$m"; exit 1; fi; \
+		grep -q "^FAIL $$want" $@.$$m.log || { echo "MUTANT $$m did not fail $$want:"; cat $@.$$m.log; exit 1; }; \
+		echo "$$m: $$(grep -m1 "^FAIL $$want" $@.$$m.log)"; \
+	done
+	@echo "test_cast_advertise_gate: mutants $(CAST_ADVERTISE_GATE_MUTANTS) FAIL as required" | tee $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_package_idle_card.ok $(ROOT)/build/test_install_owenb_idle_card.ok
+$(ROOT)/build/test_package_idle_card.ok: $(ROOT)/tests/unit/test_package_idle_card.sh $(ROOT)/scripts/stage_owenb_idle_card.sh $(ROOT)/scripts/package_release.sh $(ROOT)/packaging/runtime-files.txt
+	bash $(ROOT)/tests/unit/test_package_idle_card.sh
+	@mkdir -p $(ROOT)/build
+	touch $@
+$(ROOT)/build/test_install_owenb_idle_card.ok: $(ROOT)/tests/unit/test_install_owenb_idle_card.sh $(ROOT)/scripts/install_owenb_idle_card.sh
+	bash $(ROOT)/tests/unit/test_install_owenb_idle_card.sh
 	@mkdir -p $(ROOT)/build
 	touch $@
 # GH#27: boot Ready chevron after restart. No F015 soak.
@@ -6010,8 +7042,25 @@ $(ROOT)/build/test_queue_add.ok: $(ROOT)/tests/unit/test_queue_add.cpp $(ROOT)/t
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_analog_raster.ok
 $(ROOT)/build/test_analog_raster.ok: $(ROOT)/tests/unit/test_analog_raster.cpp $(ROOT)/tests/unit/hpp_mutant_runner.sh $(ROOT)/host/libmisterplex/analog_raster.hpp
 	@mkdir -p $(ROOT)/build
-	SAN=1 ROOT=$(ROOT) bash $(ROOT)/tests/unit/hpp_mutant_runner.sh tests/unit/test_analog_raster.cpp MUT_RASTER_ANY_CORE MUT_RASTER_ACTIVE_IS_REQUESTED MUT_RASTER_CFG_WRONG_BIT MUT_RASTER_UNSET_ACTS MUT_RASTER_AUTO_ACTS MUT_RASTER_NO_INFLIGHT MUT_RASTER_IGNORE_OSD MUT_RASTER_IGNORE_PLAYING MUT_RASTER_CREATE_CFG MUT_RASTER_FIGHT_OSD MUT_RASTER_NO_SETTLE MUT_RASTER_NO_CAP MUT_RASTER_TRUNCATE_CFG MUT_RASTER_NO_1101
+	SAN=1 ROOT=$(ROOT) bash $(ROOT)/tests/unit/hpp_mutant_runner.sh tests/unit/test_analog_raster.cpp MUT_RASTER_ANY_CORE MUT_RASTER_ACTIVE_IS_REQUESTED MUT_RASTER_CFG_WRONG_BIT MUT_RASTER_UNSET_ACTS MUT_RASTER_AUTO_ACTS MUT_RASTER_NO_INFLIGHT MUT_RASTER_IGNORE_OSD MUT_RASTER_IGNORE_PLAYING MUT_RASTER_CREATE_CFG MUT_RASTER_FIGHT_OSD MUT_RASTER_NO_SETTLE MUT_RASTER_NO_CAP MUT_RASTER_TRUNCATE_CFG MUT_RASTER_NO_1101 MUT_NO_112501
 	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_plexob_s14_capabilities.ok
+$(ROOT)/build/test_plexob_s14_capabilities: $(ROOT)/tests/unit/test_plexob_s14_capabilities.cpp \
+		$(ROOT)/host/libmisterplex/display_raster.hpp $(ROOT)/host/libmisterplex/analog_raster.hpp \
+		$(ROOT)/host/libmisterplex/fpga_build_ids.hpp $(ROOT)/host/libmisterplex/owenb_core_identity.hpp \
+		$(ROOT)/host/libmisterplex/plexob_yc.hpp $(ROOT)/host/libmisterplex/core_id_select.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/host -o $@ $(ROOT)/tests/unit/test_plexob_s14_capabilities.cpp
+$(ROOT)/build/test_plexob_s14_capabilities.ok: $(ROOT)/build/test_plexob_s14_capabilities
+	$(ROOT)/build/test_plexob_s14_capabilities
+	$(CXX) $(CXXFLAGS) -DMUT_NO_112501 -I$(ROOT)/host -o $(ROOT)/build/test_plexob_s14_capabilities.mut \
+		$(ROOT)/tests/unit/test_plexob_s14_capabilities.cpp
+	@if $(ROOT)/build/test_plexob_s14_capabilities.mut >/dev/null 2>&1; then \
+		echo "test_plexob_s14_capabilities: MUT_NO_112501 SURVIVED"; exit 1; fi
+	@echo "test_plexob_s14_capabilities: MUT_NO_112501 FAIL as required"
+	@rm -f $(ROOT)/build/test_plexob_s14_capabilities.mut
+	@touch $@
+
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_analog_raster_wiring.ok
 $(ROOT)/build/test_analog_raster_wiring.ok: $(ROOT)/tests/unit/test_analog_raster_wiring.sh $(ROOT)/arm/misterplexd/main.cpp \
 		$(ROOT)/arm/misterplexd/media_player.cpp $(ROOT)/host/libmisterplex/plexob_ini.hpp
@@ -6051,7 +7100,7 @@ $(ROOT)/build/test_update_wire.ok: $(ROOT)/tests/unit/test_update_wire.cpp $(ROO
 	touch $@
 # PR #30 follow-up 10-23, Job Q 10-24: the boot script keeps the prod environment (MiSTerPlex.rbf first, set -u safe PLEX_RBF, conf MISTERPLEXD_BIN, MPX_PREWARM=0).
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_repro_arm_build_order.ok
-$(ROOT)/build/test_repro_arm_build_order.ok: $(ROOT)/tests/unit/test_repro_arm_build_order.sh $(ROOT)/scripts/repro_arm_build.sh
+$(ROOT)/build/test_repro_arm_build_order.ok: $(ROOT)/tests/unit/test_repro_arm_build_order.sh $(ROOT)/scripts/repro_arm_build.sh $(ROOT)/Makefile
 	bash $(ROOT)/tests/unit/test_repro_arm_build_order.sh
 	@mkdir -p $(ROOT)/build
 	touch $@
@@ -6094,28 +7143,63 @@ $(ROOT)/build/test_airplay_features.ok: $(ROOT)/tests/unit/test_airplay_features
 	@mkdir -p $(ROOT)/build
 	SAN=1 ROOT=$(ROOT) bash $(ROOT)/tests/unit/hpp_mutant_runner.sh tests/unit/test_airplay_features.cpp MUT_APF_BIT27_MIRROR_ONLY
 	touch $@
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_spelunkr_guide_lr.ok
+SPELUNKR_GUIDE_LR_DEPS := $(ROOT)/arm/misterplexd/spelunkr/fe.hpp $(ROOT)/arm/misterplexd/spelunkr/banner.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/schedule.hpp $(ROOT)/arm/misterplexd/spelunkr/input_route.hpp \
+		$(ROOT)/host/libmisterplex/owenb_menu.hpp $(ROOT)/host/libmisterplex/input_mailbox.hpp
+$(ROOT)/build/test_spelunkr_guide_lr: $(ROOT)/tests/unit/test_spelunkr_guide_lr.cpp $(SPELUNKR_GUIDE_LR_DEPS)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -I$(ROOT)/host -I$(ROOT)/host/libmisterplex \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -o $@ $(ROOT)/tests/unit/test_spelunkr_guide_lr.cpp
+$(ROOT)/build/test_spelunkr_guide_lr.ok: $(ROOT)/build/test_spelunkr_guide_lr
+	$(ROOT)/build/test_spelunkr_guide_lr
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -I$(ROOT)/host -I$(ROOT)/host/libmisterplex \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -DMUT_SPELUNKR_GUIDE_PAGE_NOP \
+		-o $(ROOT)/build/test_spelunkr_guide_lr.mut_nop $(ROOT)/tests/unit/test_spelunkr_guide_lr.cpp
+	if $(ROOT)/build/test_spelunkr_guide_lr.mut_nop >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SPELUNKR_GUIDE_PAGE_NOP'; exit 1; fi
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -I$(ROOT)/host -I$(ROOT)/host/libmisterplex \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -DMUT_SPELUNKR_GUIDE_PAGE_SIGN \
+		-o $(ROOT)/build/test_spelunkr_guide_lr.mut_sign $(ROOT)/tests/unit/test_spelunkr_guide_lr.cpp
+	if $(ROOT)/build/test_spelunkr_guide_lr.mut_sign >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SPELUNKR_GUIDE_PAGE_SIGN'; exit 1; fi
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -I$(ROOT)/host -I$(ROOT)/host/libmisterplex \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -DMUT_SPELUNKR_GUIDE_PAGE_CURSOR \
+		-o $(ROOT)/build/test_spelunkr_guide_lr.mut_cursor $(ROOT)/tests/unit/test_spelunkr_guide_lr.cpp
+	if $(ROOT)/build/test_spelunkr_guide_lr.mut_cursor >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SPELUNKR_GUIDE_PAGE_CURSOR'; exit 1; fi
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -I$(ROOT)/host -I$(ROOT)/host/libmisterplex \
+		-I$(ROOT)/arm/misterplexd -I$(OWENB_RING_DIR)/include -DMUT_SPELUNKR_TV_FWD_PAGE_OFF \
+		-o $(ROOT)/build/test_spelunkr_guide_lr.mut_fwd $(ROOT)/tests/unit/test_spelunkr_guide_lr.cpp
+	if $(ROOT)/build/test_spelunkr_guide_lr.mut_fwd >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SPELUNKR_TV_FWD_PAGE_OFF'; exit 1; fi
+	@echo 'test_spelunkr_guide_lr: MUT_SPELUNKR_GUIDE_PAGE_* FAIL as required'
+	touch $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_spelunkr_schedule.ok
+PLUTO_HLS_PROBE_HOST_STUB := $(ROOT)/tests/unit/pluto_hls_probe_host_stub.cpp
 $(ROOT)/build/test_spelunkr_schedule: $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB) \
 		$(ROOT)/arm/misterplexd/spelunkr/broadcast.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/archive_resolve.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/pluto_live.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/dead_run.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/schedule.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/fe.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/aspect.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/banner.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/header_cache.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/neighbor_prefetch.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/neighbor_key.hpp \
 		$(ROOT)/arm/misterplexd/spelunkr/prefetch_timeout.hpp \
 		$(ROOT)/arm/misterplexd/gcast/mini_json.hpp \
 		$(ROOT)/arm/misterplexd/main.cpp \
 		$(ROOT)/host/libmisterplex/owenb_menu.hpp \
 		$(ROOT)/host/libmisterplex/owenb_osd_renderer.hpp \
 		$(ROOT)/host/libmisterplex/owenb_osd_draw.hpp \
+		$(ROOT)/host/libmisterplex/spelunkr_guide_format.hpp \
+		$(ROOT)/host/libmisterplex/spelunkr_guide_icons.hpp \
 		$(ROOT)/host/libmisterplex/input_mailbox.hpp
 	@mkdir -p $(ROOT)/build
 	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
 		-I$(OWENB_RING_DIR)/include \
 		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' \
-		-o $@ $(ROOT)/tests/unit/test_spelunkr_schedule.cpp
+		-o $@ $(ROOT)/tests/unit/test_spelunkr_schedule.cpp $(PLUTO_HLS_PROBE_HOST_STUB)
 $(ROOT)/build/test_spelunkr_schedule.ok: $(ROOT)/build/test_spelunkr_schedule \
 		$(ROOT)/tests/unit/fixtures/spelunkr/lineup.json \
 		$(ROOT)/tests/unit/fixtures/spelunkr/happy-trees-v12.json
@@ -6123,28 +7207,394 @@ $(ROOT)/build/test_spelunkr_schedule.ok: $(ROOT)/build/test_spelunkr_schedule \
 	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
 		-I$(OWENB_RING_DIR)/include \
 		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_SP_SKIP_STARTINDEX \
-		-o $(ROOT)/build/test_spelunkr_schedule.mut $(ROOT)/tests/unit/test_spelunkr_schedule.cpp
+		-o $(ROOT)/build/test_spelunkr_schedule.mut $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
 	if $(ROOT)/build/test_spelunkr_schedule.mut >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SP_SKIP_STARTINDEX'; exit 1; fi
 	@echo 'test_spelunkr_schedule: MUT_SP_SKIP_STARTINDEX FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-I$(OWENB_RING_DIR)/include \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_NEIGHBOR_PLUTO_AS_UNKNOWN_MOOV \
+		-o $(ROOT)/build/test_spelunkr_schedule.mut_nbr $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_schedule.mut_nbr >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_NEIGHBOR_PLUTO_AS_UNKNOWN_MOOV'; exit 1; fi
+	@echo 'test_spelunkr_schedule: MUT_NEIGHBOR_PLUTO_AS_UNKNOWN_MOOV FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-I$(OWENB_RING_DIR)/include \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_N16_NO_NEXT_DEADEND \
+		-o $(ROOT)/build/test_spelunkr_schedule.mut_n16a $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_schedule.mut_n16a >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_N16_NO_NEXT_DEADEND'; exit 1; fi
+	@echo 'test_spelunkr_schedule: MUT_N16_NO_NEXT_DEADEND FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-I$(OWENB_RING_DIR)/include \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_N16_CHANNEL_SKIP_UNBOUNDED \
+		-o $(ROOT)/build/test_spelunkr_schedule.mut_n16b $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_schedule.mut_n16b >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_N16_CHANNEL_SKIP_UNBOUNDED'; exit 1; fi
+	@echo 'test_spelunkr_schedule: MUT_N16_CHANNEL_SKIP_UNBOUNDED FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-I$(OWENB_RING_DIR)/include \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_VIDEO_PREP_ALLOW_MENU \
+		-o $(ROOT)/build/test_spelunkr_schedule.mut_vprep $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_schedule.mut_vprep >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_VIDEO_PREP_ALLOW_MENU'; exit 1; fi
+	@echo 'test_spelunkr_schedule: MUT_VIDEO_PREP_ALLOW_MENU FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-I$(OWENB_RING_DIR)/include \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_Z2_PLUTO_BUDGET_LATE \
+		-o $(ROOT)/build/test_spelunkr_schedule.mut_z2 $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_schedule.mut_z2 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_Z2_PLUTO_BUDGET_LATE'; exit 1; fi
+	@echo 'test_spelunkr_schedule: MUT_Z2_PLUTO_BUDGET_LATE FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-I$(OWENB_RING_DIR)/include \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_COLD_BOOT_RESUMES_LAST_CHANNEL \
+		-o $(ROOT)/build/test_spelunkr_schedule.mut_cold_boot $(ROOT)/tests/unit/test_spelunkr_schedule.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_schedule.mut_cold_boot >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_COLD_BOOT_RESUMES_LAST_CHANNEL'; exit 1; fi
+	@echo 'test_spelunkr_schedule: MUT_COLD_BOOT_RESUMES_LAST_CHANNEL FAIL as required'
 	touch $@
 .PHONY: test-spelunkr test-spelunkr-mutants
-test-spelunkr: $(ROOT)/build/test_spelunkr_schedule.ok $(ROOT)/build/test_owenb_play \
-		$(ROOT)/build/test_ddr_frame_geometry_coded_source
+$(ROOT)/build/test_spelunkr_pluto_live: $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB) \
+		$(ROOT)/host/libmisterplex/pluto_live.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/prefetch_timeout.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/pluto_live.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/backwhen.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/archive_resolve.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/broadcast.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/schedule.hpp \
+		$(ROOT)/arm/misterplexd/gcast/mini_json.hpp \
+		$(ROOT)/arm/misterplexd/log_redact.hpp \
+		$(ROOT)/arm/misterplexd/gcast/yt_live.hpp \
+		$(ROOT)/host/libmisterplex/live_disc_rebase.hpp \
+		$(ROOT)/host/libmisterplex/pluto_ad_skip.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' \
+		-o $@ $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp $(PLUTO_HLS_PROBE_HOST_STUB)
+$(ROOT)/build/test_spelunkr_pluto_live.ok: $(ROOT)/build/test_spelunkr_pluto_live \
+		$(ROOT)/tests/unit/fixtures/spelunkr/pluto-boot-synthetic.json \
+		$(ROOT)/tests/unit/fixtures/spelunkr/pluto-master-caps.m3u8 \
+		$(ROOT)/tests/unit/fixtures/spelunkr/pluto-media-clear.m3u8 \
+		$(ROOT)/tests/unit/fixtures/spelunkr/pluto-media-aes.m3u8 \
+		$(ROOT)/tests/unit/fixtures/spelunkr/pluto-master-audio-group.m3u8 \
+		$(ROOT)/tests/unit/fixtures/spelunkr/pluto-media-audio.m3u8
+	$(ROOT)/build/test_spelunkr_pluto_live
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_IGNORE_CAP \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_IGNORE_CAP'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_IGNORE_CAP FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_PLUTO_TRUST_TAGS \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_trust $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_trust >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_TRUST_TAGS'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_TRUST_TAGS FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_SKIP_RELAY_STOP \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut2 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut2 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_SKIP_RELAY_STOP'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_SKIP_RELAY_STOP FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_SKIP_PROBE \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut3 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut3 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_SKIP_PROBE'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_SKIP_PROBE FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_REDIRECT_KEEP_BEARER \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut4 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut4 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_REDIRECT_KEEP_BEARER'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_REDIRECT_KEEP_BEARER FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_SHARED_BUDGET \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut5 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut5 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_SHARED_BUDGET'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_SHARED_BUDGET FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_NO_BOOT_CACHE \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut6 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut6 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_NO_BOOT_CACHE'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_NO_BOOT_CACHE FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_LEGACY_STITCH_PATH \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_stitch $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_stitch >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_LEGACY_STITCH_PATH'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_LEGACY_STITCH_PATH FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_NO_JWT_QUERY \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_jwt $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_jwt >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_NO_JWT_QUERY'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_NO_JWT_QUERY FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_JWT_INHERIT_ANY_HOST \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_jwthost $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_jwthost >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_JWT_INHERIT_ANY_HOST'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_JWT_INHERIT_ANY_HOST FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_REFRESH_NO_FLOOR \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_nofloor $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_nofloor >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_REFRESH_NO_FLOOR'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_REFRESH_NO_FLOOR FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_REFRESH_FLOOR_3600 \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_refresh $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_refresh >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_REFRESH_FLOOR_3600'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_REFRESH_FLOOR_3600 FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_FFMPEG_KEEP_BEARER \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut7 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut7 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_FFMPEG_KEEP_BEARER'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_FFMPEG_KEEP_BEARER FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_LIVE_SEEK \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut8 $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut8 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_LIVE_SEEK'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_LIVE_SEEK FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_OPEN_NO_RETRY \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_n13_no_retry $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_n13_no_retry >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_OPEN_NO_RETRY'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_OPEN_NO_RETRY FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_OPEN_RETRY_UNBOUNDED \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_n13_retry_unbounded $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_n13_retry_unbounded >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_OPEN_RETRY_UNBOUNDED'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_OPEN_RETRY_UNBOUNDED FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_OPEN_RETRY_ANY \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_n13_retry_any $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_n13_retry_any >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_OPEN_RETRY_ANY'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_OPEN_RETRY_ANY FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_OPEN_RETRY_4XX \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_n2_retry_4xx $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_n2_retry_4xx >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_OPEN_RETRY_4XX'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_OPEN_RETRY_4XX FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_NO_AUDIO_RENDITION \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_686_norend $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_686_norend >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_NO_AUDIO_RENDITION'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_NO_AUDIO_RENDITION FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_AUDIO_INPUT_NO_OPTS \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_686_noopts $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_686_noopts >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_AUDIO_INPUT_NO_OPTS'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_AUDIO_INPUT_NO_OPTS FAIL as required'
+	rm -rf $(ROOT)/build/mut686-root && mkdir -p $(ROOT)/build/mut686-root/arm/misterplexd
+	sed '/src.audioUrl = run.resolved.audioUrl;/d' $(ROOT)/arm/misterplexd/main.cpp > $(ROOT)/build/mut686-root/arm/misterplexd/main.cpp
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)/build/mut686-root"' \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_686_nowire $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_686_nowire >/dev/null 2>&1; then echo 'MUTANT SURVIVED: main.cpp audioUrl wiring removed'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: main.cpp audioUrl wiring removed FAIL as required'
+	rm -rf $(ROOT)/build/mut686-root
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_NO_AV_ALIGN \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_av_align $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_av_align >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_NO_AV_ALIGN'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_NO_AV_ALIGN FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_RESPAWN_KEEP_COPYTS \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_respawn_copyts $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_respawn_copyts >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_RESPAWN_KEEP_COPYTS'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_RESPAWN_KEEP_COPYTS FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_MUXED_OPTIONAL_AUDIO \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_muxed_opt $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_muxed_opt >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_MUXED_OPTIONAL_AUDIO'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_MUXED_OPTIONAL_AUDIO FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_PLUTO_MUXED_NO_INTERLEAVE \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_muxed_ileave $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_muxed_ileave >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_MUXED_NO_INTERLEAVE'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_MUXED_NO_INTERLEAVE FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_PLUTO_RETRY_ALWAYS_RERESOLVE \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_retry_reresolve $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_retry_reresolve >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_RETRY_ALWAYS_RERESOLVE'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_RETRY_ALWAYS_RERESOLVE FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_PLUTO_REFETCH_MEDIA \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_refetch_media $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_refetch_media >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_REFETCH_MEDIA'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_REFETCH_MEDIA FAIL as required'
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMPX_SOURCE_ROOT='"$(ROOT)"' -DMUT_PLUTO_PROBE_EAGER_SEGMENT \
+		-o $(ROOT)/build/test_spelunkr_pluto_live.mut_eager_seg $(ROOT)/tests/unit/test_spelunkr_pluto_live.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_pluto_live.mut_eager_seg >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLUTO_PROBE_EAGER_SEGMENT'; exit 1; fi
+	@echo 'test_spelunkr_pluto_live: MUT_PLUTO_PROBE_EAGER_SEGMENT FAIL as required'
+	touch $@
+$(ROOT)/build/test_spelunkr_backwhen: $(ROOT)/tests/unit/test_spelunkr_backwhen.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB) \
+		$(ROOT)/arm/misterplexd/spelunkr/backwhen.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/archive_resolve.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/pluto_live.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/broadcast.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/schedule.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/fe.hpp \
+		$(ROOT)/arm/misterplexd/gcast/mini_json.hpp \
+		$(ROOT)/arm/misterplexd/log_redact.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' \
+		-o $@ $(ROOT)/tests/unit/test_spelunkr_backwhen.cpp $(PLUTO_HLS_PROBE_HOST_STUB)
+$(ROOT)/build/test_spelunkr_backwhen.ok: $(ROOT)/build/test_spelunkr_backwhen \
+		$(ROOT)/tests/unit/fixtures/spelunkr/backwhen-lineup.json \
+		$(ROOT)/tests/unit/fixtures/spelunkr/backwhen-schedules.json
+	$(ROOT)/build/test_spelunkr_backwhen
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -Wall -Wextra -pthread -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' -DMUT_SCHEDULE_NO_OFFSET_CLAMP \
+		-o $(ROOT)/build/test_spelunkr_backwhen.mut_schedule $(ROOT)/tests/unit/test_spelunkr_backwhen.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	if $(ROOT)/build/test_spelunkr_backwhen.mut_schedule >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SCHEDULE_NO_OFFSET_CLAMP'; exit 1; fi
+	@echo 'test_spelunkr_backwhen: MUT_SCHEDULE_NO_OFFSET_CLAMP FAIL as required'
+	touch $@
+$(ROOT)/build/test_pluto_n9_pipe_seek: $(ROOT)/tests/unit/test_pluto_n9_pipe_seek.cpp \
+		$(ROOT)/arm/misterplexd/gcast/dash_seek.hpp \
+		$(ROOT)/arm/misterplexd/spelunkr/pluto_live.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(FFMPEG_CFLAGS) -DMPX_HAVE_LIBAV=1 -I$(ROOT)/arm/misterplexd -I$(ROOT)/host -std=c++17 -O1 -Wall -Wextra \
+		-o $@ $(ROOT)/tests/unit/test_pluto_n9_pipe_seek.cpp $(FFMPEG_LIBS)
+$(ROOT)/build/test_spelunkr_defer_lifetime: $(ROOT)/tests/unit/test_spelunkr_defer_lifetime.cpp \
+		$(ROOT)/arm/misterplexd/spelunkr/fe.hpp
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -g -Wall -Wextra -fsanitize=address,undefined \
+		-fno-omit-frame-pointer -fno-sanitize-recover=undefined \
+		-I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-o $@ $(ROOT)/tests/unit/test_spelunkr_defer_lifetime.cpp
+$(ROOT)/build/test_spelunkr_defer_lifetime.ok: $(ROOT)/build/test_spelunkr_defer_lifetime
+	$(ROOT)/build/test_spelunkr_defer_lifetime
+	touch $@
+test-spelunkr: $(ROOT)/build/test_spelunkr_schedule.ok $(ROOT)/build/test_spelunkr_backwhen.ok \
+		$(ROOT)/build/test_spelunkr_pluto_live.ok $(ROOT)/build/test_owenb_play \
+		$(ROOT)/build/test_ddr_frame_geometry_coded_source $(ROOT)/build/test_spelunkr_defer_lifetime.ok
 	$(ROOT)/build/test_owenb_play --caps-only
 	$(ROOT)/build/test_owenb_play --eof-only
 	python3 $(ROOT)/tests/unit/test_spelunkr_auto_video.py
+	python3 $(ROOT)/tests/harness/spelunkr_p240_walk.py
 	$(ROOT)/build/test_ddr_frame_geometry_coded_source
-	$(if $(OWENB_AV_E2E_OK),$(MAKE) -f $(firstword $(MAKEFILE_LIST)) $(ROOT)/build/test_spelunkr_header_cache_av.ok,@echo "SKIP test_spelunkr_header_cache_av (no FFmpeg dev libs)")
+	$(if $(OWENB_AV_E2E_OK),$(MAKE) -f $(firstword $(MAKEFILE_LIST)) $(ROOT)/build/test_spelunkr_header_cache_av.ok $(ROOT)/build/test_spelunkr_header_cache_av_asan.ok,@echo "SKIP test_spelunkr_header_cache_av (no FFmpeg dev libs)")
+	$(if $(OWENB_AV_E2E_OK),$(MAKE) -f $(firstword $(MAKEFILE_LIST)) $(ROOT)/build/test_spelunkr_header_cache_keepalive.ok,@echo "SKIP test_spelunkr_header_cache_keepalive (no FFmpeg dev libs)")
+	$(if $(OWENB_AV_E2E_OK),$(MAKE) -f $(firstword $(MAKEFILE_LIST)) $(ROOT)/build/test_header_partial_spill_ram.ok,@echo "SKIP test_header_partial_spill_ram (no FFmpeg dev libs)")
 
+test-spelunkr-p240-walk:
+	python3 $(ROOT)/tests/harness/spelunkr_p240_walk.py
+.PHONY: test-spelunkr-p240-walk
 test-spelunkr-mutants: $(ROOT)/build/test_spelunkr_schedule $(ROOT)/build/test_owenb_play \
 		$(ROOT)/build/test_ffmpeg_header_relay
 	python3 $(ROOT)/tests/unit/test_spelunkr_continuous_mutants.py
 
 unit-unlocked unit-host-unlocked: test-spelunkr
 
+# Service-switch speed (reviewer/service-switch-speed-1114): helper keep/copy-if-changed, fork-free mode.sh scans,
+# Back When disk cache (ASan build of its unit test, mutants and main.cpp source pins).
+.PHONY: test-switch-speed
+test-switch-speed: $(ROOT)/build/test_spelunkr_backwhen.ok
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -std=c++17 -O1 -g -Wall -Wextra -pthread -fsanitize=address,undefined \
+		-fno-omit-frame-pointer -fno-sanitize-recover=undefined -I$(ROOT)/host -I$(ROOT)/arm/misterplexd \
+		-DMPX_SOURCE_ROOT='"$(ROOT)"' \
+		-DSPELUNKR_FIXTURE_DIR='"$(ROOT)/tests/unit/fixtures/spelunkr"' \
+		-o $(ROOT)/build/test_spelunkr_backwhen_asan $(ROOT)/tests/unit/test_spelunkr_backwhen.cpp \
+		$(PLUTO_HLS_PROBE_HOST_STUB)
+	$(ROOT)/build/test_spelunkr_backwhen_asan
+	python3 $(ROOT)/tests/unit/test_switch_speed_mutants.py
+	sh $(ROOT)/tests/unit/test_switch_speed.sh
+
+unit-unlocked unit-host-unlocked: test-switch-speed
+
 .PHONY: test-service-switch
-test-service-switch: $(ROOT)/build/test_service_switch
+test-service-switch: $(ROOT)/build/test_service_switch $(ROOT)/build/test_service_switch_asan.ok
 	$(ROOT)/build/test_service_switch
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_NOTICE_KEEPS_SPELUNKR_CHROME \
+		-o $(ROOT)/build/test_service_switch.mut $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_NOTICE_KEEPS_SPELUNKR_CHROME'; exit 1; fi
+	@echo 'test_service_switch: MUT_NOTICE_KEEPS_SPELUNKR_CHROME FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_PLEX_CFG_CACHE_ONLY_SAVE \
+		-o $(ROOT)/build/test_service_switch.mut_cfg $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_cfg >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLEX_CFG_CACHE_ONLY_SAVE'; exit 1; fi
+	@echo 'test_service_switch: MUT_PLEX_CFG_CACHE_ONLY_SAVE FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_PLEX_CFG_SAVE_STALE_CACHE \
+		-o $(ROOT)/build/test_service_switch.mut_stale $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_stale >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLEX_CFG_SAVE_STALE_CACHE'; exit 1; fi
+	@echo 'test_service_switch: MUT_PLEX_CFG_SAVE_STALE_CACHE FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_PLEX_CFG_IGNORE_V3_ASPECT \
+		-o $(ROOT)/build/test_service_switch.mut_v3 $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_v3 >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLEX_CFG_IGNORE_V3_ASPECT'; exit 1; fi
+	@echo 'test_service_switch: MUT_PLEX_CFG_IGNORE_V3_ASPECT FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_PLEX_CFG_SKIP_RING_PATCH \
+		-o $(ROOT)/build/test_service_switch.mut_ring $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_ring >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_PLEX_CFG_SKIP_RING_PATCH'; exit 1; fi
+	@echo 'test_service_switch: MUT_PLEX_CFG_SKIP_RING_PATCH FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_REQUEST_IGNORE \
+		-o $(ROOT)/build/test_service_switch.mut_req_ignore $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_req_ignore >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_REQUEST_IGNORE'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_REQUEST_IGNORE FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_REQUEST_SKIP_SNAPSHOT \
+		-o $(ROOT)/build/test_service_switch.mut_req_snap $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_req_snap >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_REQUEST_SKIP_SNAPSHOT'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_REQUEST_SKIP_SNAPSHOT FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_REQUEST_NOOP_SKIP_PENDING \
+		-o $(ROOT)/build/test_service_switch.mut_req_noop $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_req_noop >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_REQUEST_NOOP_SKIP_PENDING'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_REQUEST_NOOP_SKIP_PENDING FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_EXTERNAL_BEGIN_NO_LAUNCH \
+		-o $(ROOT)/build/test_service_switch.mut_ext_nolaunch $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_ext_nolaunch >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_EXTERNAL_BEGIN_NO_LAUNCH'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_EXTERNAL_BEGIN_NO_LAUNCH FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_SYNC_LOG_EVERY \
+		-o $(ROOT)/build/test_service_switch.mut_synclog $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_synclog >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_SYNC_LOG_EVERY'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_SYNC_LOG_EVERY FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_EXTERNAL_READY_NO_HOLD \
+		-o $(ROOT)/build/test_service_switch.mut_ext_nohold $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_ext_nohold >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_EXTERNAL_READY_NO_HOLD'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_EXTERNAL_READY_NO_HOLD FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_BEGIN_HOLDS_OBMU \
+		-o $(ROOT)/build/test_service_switch.mut_begin_obmu $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_begin_obmu >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_BEGIN_HOLDS_OBMU'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_BEGIN_HOLDS_OBMU FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_DISCARD_BLOCKING \
+		-o $(ROOT)/build/test_service_switch.mut_discard_block $(ROOT)/tests/unit/test_service_switch.cpp
+	if timeout 2 $(ROOT)/build/test_service_switch.mut_discard_block >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_DISCARD_BLOCKING'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_DISCARD_BLOCKING FAIL as required'
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -DMUT_SERVICE_SWITCH_INHERITS_MPX_ENV \
+		-o $(ROOT)/build/test_service_switch.mut_env $(ROOT)/tests/unit/test_service_switch.cpp
+	if $(ROOT)/build/test_service_switch.mut_env >/dev/null 2>&1; then echo 'MUTANT SURVIVED: MUT_SERVICE_SWITCH_INHERITS_MPX_ENV'; exit 1; fi
+	@echo 'test_service_switch: MUT_SERVICE_SWITCH_INHERITS_MPX_ENV FAIL as required'
 	python3 $(ROOT)/tests/unit/test_service_switch_script.py
 	python3 $(ROOT)/tests/unit/test_service_status_rtl.py
 
@@ -6153,8 +7603,17 @@ $(ROOT)/build/test_service_switch: $(ROOT)/tests/unit/test_service_switch.cpp \
 	@mkdir -p $(ROOT)/build
 	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -o $@ $<
 
+$(ROOT)/build/test_service_switch_asan: $(ROOT)/tests/unit/test_service_switch.cpp \
+		$(ROOT)/host/libmisterplex/service_switch.hpp $(MPLEX_HDR)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) $(OWENB_SESS_FLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $<
+$(ROOT)/build/test_service_switch_asan.ok: $(ROOT)/build/test_service_switch_asan
+	ASAN_OPTIONS=detect_leaks=1 $(ROOT)/build/test_service_switch_asan
+	touch $@
+
 unit-unlocked unit-host-unlocked: test-service-switch
 $(ROOT)/build/test_spelunkr_schedule: $(ROOT)/arm/misterplexd/spelunkr/video.hpp
+$(ROOT)/build/test_spelunkr_schedule: $(ROOT)/arm/misterplexd/spelunkr/backwhen.hpp
 $(ROOT)/build/test_airplay_advertise: $(ROOT)/tests/unit/test_airplay_advertise.cpp \
 		$(ROOT)/arm/misterplexd/gcast/airplay_fe.hpp
 	@mkdir -p $(ROOT)/build
@@ -6487,7 +7946,18 @@ arm-kmod:
 
 arm-plexd: arm-plexd-daemon arm-ddr-bench arm-plexd-tools
 
-arm-plexd-daemon: $(MPLEX_HDR) $(OWENB_RING_ARM_OBJS)
+ARM_BROWSE_OBJS := $(addprefix $(dir $(ARM_PLEXD_OUTPUT)),$(notdir $(ARM_BROWSE_SRC:.cpp=.o)))
+.PHONY: force-arm-browse
+force-arm-browse:
+
+$(ARM_BROWSE_OBJS): $(dir $(ARM_PLEXD_OUTPUT))%.o: $(ROOT)/host/libmisterplex/%.cpp $(BROWSE_SHELL_HDR) force-arm-browse
+	@if [ -z "$(ARM_CXX)" ]; then echo "No armhf g++ found"; exit 1; fi
+	@mkdir -p "$(dir $@)"
+	$(ARM_CXX) -std=c++17 -Wall -static -ffile-prefix-map=$(ROOT)=. -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 $(MPLEX_INC) $(MPX_GIT_DEFINE) -DMPX_HAVE_LIBAV $(ARM_FFMPEG_CFLAGS) \
+		$(OWENB_DAEMON_FLAGS) -DMPX_FPGA_AV_TRACE=$(ARM_PLEXD_AV_TRACE) $(ARM_AIRPLAY_FLAGS) $(ARM_SERVICE_FLAGS) \
+		$(ARM_BROWSE_FLAGS) -c -o "$@" "$<"
+
+arm-plexd-daemon: $(MPLEX_HDR) $(OWENB_RING_ARM_OBJS) $(ARM_BROWSE_OBJS)
 	@if [ -z "$(ARM_CXX)" ]; then echo "No armhf g++ found"; exit 1; fi
 	@mkdir -p "$(dir $(ARM_PLEXD_OUTPUT))"
 ifneq ($(MPX_LIBAV_HAVE),)
@@ -6500,7 +7970,7 @@ ifeq ($(ARM_PLEXD_AIRPLAY),1)
 endif
 	$(ARM_CXX) -std=c++17 -O2 -Wall -static -ffile-prefix-map=$(ROOT)=. -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 $(MPLEX_INC) $(MPX_GIT_DEFINE) -DMPX_HAVE_LIBAV $(ARM_FFMPEG_CFLAGS) \
 		$(OWENB_DAEMON_FLAGS) -DMPX_FPGA_AV_TRACE=$(ARM_PLEXD_AV_TRACE) $(ARM_AIRPLAY_FLAGS) $(ARM_SERVICE_FLAGS) \
-		-o "$(ARM_PLEXD_OUTPUT)" $(MPLEX_SRC) \
+		-o "$(ARM_PLEXD_OUTPUT)" $(filter-out $(ARM_BROWSE_SRC),$(MPLEX_SRC)) $(ARM_BROWSE_OBJS) \
 		$(ROOT)/arm/misterplexd/av_inproc_decode.cpp $(ROOT)/arm/misterplexd/owenb_av_source.cpp \
 		$(filter-out %/theme_decode.cpp,$(OWENB_PLAY_SRCS)) $(OWENB_RING_ARM_OBJS) \
 		$(ARM_FFMPEG_LIBS) $(ARM_AIRPLAY_LIBS) \
@@ -6550,7 +8020,7 @@ $(ROOT)/build/arm/owenb_idle_card: $(ROOT)/tools/owenb_idle_card.cpp $(ROOT)/hos
 		$(OWENB_PLAY_SRCS) $(OWENB_RING_ARM_OBJS)
 	@if [ -z "$(ARM_CXX)" ]; then echo "No armhf g++ found"; exit 1; fi
 	@mkdir -p $(ROOT)/build/arm
-	$(ARM_CXX) -std=c++17 -O2 -Wall -static -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -DMPX_HAVE_OWENB_RING -I$(ROOT)/host \
+	$(ARM_CXX) -std=c++17 -O2 -Wall -static -ffile-prefix-map=$(ROOT)=. -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -DMPX_HAVE_OWENB_RING -I$(ROOT)/host \
 		$(OWENB_SESS_FLAGS) -o $@ $(ROOT)/tools/owenb_idle_card.cpp $(OWENB_PLAY_SRCS) $(OWENB_RING_ARM_OBJS) \
 		-Wl,--whole-archive -lpthread -Wl,--no-whole-archive
 	$(patsubst %g++,%strip,$(ARM_CXX)) --strip-debug $@
@@ -6996,13 +8466,23 @@ $(ROOT)/build/test_gcast_helper_pins_layout.ok: $(ROOT)/tests/unit/test_gcast_he
 	@mkdir -p $(ROOT)/build
 	bash $(ROOT)/tests/unit/test_gcast_helper_pins_layout.sh && touch $@
 
-# Hot deploys carry the on-card AirPlay helper (11-10: lab ran the 11-04 helper 01c7fce6 under 11-10 binaries, so
+# Hot deploys carry the on-card AirPlay helper (11-10: a lab MiSTer ran the 11-04 helper 01c7fce6 under 11-10 binaries, so
 # X/Twitter audio was re-encoded on the ARM): packaged bytes == tools/airplay, install/verify/rollback, mutants (11-10).
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_helper_card.ok
 $(ROOT)/build/test_airplay_helper_card.ok: $(ROOT)/tests/unit/test_airplay_helper_card.sh $(ROOT)/scripts/airplay_helper_card.sh \
 		$(ROOT)/scripts/package_release.sh $(ROOT)/tools/airplay/airplay_xcode.py
 	@mkdir -p $(ROOT)/build
 	bash $(ROOT)/tests/unit/test_airplay_helper_card.sh && touch $@
+
+# Bundled ARM ffmpeg 80baac9d aborts (rc 134) on SDT-bearing MPEG-TS unless the
+# AirPlay/gcast wrapper exports a GCONV_PATH stub (11-25).
+unit-unlocked unit-host-unlocked: $(ROOT)/build/test_airplay_gconv_stub.ok
+$(ROOT)/build/test_airplay_gconv_stub.ok: $(ROOT)/tests/unit/test_airplay_gconv_stub.sh \
+		$(ROOT)/tools/airplay/yt_standalone/run-airplay-xcode.sh \
+		$(ROOT)/tools/airplay/yt_standalone/run-gcast-xcode.sh \
+		$(ROOT)/arm/misterplexd/airplay/yt_live.hpp
+	@mkdir -p $(ROOT)/build
+	bash $(ROOT)/tests/unit/test_airplay_gconv_stub.sh && touch $@
 
 # stage_raster_conf.py accepts both base conf pins (933a4104, c891be93), synthetic bases only (10-24).
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_stage_raster_conf_pins.ok
@@ -7396,3 +8876,42 @@ $(addsuffix .check,$(UNIT_RUN_ASAN_BINS)): %.check: %
 	ASAN_OPTIONS=detect_leaks=1 $<
 	@touch $@
 unit-unlocked unit-host-unlocked: $(addsuffix .check,$(UNIT_RUN_ASAN_BINS))
+
+# browse-lane rev2 remote server-bounce harness (A/C/D must reach Libraries; MUT_BROWSE_NO_PROBE must bounce C/D)
+.PHONY: host-bounce-remote
+host-bounce-remote:
+	@mkdir -p build
+	$(CXX) -std=c++17 -O1 $(MPLEX_INC) -pthread -o build/harness_remote \
+		host/bounce-harness/harness_remote.cpp $(PLEXUI_SRC)
+	@for s in A B C D; do ./build/harness_remote $$s | tee build/RUN-remote-$$s.txt; \
+		grep -q REACHED-LIBRARIES build/RUN-remote-$$s.txt || { echo "scenario $$s failed"; exit 1; }; done
+	$(CXX) -std=c++17 -O1 -DMUT_BROWSE_NO_PROBE $(MPLEX_INC) -pthread -o build/harness_remote_mut \
+		host/bounce-harness/harness_remote.cpp $(PLEXUI_SRC)
+	@./build/harness_remote_mut C | tee build/MUT-remote-C.txt; \
+		grep -q BOUNCE-TO-SERVERS build/MUT-remote-C.txt || { echo "mutant C must bounce"; exit 1; }
+	@./build/harness_remote_mut D | tee build/MUT-remote-D.txt; \
+		grep -q BOUNCE-TO-SERVERS build/MUT-remote-D.txt || { echo "mutant D must bounce"; exit 1; }
+	@echo "host-bounce-remote: A/B/C/D Libraries + mutant C/D bounce OK"
+
+.PHONY: host-search-hubs
+host-search-hubs:
+	@mkdir -p build
+	$(CXX) -std=c++17 -O1 $(MPLEX_INC) -pthread -o build/harness_search \
+		host/bounce-harness/harness_search.cpp $(PLEXUI_SRC)
+	@./build/harness_search video | tee build/RUN-search-video.txt; \
+		grep -q REACHED-RESULTS build/RUN-search-video.txt || { echo "search video failed"; exit 1; }
+	@./build/harness_search metadata | tee build/RUN-search-metadata.txt; \
+		grep -q REACHED-RESULTS build/RUN-search-metadata.txt || { echo "search metadata failed"; exit 1; }
+	$(CXX) -std=c++17 -O1 -DMUT_BROWSE_NO_SEARCH_METADATA $(MPLEX_INC) -pthread -o build/harness_search_mut \
+		host/bounce-harness/harness_search.cpp $(PLEXUI_SRC)
+	@./build/harness_search_mut metadata | tee build/MUT-search-metadata.txt; \
+		grep -q EMPTY-RESULTS build/MUT-search-metadata.txt || { echo "mutant metadata must be EMPTY-RESULTS"; exit 1; }
+	@echo "host-search-hubs: video+metadata results, mutant metadata empty OK"
+
+# AirPlay /info (RTSP 200 + bplist) and DIAL YouTube start, ARM daemon under qemu-arm-static on the host.
+# Would have shown the a902f120 glass check-8 "/info 404" was the HTTP/1.1 probe form, not the build.
+.PHONY: host-airplay-dial-check
+HOST_AP_BIN ?= $(ROOT)/build/arm/misterplexd
+host-airplay-dial-check:
+	bash $(ROOT)/scripts/host_airplay_dial_check.sh $(HOST_AP_BIN)
+	bash $(ROOT)/scripts/host_airplay_dial_check.sh $(HOST_AP_BIN) --expect-fail

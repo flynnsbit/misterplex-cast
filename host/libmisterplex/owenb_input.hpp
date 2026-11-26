@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <functional>
 
 namespace misterplex::owenb {
 
@@ -161,6 +162,9 @@ public:
     // The input thread sets this from the play and the library page before each feed.
     // Keyboard P is Aux only while it is true and IDLE_MENU_KEY is on.
     void setReadyIdle(bool idle) { readyIdle_ = idle; }
+    void setTextKeyHandler(std::function<bool(unsigned, bool)> handler) {
+        textKeyHandler_ = std::move(handler);
+    }
     bool osdOpen() const { return osd_; }
     const ObInputStats& stats() const { return st_; }
 
@@ -172,6 +176,8 @@ private:
             ObNav nv{};
             const unsigned code = H264RING_EV_CODE(e);
             const bool ext = H264RING_EV_EXT(e) != 0;
+            if (H264RING_EV_PRESSED(e) && !osd_ && textKeyHandler_ && textKeyHandler_(code, ext))
+                return;
             const bool known = obNavForKey(code, ext, nv) || obIdleMenuKey(code, ext, nv, readyIdle_);
             if (H264RING_EV_PRESSED(e) && !known) {
                 ++st_.unmappedKeys;
@@ -235,6 +241,7 @@ private:
     uint32_t count_ = 0, pads_ = 0;
     int64_t nextRepeat_[16] = {};
     std::vector<ObNav> pending_;
+    std::function<bool(unsigned, bool)> textKeyHandler_;
     ObInputStats st_;
 };
 
