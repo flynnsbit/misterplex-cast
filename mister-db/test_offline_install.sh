@@ -101,7 +101,7 @@ chk "root MiSTerPlex.rbf moved aside" "[ ! -e '$FAT/MiSTerPlex.rbf' ] && ls '$FA
 chk "one core in _Utility" "[ -f '$FAT/_Utility/MiSTerPlex.rbf' ]"
 chk "CA bundle in linux/" "cmp -s '$FAT/misterplex/linux/misterplex-cacert.pem' '$FAT/linux/misterplex-cacert.pem'"
 chk "airplay helper in linux/ (MD5SUMS ok)" "(cd '$FAT/linux/airplay' && md5sum -c --quiet MD5SUMS)"
-chk "old gcast copy removed by manifest, user file kept" "[ ! -e '$FAT/linux/gcast/ffmpeg' ] && [ ! -e '$FAT/linux/gcast/.misterplex-files' ] && [ -f '$FAT/linux/gcast/my-notes.txt' ]"
+chk "gcast helper in linux/ (MD5SUMS ok), user file kept" "(cd '$FAT/linux/gcast' && md5sum -c --quiet MD5SUMS) && [ -f '$FAT/linux/gcast/my-notes.txt' ]"
 chk "old licenses/docs/scripts removed" "[ ! -e '$FAT/misterplex/licenses' ] && [ ! -e '$FAT/misterplex/docs' ] && [ ! -e '$FAT/misterplex/scripts' ]"
 chk "dropped bin helpers and LICENSE-Roboto removed" "[ ! -e '$FAT/misterplex/bin/misterplex_core_watch.sh' ] && [ ! -e '$FAT/misterplex/bin/misterplex_pair_conf.sh' ] && [ ! -e '$FAT/misterplex/bin/misterplex_named_rbf.sh' ] && [ ! -e '$FAT/misterplex/plexui/LICENSE-Roboto.txt' ]"
 chk "boot line added exactly once" "[ \$(grep -c 'misterplexd-boot-rc3.sh' '$FAT/linux/user-startup.sh') -eq 1 ]"
