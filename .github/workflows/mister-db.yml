@@ -19,12 +19,28 @@ permissions:
 
 jobs:
   validate:
+    # -dev often has no committed db/payload. hashFiles is not allowed in
+    # jobs.<id>.if (GitHub rejects the workflow and the run fails with 0 jobs),
+    # so gate later steps on a first-step file check instead.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check for committed db.json.zip
+        id: db
+        run: |
+          if test -f mister-db/db.json.zip; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip validate (no committed db)
+        if: steps.db.outputs.present != 'true'
+        run: echo "::notice::mister-db/db.json.zip is not in this tree; skipping validate and offline install."
       - name: Validate db.json.zip against payload/
+        if: steps.db.outputs.present == 'true'
         run: python3 mister-db/validate_db.py mister-db/db.json.zip mister-db/payload --db-id flynnsbit/misterplex
       - name: Offline install with the real Downloader
+        if: steps.db.outputs.present == 'true'
         run: |
           git clone -q https://github.com/MiSTer-devel/Downloader_MiSTer /tmp/Downloader_MiSTer
           git -C /tmp/Downloader_MiSTer checkout -q 5d0771359ae396aaea64453e6791ac87781d78f4

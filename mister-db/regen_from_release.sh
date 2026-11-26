@@ -28,7 +28,7 @@ import json, re, sys
 rel = json.load(open(sys.argv[1]))
 if rel["draft"]: sys.exit("release is a draft")
 a = {x["name"]: x["browser_download_url"] for x in rel["assets"]}
-pk = [n for n in a if re.fullmatch(r"misterplex-[^/]+\.tar\.gz", n)]
+pk = [n for n in a if re.fullmatch(r"misterplex-[^/]+\.tar\.gz", n) and not n.endswith("-source.tar.gz")]
 if len(pk) != 1 or "SHA256SUMS" not in a: sys.exit("release needs exactly one misterplex-*.tar.gz and a SHA256SUMS asset: %r" % sorted(a))
 print(pk[0], a[pk[0]]); print("SHA256SUMS", a["SHA256SUMS"])
 PY

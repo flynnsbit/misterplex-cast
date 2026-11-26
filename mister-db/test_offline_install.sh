@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # test_offline_install.sh - install the MisterPlex db into a throwaway fake SD card with the
 # real MiSTer Downloader, served from 127.0.0.1 (no device, no GitHub), then run
-# Scripts/misterplex_setup.sh against that card (ROOT=<fake>) and check the result.
+# Scripts/configure-misterplex.sh setup against that card (ROOT=<fake>) and check the result.
 #
 # DEBUG=true is what lets Downloader accept a base_path outside /media (as downloader_test.py does).
 # usage: test_offline_install.sh DOWNLOADER_SRC_DIR [YTDLP_ZIP]
@@ -51,6 +51,14 @@ FAT="$T/root/media/fat"
 printf 'FRIENDLY_NAME=keep-me\nOVERSCAN=7\n' > "$FAT/linux/misterplex.conf"
 printf '#!/bin/sh\n# user line\n' > "$FAT/linux/user-startup.sh"
 mkdir -p "$FAT/_Utility"; echo old > "$FAT/_Utility/PlexOB.rbf"; echo old > "$FAT/PlexOB.rbf"; echo old > "$FAT/MiSTerPlex.rbf"
+# Leftovers of a v1.0.0 package install that the runtime set no longer ships.
+M0="$FAT/misterplex"; mkdir -p "$M0/licenses/ffmpeg" "$M0/docs" "$M0/scripts" "$M0/bin" "$M0/plexui" "$FAT/linux/gcast"
+echo x > "$M0/licenses/ffmpeg/COPYING.LGPLv2.1"; echo x > "$M0/docs/INSTALL.txt"; echo x > "$M0/scripts/plex_menu.sh"
+for b in misterplex_core_watch.sh misterplex_pair_conf.sh misterplex_named_rbf.sh; do echo x > "$M0/bin/$b"; done
+echo x > "$M0/plexui/LICENSE-Roboto.txt"
+for g in gcast_xcode.py run-gcast-xcode.sh ffmpeg ffprobe MD5SUMS; do echo x > "$FAT/linux/gcast/$g"; done
+printf 'f gcast_xcode.py\nf run-gcast-xcode.sh\nf ffmpeg\nf ffprobe\nf MD5SUMS\n' > "$FAT/linux/gcast/.misterplex-files"
+echo mine > "$FAT/linux/gcast/my-notes.txt"
 DB_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["db_id"])' "$T/www/db.json")
 cat > "$T/downloader.ini" <<INI
 [mister]
@@ -82,8 +90,8 @@ print("downloader tree:", "OK" if not bad else "FAIL", len(db["files"]), "files 
 sys.exit(1 if bad else 0)
 PY
 # Post-install step, exactly as a user runs it, against the fake card.
-ROOT="$T/root" sh "$FAT/Scripts/misterplex_setup.sh" > "$T/setup.log" 2>&1 || { cat "$T/setup.log"; echo "test: setup failed" >&2; exit 1; }
-ROOT="$T/root" sh "$FAT/Scripts/misterplex_setup.sh" > "$T/setup2.log" 2>&1 || { cat "$T/setup2.log"; echo "test: setup re-run failed" >&2; exit 1; }
+ROOT="$T/root" bash "$FAT/Scripts/configure-misterplex.sh" setup > "$T/setup.log" 2>&1 || { cat "$T/setup.log"; echo "test: setup failed" >&2; exit 1; }
+ROOT="$T/root" bash "$FAT/Scripts/configure-misterplex.sh" setup > "$T/setup2.log" 2>&1 || { cat "$T/setup2.log"; echo "test: setup re-run failed" >&2; exit 1; }
 cat "$T/setup.log"
 fail=0
 chk() { if eval "$2"; then echo "  ok   $1"; else echo "  FAIL $1"; fail=1; fi; }
@@ -92,10 +100,13 @@ chk "PlexOB.rbf removed (_Utility and root)" "[ ! -e '$FAT/_Utility/PlexOB.rbf' 
 chk "root MiSTerPlex.rbf moved aside" "[ ! -e '$FAT/MiSTerPlex.rbf' ] && ls '$FAT/misterplex/backup/'MiSTerPlex.rbf.root.* >/dev/null 2>&1"
 chk "one core in _Utility" "[ -f '$FAT/_Utility/MiSTerPlex.rbf' ]"
 chk "CA bundle in linux/" "cmp -s '$FAT/misterplex/linux/misterplex-cacert.pem' '$FAT/linux/misterplex-cacert.pem'"
-chk "gcast + airplay helpers in linux/ (MD5SUMS ok)" "(cd '$FAT/linux/gcast' && md5sum -c --quiet MD5SUMS) && (cd '$FAT/linux/airplay' && md5sum -c --quiet MD5SUMS)"
+chk "airplay helper in linux/ (MD5SUMS ok)" "(cd '$FAT/linux/airplay' && md5sum -c --quiet MD5SUMS)"
+chk "old gcast copy removed by manifest, user file kept" "[ ! -e '$FAT/linux/gcast/ffmpeg' ] && [ ! -e '$FAT/linux/gcast/.misterplex-files' ] && [ -f '$FAT/linux/gcast/my-notes.txt' ]"
+chk "old licenses/docs/scripts removed" "[ ! -e '$FAT/misterplex/licenses' ] && [ ! -e '$FAT/misterplex/docs' ] && [ ! -e '$FAT/misterplex/scripts' ]"
+chk "dropped bin helpers and LICENSE-Roboto removed" "[ ! -e '$FAT/misterplex/bin/misterplex_core_watch.sh' ] && [ ! -e '$FAT/misterplex/bin/misterplex_pair_conf.sh' ] && [ ! -e '$FAT/misterplex/bin/misterplex_named_rbf.sh' ] && [ ! -e '$FAT/misterplex/plexui/LICENSE-Roboto.txt' ]"
 chk "boot line added exactly once" "[ \$(grep -c 'misterplexd-boot-rc3.sh' '$FAT/linux/user-startup.sh') -eq 1 ]"
 chk "user line in user-startup.sh kept" "grep -q '# user line' '$FAT/linux/user-startup.sh'"
-rm "$FAT/linux/misterplex.conf"; ROOT="$T/root" sh "$FAT/Scripts/misterplex_setup.sh" >/dev/null 2>&1
+rm "$FAT/linux/misterplex.conf"; ROOT="$T/root" bash "$FAT/Scripts/configure-misterplex.sh" setup >/dev/null 2>&1
 chk "fresh card: conf created from example" "cmp -s '$FAT/misterplex/conf/misterplex.conf.example' '$FAT/linux/misterplex.conf'"
 echo "--- user-startup.sh"; cat "$FAT/linux/user-startup.sh"
 [[ $fail = 0 ]] && echo "test_offline_install: PASS" || { echo "test_offline_install: FAIL"; exit 1; }

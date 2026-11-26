@@ -21,16 +21,16 @@ next to `downloader.ini`. That is a drop-in database.
 Then:
 
 1. Run **update_all** (or **downloader**) as usual. It installs the files listed below.
-2. Run **Scripts > misterplex_setup** once. Run it again after any update_all that changes MisterPlex.
+2. Run **Scripts > configure-misterplex** once: the first run finishes the install by itself (same steps as **Repair / Reinstall**). Choose Repair / Reinstall after any update_all that changes MisterPlex. The same menu has Settings, Restart MisterPlex, Repair / Reinstall and Uninstall. Switching between Plex and Live TV is done from the core OSD Service switch, not from Scripts.
    Downloader cannot do the steps this script does (see "What the db cannot do").
 3. Reboot, then load **MiSTerPlex** from `_Utility`. Link it at https://plex.tv/link with the code on the Ready screen.
 
-If you use Downloader download filters, keep MisterPlex in them, for example `filter = [mister] misterplex misterplexsetup`
+If you use Downloader download filters, keep MisterPlex in them, for example `filter = [mister] misterplex configuremisterplex`
 in the `[flynnsbit/misterplex]` section.
 
 ## What it installs
 
-Only runtime files from the **newest published GitHub release** of flynnsbit/misterplex-cast
+Exactly 28 runtime files (`validate_db.py` REQUIRED; same set as `packaging/runtime-files.txt`) from the **newest published GitHub release** of flynnsbit/misterplex-cast
 (the release package `misterplex-<tag>.tar.gz`, checked against the release `SHA256SUMS`).
 The paths are the same ones `scripts/install-misterplex.sh` writes. Docs, licences, LICENSE/NOTICE
 and release notes are not put on the MiSTer; they stay in the release package and the repo.
@@ -41,19 +41,22 @@ and release notes are not put on the MiSTer; they stay in the release package an
 | `_Utility/MiSTerPlex.rbf` | the core from the release, exactly one copy |
 | `misterplex/bin/` | `misterplexd`, `misterplexd-spelunkr`, the boot hook `misterplexd-boot-rc3.sh` and the other package `bin/` scripts |
 | `misterplex/bin/yt-dlp_linux_armv7l.zip` | yt-dlp, fetched from the upstream yt-dlp release when the bytes match (`external_files.csv`) |
-| `misterplex/scripts/`, `misterplex/plexui/`, `misterplex/conf/misterplex.conf.example` | package scripts, Plex UI fonts, default settings |
+| `misterplex/plexui/Roboto-{Regular,Bold}.ttf`, `misterplex/plexui/misterplex-ad-break.jpg`, `misterplex/conf/misterplex.conf.example` | Plex UI fonts, Pluto ad-break stand-by card, default settings |
 | `misterplex/yt_warm_helper.py` | casting warm helper |
 | `misterplex/cores/MiSTerPlex.rbf.md5` | the release md5 slot; the boot hook checks it before it retires `PlexOB.rbf` |
-| `misterplex/linux/...` | CA bundle and the AirPlay / Cast helpers, staged for `misterplex_setup.sh` |
-| `Scripts/misterplex_setup.sh` | the post-install step |
+| `misterplex/linux/...` | CA bundle and the AirPlay / Cast helpers, staged for the setup step in `Scripts/configure-misterplex.sh` |
+| `Scripts/configure-misterplex.sh` | the one MisterPlex Scripts entry (menu; setup = first run / Repair) |
 
-## What the db cannot do (done by `Scripts/misterplex_setup.sh`)
+## What the db cannot do (done by the setup step in `Scripts/configure-misterplex.sh`)
 
 Downloader refuses any path under `linux/` and never runs scripts. So the setup script does these steps,
 the same way `install-misterplex.sh` does them. It is idempotent.
 
-- Copies `linux/misterplex-cacert.pem`, `linux/airplay/` and `linux/gcast/` into place, checks their MD5SUMS,
-  and writes the `.misterplex-files` manifests that `uninstall-misterplex.sh` uses.
+- Copies `linux/misterplex-cacert.pem` and `linux/airplay/` into place, checks the MD5SUMS,
+  and writes the `.misterplex-files` manifest that `uninstall-misterplex.sh` uses.
+- Removes what older installs left that the runtime set no longer ships: `misterplex/licenses/`, `docs/`,
+  `scripts/`, `bin/misterplex_core_watch.sh` and its two libraries, `plexui/LICENSE-Roboto.txt`, and the old
+  `linux/gcast/` copy (only the files its manifest lists). The conf is never touched.
 - Creates `linux/misterplex.conf` from the example **only if it is missing**. An existing conf, including
   OVERSCAN, FRIENDLY_NAME and every other setting, is never touched.
 - Adds the one boot line to `linux/user-startup.sh` through `misterplexd-boot-rc3.sh install`. It never adds it twice.

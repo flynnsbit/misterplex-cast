@@ -12,26 +12,41 @@ external files carry an https url, and the MisterPlex install set is complete.
 """
 import argparse, hashlib, io, json, os, sys, urllib.request, zipfile
 
+# The MiSTer runtime set: exactly these 28 required files (owner rule 2026-11-15: nothing extra), plus optional ones
+# (yt-dlp zip may be omitted from the runtime tarball; the db can fetch the pinned upstream copy).
+# N14 ad-break card + owenb_idle_card (cold-boot 1121) are both required.
 REQUIRED = [
+    "Scripts/configure-misterplex.sh",
     "_Utility/MiSTerPlex.rbf",
     "misterplex/cores/MiSTerPlex.rbf.md5",
     "misterplex/bin/misterplexd",
     "misterplex/bin/misterplexd-spelunkr",
     "misterplex/bin/misterplexd-boot-rc3.sh",
     "misterplex/bin/misterplexd_supervise.sh",
+    "misterplex/bin/misterplexd_update_watch.sh",
+    "misterplex/bin/misterplex_cast_ready.sh",
     "misterplex/bin/misterplex_mode.sh",
-    "misterplex/bin/configure-misterplex.sh",
-    "misterplex/bin/uninstall-misterplex.sh",
-    "misterplex/bin/yt-dlp_linux_armv7l.zip",
+    "misterplex/bin/update_ytdlp.sh",
     "misterplex/conf/misterplex.conf.example",
-    "misterplex/yt_warm_helper.py",
     "misterplex/plexui/Roboto-Regular.ttf",
+    "misterplex/plexui/Roboto-Bold.ttf",
+    "misterplex/plexui/misterplex-ad-break.jpg",
+    "misterplex/yt_warm_helper.py",
     "misterplex/linux/misterplex-cacert.pem",
-    "misterplex/linux/gcast/gcast_xcode.py",
-    "misterplex/linux/gcast/ffmpeg",
     "misterplex/linux/airplay/airplay_xcode.py",
-    "Scripts/misterplex_setup.sh",
+    "misterplex/linux/airplay/run-airplay-xcode.sh",
+    "misterplex/linux/airplay/ffmpeg",
+    "misterplex/linux/airplay/ffprobe",
+    "misterplex/linux/airplay/MD5SUMS",
+    "misterplex/linux/gcast/gcast_xcode.py",
+    "misterplex/linux/gcast/run-gcast-xcode.sh",
+    "misterplex/linux/gcast/ffmpeg",
+    "misterplex/linux/gcast/ffprobe",
+    "misterplex/linux/gcast/MD5SUMS",
+    "misterplex/bin/owenb_idle_card",
 ]
+OPTIONAL = ["misterplex/bin/yt-dlp_linux_armv7l.zip"]
+assert len(REQUIRED) == 28 and len(set(REQUIRED)) == 28
 FORBIDDEN_ROOTS = {"linux", "screenshots", "savestates", "downloader", "saves"}
 FORBIDDEN_FILES = {"mister", "menu.rbf", "mister.ini", "mister_alt.ini", "mister_alt_1.ini", "mister_alt_2.ini",
                    "mister_alt_3.ini", "mister.new", "downloader.ini", "downloader.sh"}
@@ -90,6 +105,8 @@ def main():
         if parent and parent.rstrip("/") not in {f.rstrip("/") for f in folders}: err("%s: parent folder not listed" % p)
     for r in REQUIRED:
         if r not in files: err("install set incomplete: %s not in db" % r)
+    for p in sorted(set(files) - set(REQUIRED) - set(OPTIONAL)):
+        err("not in the MiSTer runtime set: %s" % p)
     if a.payload:
         on_disk = set()
         for root, _, names in os.walk(a.payload):

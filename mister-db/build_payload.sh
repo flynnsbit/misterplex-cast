@@ -7,7 +7,7 @@
 #
 # Output mirrors the SD card root (/media/fat) at the paths install-misterplex.sh writes:
 #   _Utility/MiSTerPlex.rbf                  the core (exactly one copy)
-#   misterplex/{bin,scripts,plexui,conf}/   program, scripts, fonts, default conf
+#   misterplex/{bin,plexui,conf}/           program, boot scripts, fonts, default conf (no scripts/)
 #   misterplex/yt_warm_helper.py             casting warm helper
 #   misterplex/cores/MiSTerPlex.rbf.md5      the release md5 slot (the boot hook checks it
 #                                            before it retires PlexOB.rbf)
@@ -15,8 +15,10 @@
 # installed on the MiSTer (they stay in the release package and the repo).
 #   misterplex/linux/...                     files that belong in /media/fat/linux. Downloader
 #                                            refuses any path under linux/, so they are staged
-#                                            here and Scripts/misterplex_setup.sh copies them.
-#   Scripts/misterplex_setup.sh              the post-install step
+#                                            here and Scripts/configure-misterplex.sh copies them
+#                                            (first run, or Repair / Reinstall).
+#   Scripts/configure-misterplex.sh          the one Scripts menu entry: Settings, Restart,
+#                                            Repair / Reinstall (= setup), Uninstall
 # A file listed in external_files.csv with the same md5 is fetched from that URL instead of
 # being hosted here; a listed file whose md5 differs is hosted here and its row is dropped.
 #
@@ -43,32 +45,68 @@ cmp -s "$STAGE/bin/misterplexd" "$STAGE/bin/misterplexd-spelunkr" && die "mister
 case "$OUT" in ''|/|"$HOME") die "refusing --out $OUT" ;; esac
 
 rm -rf -- "$OUT"
-mkdir -p "$OUT/_Utility" "$OUT/misterplex/cores" "$OUT/misterplex/linux" "$OUT/Scripts"
-# exFAT has no modes/owners: plain copies (no -a/-p), symlinks resolved (-L).
-cp "$STAGE/cores/MiSTerPlex.rbf" "$OUT/_Utility/MiSTerPlex.rbf"
-cp "$STAGE/cores/MiSTerPlex.rbf.md5" "$OUT/misterplex/cores/MiSTerPlex.rbf.md5"
-# install-misterplex.sh step 2 (runtime folders only): /media/fat/misterplex/<d>/
-for d in bin scripts plexui conf; do
-  [[ -d "$STAGE/$d" ]] && { mkdir -p "$OUT/misterplex/$d"; cp -RL "$STAGE/$d/." "$OUT/misterplex/$d/"; }
-done
-# ... and these root-level / scripts/ helpers are also copied into bin/
-for f in install-misterplex.sh configure-misterplex.sh misterplex_mode.sh misterplex_restart_manual.sh misterplex_plex.sh misterplex_spelunkr.sh; do
-  for src in "$STAGE/$f" "$STAGE/scripts/$f"; do
-    [[ -f "$src" ]] && { cp "$src" "$OUT/misterplex/bin/$f"; break; }
-  done
-done
-# step 5: warm helper into the misterplex root
-[[ -f "$STAGE/linux/misterplex/yt_warm_helper.py" ]] && cp "$STAGE/linux/misterplex/yt_warm_helper.py" "$OUT/misterplex/yt_warm_helper.py"
-# step 5: /media/fat/linux files, staged for misterplex_setup.sh (downloader cannot write linux/)
-[[ -f "$STAGE/linux/misterplex-cacert.pem" ]] && cp "$STAGE/linux/misterplex-cacert.pem" "$OUT/misterplex/linux/misterplex-cacert.pem"
-for h in airplay gcast; do
-  [[ -d "$STAGE/linux/$h" ]] || continue
-  mkdir -p "$OUT/misterplex/linux/$h"; cp -RL "$STAGE/linux/$h/." "$OUT/misterplex/linux/$h/"
-  if [[ -f "$OUT/misterplex/linux/$h/MD5SUMS" ]]; then
-    (cd "$OUT/misterplex/linux/$h" && md5sum -c --quiet MD5SUMS) || die "linux/$h MD5SUMS check failed"
+# The db installs exactly the MiSTer runtime set (28 required files: N14 ad-break
+# card + owenb_idle_card, plus optional yt-dlp zip).
+# Same set as packaging/runtime-files.txt (tests/unit/test_runtime_set_db_mirror.sh checks it).
+# @menu: the package's Scripts/configure-misterplex.sh; a package older than the one-menu change
+# (v1.0.0) has none, so the repo copy next to this script is used.
+# "<db path> <package path>[|<fallback package path>]"; "?" before the db path = optional.
+RUNTIME_SET='
+Scripts/configure-misterplex.sh               @menu
+_Utility/MiSTerPlex.rbf                       cores/MiSTerPlex.rbf
+misterplex/cores/MiSTerPlex.rbf.md5           cores/MiSTerPlex.rbf.md5
+misterplex/bin/misterplexd                    bin/misterplexd
+misterplex/bin/misterplexd-spelunkr           bin/misterplexd-spelunkr
+misterplex/bin/misterplexd-boot-rc3.sh        bin/misterplexd-boot-rc3.sh
+misterplex/bin/misterplexd_supervise.sh       bin/misterplexd_supervise.sh
+misterplex/bin/misterplexd_update_watch.sh    bin/misterplexd_update_watch.sh
+misterplex/bin/misterplex_cast_ready.sh       bin/misterplex_cast_ready.sh
+misterplex/bin/misterplex_mode.sh             bin/misterplex_mode.sh
+misterplex/bin/update_ytdlp.sh                bin/update_ytdlp.sh
+?misterplex/bin/yt-dlp_linux_armv7l.zip       bin/yt-dlp_linux_armv7l.zip
+misterplex/bin/owenb_idle_card                bin/owenb_idle_card
+misterplex/conf/misterplex.conf.example       conf/misterplex.conf.example
+misterplex/plexui/Roboto-Regular.ttf          plexui/Roboto-Regular.ttf
+misterplex/plexui/Roboto-Bold.ttf             plexui/Roboto-Bold.ttf
+misterplex/plexui/misterplex-ad-break.jpg     plexui/misterplex-ad-break.jpg
+misterplex/yt_warm_helper.py                  linux/misterplex/yt_warm_helper.py
+misterplex/linux/misterplex-cacert.pem        linux/misterplex-cacert.pem
+misterplex/linux/airplay/airplay_xcode.py     linux/airplay/airplay_xcode.py
+misterplex/linux/airplay/run-airplay-xcode.sh linux/airplay/run-airplay-xcode.sh
+misterplex/linux/airplay/ffmpeg               linux/airplay/ffmpeg
+misterplex/linux/airplay/ffprobe              linux/airplay/ffprobe
+misterplex/linux/airplay/MD5SUMS              linux/airplay/MD5SUMS
+misterplex/linux/gcast/gcast_xcode.py         linux/gcast/gcast_xcode.py
+misterplex/linux/gcast/run-gcast-xcode.sh     linux/gcast/run-gcast-xcode.sh
+misterplex/linux/gcast/ffmpeg                 linux/gcast/ffmpeg
+misterplex/linux/gcast/ffprobe                linux/gcast/ffprobe
+misterplex/linux/gcast/MD5SUMS                linux/gcast/MD5SUMS
+'
+mkdir -p "$OUT"
+n_req=0
+while read -r dbp srcs; do
+  [[ -n "$dbp" ]] || continue
+  opt=0; [[ "$dbp" == \?* ]] && { opt=1; dbp=${dbp#\?}; }
+  [[ "$opt" = 1 ]] || n_req=$((n_req + 1))
+  src=""
+  if [[ "$srcs" == @menu ]]; then
+    src="$STAGE/Scripts/configure-misterplex.sh"
+    [[ -f "$src" ]] || { src="$HERE/../packaging/Scripts/configure-misterplex.sh"; echo "build_payload: package has no Scripts/configure-misterplex.sh; using the repo copy"; }
+  else
+    IFS='|' read -r -a cands <<<"$srcs"
+    for c in "${cands[@]}"; do [[ -f "$STAGE/$c" ]] && { src="$STAGE/$c"; break; }; done
   fi
-done
-cp "$HERE/misterplex_setup.sh" "$OUT/Scripts/misterplex_setup.sh"
+  if [[ -z "$src" ]]; then
+    [[ "$opt" = 1 ]] && continue
+    die "runtime file $dbp: none of $srcs is in the package"
+  fi
+  mkdir -p "$OUT/$(dirname "$dbp")"
+  # exFAT has no modes/owners: plain copies (no -a/-p), symlinks resolved.
+  cp -L "$src" "$OUT/$dbp"
+done <<<"$RUNTIME_SET"
+[[ "$n_req" = 28 ]] || die "runtime set lists $n_req required files, expected 28"
+(cd "$OUT/misterplex/linux/airplay" && md5sum -c --quiet MD5SUMS) || die "linux/airplay MD5SUMS check failed"
+(cd "$OUT/misterplex/linux/gcast" && md5sum -c --quiet MD5SUMS) || die "linux/gcast MD5SUMS check failed"
 # Runtime only: no licence / notice / readme / release-notes files anywhere on the card.
 find "$OUT" -type f \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'NOTICE*' -o -iname 'README*' -o -iname 'RELEASE-NOTES*' -o -iname 'PROVENANCE*' \) -delete
 # External files: host upstream when the bytes match, else host the release copy here.
