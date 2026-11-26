@@ -29,6 +29,57 @@ fi
 [ -x "$ROOT/bin/qjs" ] && export AIRPLAY_YT_JS="${AIRPLAY_YT_JS:-${GCAST_YT_JS:-$ROOT/bin/qjs}}"
 [ -x "$ROOT/bin/node" ] && export AIRPLAY_YT_JS="${AIRPLAY_YT_JS:-${GCAST_YT_JS:-$ROOT/bin/node}}"
 [ -n "${AIRPLAY_YT_JS:-}" ] && export GCAST_YT_JS="${GCAST_YT_JS:-$AIRPLAY_YT_JS}"
+# Same DVB SDT charset aliases as kGconvStubModules in
+# arm/misterplexd/airplay/yt_live.hpp:520-546. Write atomically so a
+# concurrent helper start cannot observe a partial gconv-modules file.
+# MPX_GCONV_STUB_DIR overrides the directory; "off" disables the stub.
+gconv_stub="${MPX_GCONV_STUB_DIR:-/tmp/mpx-gconv-stub}"
+if [ "$gconv_stub" != "off" ]; then
+  case "$gconv_stub" in
+    /*)
+      if mkdir -p "$gconv_stub" 2>/dev/null; then
+        gconv_tmp="$gconv_stub/.gconv-modules.$$"
+        if cat > "$gconv_tmp" <<'GCONV_EOF'
+# MisterPlex: route DVB SDT string charsets to the built-in ASCII converter (no gconv dlopen; see yt_live.hpp)
+alias	ISO6937//	ANSI_X3.4-1968//
+alias	ISO-6937//	ANSI_X3.4-1968//
+alias	ISO_6937//	ANSI_X3.4-1968//
+alias	ISO6937-2//	ANSI_X3.4-1968//
+alias	ISO-6937-2//	ANSI_X3.4-1968//
+alias	ISO_6937-2//	ANSI_X3.4-1968//
+alias	UTF-16BE//	ANSI_X3.4-1968//
+alias	UTF-16//	ANSI_X3.4-1968//
+alias	GB2312//	ANSI_X3.4-1968//
+alias	BIG5//	ANSI_X3.4-1968//
+alias	EUC-KR//	ANSI_X3.4-1968//
+alias	ISO-8859-1//	ANSI_X3.4-1968//
+alias	ISO-8859-2//	ANSI_X3.4-1968//
+alias	ISO-8859-3//	ANSI_X3.4-1968//
+alias	ISO-8859-4//	ANSI_X3.4-1968//
+alias	ISO-8859-5//	ANSI_X3.4-1968//
+alias	ISO-8859-6//	ANSI_X3.4-1968//
+alias	ISO-8859-7//	ANSI_X3.4-1968//
+alias	ISO-8859-8//	ANSI_X3.4-1968//
+alias	ISO-8859-9//	ANSI_X3.4-1968//
+alias	ISO-8859-10//	ANSI_X3.4-1968//
+alias	ISO-8859-11//	ANSI_X3.4-1968//
+alias	ISO-8859-13//	ANSI_X3.4-1968//
+alias	ISO-8859-14//	ANSI_X3.4-1968//
+alias	ISO-8859-15//	ANSI_X3.4-1968//
+GCONV_EOF
+        then
+          if mv -f "$gconv_tmp" "$gconv_stub/gconv-modules"; then
+            export GCONV_PATH="$gconv_stub"
+          else
+            rm -f "$gconv_tmp"
+          fi
+        else
+          rm -f "$gconv_tmp"
+        fi
+      fi
+      ;;
+  esac
+fi
 if [ -f "$ROOT/airplay_xcode.py" ]; then
   exec python3 "$ROOT/airplay_xcode.py" "$@"
 fi

@@ -21,6 +21,11 @@
 #                       already-installed version check.
 #   (Set both pins: a SHA pin alone still follows latest and fails closed on
 #   every new upstream release. LOCAL_ZIP is checked only with LOCAL_SUMS or a pin.)
+#   YTDLP_IF_OLDER=1    With YTDLP_LOCAL_ZIP (install / Repair): install the zip only when
+#                       the card has no yt-dlp, one whose version cannot be read, or an
+#                       older version. A matching copy (same zip md5, recorded in
+#                       DEST/.misterplex-zip.md5, or the same version) or a newer one
+#                       (a daily self-update) stays put. Versions are YYYY.MM.DD[.N].
 #   YTDLP_PIN_SHA256    OPT-IN (default off). Exact 64-hex SHA-256 of the zip;
 #                       mismatch or a malformed value exits nonzero without
 #                       installing. Checked in addition to SHA2-256SUMS, and
@@ -250,6 +255,41 @@ EOF
   echo "update_ytdlp: installed $DEST"
 }
 
+ZIP_MARK="$DEST/.misterplex-zip.md5"
+ver_of() { # ver_of LAUNCHER: first line of --version, empty when it does not run
+  "$1" --cache-dir "${MPX_YT_CACHE_DIR:-${YT_CACHE_DIR:-/media/fat/misterplex/yt-cache}}" --version 2>/dev/null | head -n 1 || true
+}
+ver_ok() { case "$1" in [0-9]*.[0-9]*.[0-9]*) case "$1" in *[!0-9.]*) return 1 ;; esac; return 0 ;; esac; return 1; }
+ver_ge() { # ver_ge A B: A >= B for YYYY.MM.DD[.N] (busybox sort has no -V)
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1)" = "$1" ]
+}
+if [ "${YTDLP_IF_OLDER:-0}" = 1 ] && [ -n "${YTDLP_LOCAL_ZIP:-}" ] && [ -f "$YTDLP_LOCAL_ZIP" ] && [ -f "$DEST/yt-dlp" ]; then
+  zmd5=$(md5sum "$YTDLP_LOCAL_ZIP" | awk '{ print $1 }')
+  if [ -f "$ZIP_MARK" ] && [ "$(cat "$ZIP_MARK" 2>/dev/null)" = "$zmd5" ]; then
+    echo "update_ytdlp: shipped yt-dlp already installed (zip md5 match)"
+    exit 0
+  fi
+  have=$(ver_of "$DEST/yt-dlp")
+  # The shipped version: unpack into RAM (/tmp), not the SD card, and ask it.
+  probe=$(mktemp -d "${TMPDIR:-/tmp}/yt-dlp-probe.XXXXXX")
+  want=""
+  if unzip -o -q "$YTDLP_LOCAL_ZIP" -d "$probe" 2>/dev/null; then
+    pbin=$(find "$probe" -type f -name 'yt-dlp_linux_armv7l' | head -n 1)
+    if [ -n "$pbin" ]; then chmod 755 "$pbin" 2>/dev/null || true; want=$(ver_of "$pbin"); fi
+  fi
+  rm -rf "$probe"
+  if ver_ok "$have" && ! ver_ok "$want"; then
+    echo "update_ytdlp: kept card yt-dlp $have (shipped zip version unreadable)"
+    exit 0
+  fi
+  if ver_ok "$have" && ver_ge "$have" "$want"; then
+    [ "$have" != "$want" ] || echo "$zmd5" > "$ZIP_MARK"
+    echo "update_ytdlp: kept card yt-dlp $have (shipped $want)"
+    exit 0
+  fi
+  echo "update_ytdlp: replacing card yt-dlp ${have:-(unreadable)} with shipped ${want:-?}"
+fi
+
 if [ -z "${YTDLP_LOCAL_ZIP:-}" ] && [ -x "$DEST/yt-dlp" ]; then
   if [ -n "${YTDLP_PIN_VERSION:-}" ]; then
     tag="$YTDLP_PIN_VERSION"
@@ -278,6 +318,8 @@ if [ -n "${YTDLP_LOCAL_ZIP:-}" ]; then
   fi
   check_pin_sha256 "$YTDLP_LOCAL_ZIP"
   install_tree "$YTDLP_LOCAL_ZIP"
+  # Which zip this tree came from, so install / Repair can keep a matching copy cheaply.
+  md5sum "$YTDLP_LOCAL_ZIP" | awk '{ print $1 }' > "$ZIP_MARK" || true
   exit 0
 fi
 

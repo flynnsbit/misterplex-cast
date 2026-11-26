@@ -17,13 +17,20 @@ GCAST_XCODE and other GCAST_* environment names are read-compat aliases for AIRP
   GET /yt.ts?v=<videoId>[&start_ms=]   YouTube: yt-dlp resolves avc1<=720p30 + m4a, pipes yt-dlp -o - into
       ffmpeg copy-remux (no re-encode). On 403/empty, cache invalidated for next play. Works standalone
       under /media/fat/misterplex/. Set AIRPLAY_XCODE (or the compat alias GCAST_XCODE) to use a helper on a computer instead.
+  GET /refresh?src=<url>[&hdr=]        A held play of the same stream (stream_identity) now has this signed URL. Stored only,
+      no fetch. The trust of /ladder.ts (LAN_AUTH when on). Body "ok refresh" when the running ffmpeg reloads under it
+      (live); "vod ttl=N" / "cookie ttl=N" when it cannot (N: seconds left on what it reads, or none); "none ttl=none"
+      for a stream with no live entry (no /admit or /ladder.ts of it): never creates one.
+  GET /hls/<key>/media.m3u8|audio.m3u8 Loopback only (the helper's own ffmpeg). An HLS remux reads its media playlist here,
+      fetched from the origin under the newest signature with every URI made absolute (see live_register). A source that
+      sets a cookie is read directly instead.
 Only http(s) or yt:<11-char id> src is accepted; at most MAX_JOBS ffmpeg run at once (oldest killed).
 Time to first byte: /admit, /probe and /ladder.ts of one source share one HLS plan + probe (PLAN_TTL_S cache);
 a repeat /ladder.ts of the SAME stream (token path/query ignored, see stream_identity) adopts the running ffmpeg
 of an open its client dropped before the first byte (ADOPT_GRACE_S) instead of starting a second one.
 The on-card helper binds 127.0.0.1:18781. A computer helper uses --bind 0.0.0.0 --port 18780.
 """
-import argparse, base64, calendar, copy, hashlib, hmac, ipaddress, json, os, re, select, signal, socket, ssl, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request
+import argparse, base64, calendar, copy, hashlib, hmac, ipaddress, json, os, re, select, signal, socket, ssl, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def _env(primary, legacy=None, default=None):
@@ -1145,7 +1152,7 @@ def hls_playlist_url(src):
     path = urllib.parse.urlparse(src).path.lower()
     return path.endswith(".m3u8") or path.endswith(".m3u")
 
-def fetch_playlist(url, limit=2 * 1024 * 1024, timeout_s=15, headers=None):
+def _tls_ctx():
     ctx = ssl.create_default_context()
     ca = ca_env().get("SSL_CERT_FILE")
     if ca:
@@ -1153,11 +1160,21 @@ def fetch_playlist(url, limit=2 * 1024 * 1024, timeout_s=15, headers=None):
             ctx.load_verify_locations(ca)
         except Exception:  # noqa: BLE001
             pass
+    return ctx
+
+def _sets_cookie(resp):
+    return bool(resp.headers.get_all("Set-Cookie") or resp.headers.get_all("Set-Cookie2"))
+
+def fetch_playlist(url, limit=2 * 1024 * 1024, timeout_s=15, headers=None, meta=None):
+    """(text, final URL) or None. meta (a dict) gets cookie=True when the response sets one."""
+    ctx = _tls_ctx()
     try:
         req = urllib.request.Request(url, headers=_urllib_headers(headers))
         with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
             raw = resp.read(limit + 1)
             final = resp.geturl() or url
+            if meta is not None and _sets_cookie(resp):
+                meta["cookie"] = True
         # GCAST_MUT=hlsredir resolves relative variants against the pre-redirect URL.
         if _mut("hlsredir"):
             final = url
@@ -1232,7 +1249,7 @@ def build_cmd(ffmpeg, src, w, h, br, off_ms, remux, info, inputs=None, copy_audi
             # live) held the first byte for that whole window. VOD copy gets the same short analyze; it only
             # reads the PAT/PMT and the first GOP.
             cmd += LIVE_HLS_COPY_INPUT_OPTS
-            # 2026-11-18  lab device (EIO): a source whose audio starts more than ~1.5 s after its first video packet
+            # 2026-11-18 .110 (EIO): a source whose audio starts more than ~1.5 s after its first video packet
             # (DAI / SSAI live) never gets its AAC sample rate inside this window; the copy muxer then dies with
             # "sample rate not set" before the first byte. do_GET retries the SAME stream copy once with the full
             # default probe (fast=False) and remembers the stream (_slowstart_*). Never a transcode.
@@ -1336,7 +1353,7 @@ def _slowstart_remember(ident):
         _SLOWSTART[ident] = now + SLOWSTART_TTL_S
 
 # ---- Time to first byte (AirPlay video from a live HLS source) -------------------------------------------
-# 2026-11-18  lab device: /admit -> /probe -> /ladder.ts each re-fetched the master and re-ran ffprobe (~4 s), ffmpeg then
+# 2026-11-18 .110: /admit -> /probe -> /ladder.ts each re-fetched the master and re-ran ffprobe (~4 s), ffmpeg then
 # needed another ~6-7 s for its first byte, and the phone re-sent /play every 2-5 s; every new play dropped the open
 # in flight. The daemon now coalesces a repeat play of the same stream; this side (1) shares the plan + probe
 # between /admit, /probe and /ladder.ts and (2) lets a repeat /ladder.ts adopt the ffmpeg whose client went away
@@ -1387,7 +1404,7 @@ def plan_cache_get(key):
         _PLAN.pop(key, None)
     return None
 
-# v1.0.1 glass (device, 2026-11-23, reviewer N4 on 990b3122): the plan is keyed by stream identity (signature stripped)
+# v1.0.1 glass (device, 2026-11-23, FPGA Bug N4 on 990b3122): the plan is keyed by stream identity (signature stripped)
 # for PLAN_TTL_S, but its variant/audio URLs carry the FIRST play's signature. A Fox token that expired at 75 s gave
 # "plan cache hit /ladder.ts" -> ffmpeg "403 Forbidden" -> "open: Input/output error" x9 (78.7-88.2 s), even after a
 # fresh-URL replay at 70.1 s. Two guards: (1) a plan never outlives the earliest signed-URL expiry it carries
@@ -1530,6 +1547,7 @@ class LadderJob:
         self.claimed, self.sent, self.head, self.timer = True, 0, b"", None
         self.retried = False   # the fast-probe start already failed once and was redone with the full probe
         self.replanned = False # an upstream 403/410 before the first byte already dropped the plan and re-resolved
+        self.live_pin = None   # orphaned: the live key its ffmpeg pins (live_register), dropped when it is reaped
 
 LADDER = {}
 LADDER_MU = threading.Lock()
@@ -1606,6 +1624,9 @@ def _ladder_kill_later(job):
 
 def _reap_orphan(job):
     _reap_proc(job.proc)
+    if job.live_pin:
+        live_unpin(job.live_pin)
+        job.live_pin = None
 
 def _reap_proc(proc):
     kill(proc)
@@ -1617,6 +1638,327 @@ def _reap_proc(proc):
             f.close()
         except Exception:  # noqa: BLE001
             pass
+
+# ---- A held play under a new signature (v1.0.3 .229 glass, 2026-11-24) ---------------------------------------------
+# misterplexd holds a re-sent /play of the stream already playing, so the re-send's fresh signed URL never reaches a
+# new /ladder.ts. ffmpeg kept refreshing the FIRST signed media playlist until it expired at 75 s: 2 x 403,
+# Input/output error, PLAYBACK ERROR. A running ffmpeg's -i cannot change, so an HLS remux reads a stable helper
+# playlist (/hls/<key>/media.m3u8, audio.m3u8) instead of the origin URL. <key> hashes stream_identity: no token in
+# argv. Each playlist GET fetches the live entry's media playlist from the origin and makes every URI absolute, so
+# ffmpeg fetches its segments under the newest signature. /refresh (misterplexd, on a held re-send) only stores the new
+# master; the next playlist GET re-fetches it and keeps the same rendition. A 403/410 is passed through unchanged, so
+# the v1.0.2 re-resolve still sees it. AIRPLAY_MUT=norefresh | nolivehls | norewrite | liveorder | liveanypeer.
+# FPGA Bug on cda4ae41 (device ffmpeg 8.1.2 under qemu): (F1) a source whose master or media playlist sets a cookie
+# (Akamai hdntl) needs that cookie on its segments; this proxy drops it, so 403 from t=0. Such a source keeps the old
+# direct -i variant_url input. (F2) a VOD playlist (#EXT-X-ENDLIST) is read once and never reloaded, so the proxy
+# cannot re-sign it. The media playlist is fetched once before ffmpeg starts to tell both apart (ffmpeg's first
+# reload gets that body), and /refresh answers "ok refresh" only for a live, cookie-free entry. Otherwise it answers
+# "vod" / "cookie" with the seconds left on the URL ffmpeg reads, and misterplexd reopens the held play at its
+# playhead. AIRPLAY_MUT=nocookiefall | vodok | refreshloop.
+# FPGA Bug N6 on 2d49edab: /refresh created a missing entry and evicted the oldest at LIVE_MAX, so 32 /refresh of
+# unknown streams from a LAN peer ended a running live play with no origin fetch. /refresh now only updates; /admit
+# creates the entry. AIRPLAY_MUT=refreshcreate.
+# FPGA Bug R1 on 3e3910b3: 32 /admit of distinct streams from a LAN peer evicted a running VOD / cookie play's entry
+# (touched every LIVE_TOUCH_S only), so its next /refresh answered none and the play ended at token expiry. An entry a
+# running /ladder.ts ffmpeg reads is pinned: never reaped or evicted; a full table of pinned entries creates nothing.
+# AIRPLAY_MUT=evictjob.
+LIVE_MAX = 32
+LIVE_IDLE_S = 600.0
+LIVE_PREFETCH_REUSE_S = 3.0   # ffmpeg's first playlist GET reuses the pre-start fetch when it is this fresh
+LIVE_TOUCH_S = 30.0           # a /ladder.ts that streams an entry keeps it from LIVE_IDLE_S eviction (VOD never reloads)
+_LIVE = {}
+_LIVE_MU = threading.Lock()
+_URL_SEEN = {}
+_URL_SEEN_MAX = 512
+_URL_SEEN_N = [0]
+
+class LiveSource:
+    """What an HLS remux ffmpeg of one stream reads now. Fields change under _LIVE_MU only."""
+    def __init__(self, key):
+        self.key = key
+        self.master, self.master_seq = None, -1
+        self.refreshed_seq = -1   # url_seen order of the newest /refresh
+        self.hdrs = {}
+        self.variant = self.audio = None
+        self.rung = None
+        self.stale = False   # the master is newer than variant/audio: re-fetch it before the next playlist
+        self.kind = None     # "live" / "vod" (#EXT-X-ENDLIST) once a media playlist was seen
+        self.cookie = False  # the origin sets a cookie: ffmpeg reads it directly (no /hls/)
+        self.read_exp = {}   # "media"/"audio" -> earliest signed expiry of what a VOD / direct ffmpeg reads, or None
+        self.pre = {}        # "media"/"audio" -> (url, text, final URL, mono) of the pre-start fetch
+        self.touched = _mono()
+        self.pins = 0        # /ladder.ts requests or orphaned jobs whose ffmpeg reads this entry and still runs
+        self.fetch_mu = threading.Lock()
+
+def live_key(src):
+    return hashlib.sha256(stream_identity(src).encode()).hexdigest()[:24]
+
+def url_seen(src):
+    """Order in which this exact URL first reached the helper. Every /play's /admit comes before its /refresh, so a
+    held re-send is always newer than the /ladder.ts of the open it is held behind, whatever order those two arrive."""
+    with _LIVE_MU:
+        return _url_seen_locked(src)
+
+def _url_seen_locked(src):
+    """url_seen. Caller holds _LIVE_MU."""
+    h = hashlib.sha256(src.encode()).digest()
+    n = _URL_SEEN.get(h)
+    if n is None:
+        _URL_SEEN_N[0] += 1
+        n = _URL_SEEN[h] = _URL_SEEN_N[0]
+        while len(_URL_SEEN) > _URL_SEEN_MAX:
+            _URL_SEEN.pop(next(iter(_URL_SEEN)))
+    return n
+
+def _live_entry(key):
+    """The entry for key, created when missing, or None when all LIVE_MAX entries are pinned. Only unpinned entries
+    are reaped (LIVE_IDLE_S) or evicted (oldest first). Caller holds _LIVE_MU."""
+    now = _mono()
+    e = _LIVE.get(key)
+    if e is None:
+        pinned = lambda v: v.pins > 0 and not _mut("evictjob")
+        for k in [k for k, v in _LIVE.items() if not pinned(v) and now - v.touched > LIVE_IDLE_S]:
+            del _LIVE[k]
+        free = sorted((k for k, v in _LIVE.items() if not pinned(v)), key=lambda k: _LIVE[k].touched)
+        while len(_LIVE) >= LIVE_MAX:
+            if not free:
+                return None
+            del _LIVE[free.pop(0)]
+        e = _LIVE[key] = LiveSource(key)
+    e.touched = now
+    return e
+
+def live_unpin(key):
+    with _LIVE_MU:
+        e = _LIVE.get(key)
+        if e is not None and e.pins > 0:
+            e.pins -= 1
+
+def _rung(v):
+    return {"ident": stream_identity(v.get("variant_url") or ""), "w": v.get("w"), "h": v.get("h"),
+            "bw": v.get("bw"), "codec": v.get("codec")}
+
+def same_rung(plan, rung):
+    """The in-spec variant of a re-fetched master that is the rendition ffmpeg already copies. Never out of spec."""
+    ins = (plan or {}).get("in_spec") or []
+    if not ins:
+        return None
+    rung = rung or {}
+    for match in (lambda v: stream_identity(v["variant_url"]) == rung.get("ident"),
+                  lambda v: (v.get("w"), v.get("h"), v.get("bw"), v.get("codec")) ==
+                            (rung.get("w"), rung.get("h"), rung.get("bw"), rung.get("codec")),
+                  lambda v: (v.get("w"), v.get("h")) == (rung.get("w"), rung.get("h"))):
+        for v in ins:
+            if match(v):
+                return v
+    return ins[0]
+
+def _playlist_kind(text):
+    return "vod" if "#EXT-X-ENDLIST" in text else "live"
+
+def _read_expiry(urls, bodies):
+    """Earliest signed expiry over the playlist URLs ffmpeg reads and the first / last segment URI of each body."""
+    cand = [u for u in urls if u]
+    for text, final in bodies:
+        segs = [s.strip() for s in text.splitlines() if s.strip() and not s.strip().startswith("#")]
+        cand += [urllib.parse.urljoin(final, s) for s in segs[:1] + segs[-1:]]
+    exps = [x for x in (signed_url_expiry(u) for u in cand) if x]
+    return min(exps) if exps else None
+
+def live_register(src, fwd, hls, plan_seq, pin=False):
+    """/ladder.ts (or its re-resolve) starts an HLS remux of src from hls, a plan resolved from a URL first seen at
+    plan_seq: that plan is what ffmpeg reads now. A /refresh newer than src stays the master; a /refresh newer than
+    the plan (a cached plan outlived by a held play's new signature) marks the plan's rendition stale.
+    pin: the caller's ffmpeg holds the entry until live_unpin. The key, or None when the table is full of pins."""
+    seq = url_seen(src)
+    key = live_key(src)
+    with _LIVE_MU:
+        e = _live_entry(key)
+        if e is None:
+            return None
+        if pin:
+            e.pins += 1
+        e.variant, e.audio, e.rung, e.hdrs = hls["variant_url"], hls.get("audio_url"), _rung(hls), dict(fwd or {})
+        if seq >= e.master_seq or _mut("liveorder"):
+            e.master, e.master_seq, e.stale = src, seq, plan_seq < e.refreshed_seq
+        else:
+            e.stale = True
+        e.cookie = e.cookie or bool(hls.get("cookie"))
+    return key
+
+def live_prepare(key):
+    """Before ffmpeg starts: the entry's rendition (re-signed first when a /refresh is newer than the plan) and its
+    media / audio playlist fetched once: kind (#EXT-X-ENDLIST), Set-Cookie, and the body ffmpeg's first GET reuses.
+    A failed fetch (e.g. a 403 of an expired plan) records nothing: ffmpeg's own GET sees it. (variant, audio, cookie)."""
+    with _LIVE_MU:
+        e = _LIVE.get(key)
+    if e is None:
+        return None
+    with e.fetch_mu:
+        with _LIVE_MU:
+            need = e.master is not None and e.stale
+        if need:
+            _live_remaster(e)
+        with _LIVE_MU:
+            variant, audio, hdrs = e.variant, e.audio, dict(e.hdrs)
+        cookie, kind, bodies = False, None, {}
+        for name, url in (("media", variant), ("audio", audio)):
+            if not url:
+                continue
+            meta = {}
+            st, text, final = origin_get(url, hdrs, timeout_s=6, meta=meta)
+            cookie = cookie or bool(meta.get("cookie"))
+            if st != 200:
+                continue
+            bodies[name] = (url, text, final, _mono())
+            if name == "media":
+                kind = _playlist_kind(text)
+        with _LIVE_MU:
+            e.cookie = e.cookie or cookie
+            if kind:
+                e.kind = kind
+            e.pre = bodies
+            e.read_exp = dict((n, _read_expiry([b[0]], [(b[1], b[2])])) for n, b in bodies.items())
+            return variant, audio, e.cookie
+
+def refresh_answer(e):
+    """/refresh body for e (caller holds _LIVE_MU). "ok refresh": the running ffmpeg reloads its playlist (live, or
+    not seen yet). "vod" / "cookie": it cannot; ttl= the seconds left on what it reads (none: no expiry in it)."""
+    if e.cookie:
+        kind = "cookie"
+    elif e.kind == "vod" and not _mut("vodok"):
+        kind = "vod"
+    else:
+        return "ok refresh"
+    exps = [x for x in e.read_exp.values() if x]
+    return "%s ttl=%s" % (kind, max(0, int(min(exps) - time.time())) if exps else "none")
+
+def live_admit(src):
+    """/admit of an HLS stream copy (every /play asks it first): the stream's entry exists from here, so a held
+    re-send's /refresh that lands before the open's /ladder.ts is stored. Never at the cost of a pinned entry."""
+    with _LIVE_MU:
+        _live_entry(live_key(src))
+
+def live_refresh(src, fwd):
+    """/refresh: src is the newest URL of its stream. Stored only, and only in an existing entry: a /refresh never
+    creates one, so it cannot evict a running play's (LIVE_MAX). "none ttl=none" for a stream the helper does not
+    serve through /hls/ (misterplexd keeps the play). That answer takes no url_seen order either: an earlier order
+    would let the open's later /ladder.ts of its first URL replace the /refresh stored after /admit.
+    (True when it replaced the master, the answer). AIRPLAY_MUT=refreshcreate: the old create-and-evict."""
+    if _mut("norefresh"):
+        return False, "ok refresh"
+    with _LIVE_MU:
+        key = live_key(src)
+        e = _live_entry(key) if _mut("refreshcreate") else _LIVE.get(key)
+        if e is None:
+            return False, "none ttl=none"
+        e.touched = _mono()
+        seq = _url_seen_locked(src)
+        if seq <= e.master_seq:
+            return False, refresh_answer(e)
+        e.master, e.master_seq, e.refreshed_seq, e.stale = src, seq, seq, True
+        if fwd:
+            e.hdrs = dict(fwd)
+        return True, refresh_answer(e)
+
+def live_touch(key):
+    with _LIVE_MU:
+        e = _LIVE.get(key)
+        if e is not None:
+            e.touched = _mono()
+
+def live_input_urls(port, key, audio):
+    base = "http://127.0.0.1:%d/hls/%s/" % (port, key)
+    return base + "media.m3u8", (base + "audio.m3u8") if audio else None
+
+def live_peer_ok(addr):
+    """/hls/ serves the helper's own ffmpeg only."""
+    return peer_is_local(addr) or _mut("liveanypeer")
+
+def refresh_peer_ok(addr, header=""):
+    """/refresh has the trust of /ladder.ts: any peer lan_auth_verdict lets through (all of them with LAN_AUTH off,
+    the default). A computer helper (--bind 0.0.0.0) gets it from the card. It only re-signs a stream_identity
+    that peer could already open through /ladder.ts. AIRPLAY_MUT=refreshloop: the old loopback-only gate."""
+    if _mut("refreshloop"):
+        return live_peer_ok(addr) or lan_auth_on()
+    return lan_auth_verdict(addr, header) == 0
+
+def origin_get(url, headers=None, timeout_s=8, limit=2 * 1024 * 1024, meta=None):
+    """(status, text or None, final URL). An HTTP error keeps its status; any other failure is 502.
+    meta (a dict) gets cookie=True when a 200 sets one."""
+    try:
+        req = urllib.request.Request(url, headers=_urllib_headers(headers))
+        with urllib.request.urlopen(req, timeout=timeout_s, context=_tls_ctx()) as resp:
+            raw = resp.read(limit + 1)
+            final = resp.geturl() or url
+            if meta is not None and _sets_cookie(resp):
+                meta["cookie"] = True
+    except urllib.error.HTTPError as e:
+        e.close()
+        return e.code, None, url
+    except Exception:  # noqa: BLE001
+        return 502, None, url
+    if len(raw) > limit:
+        return 502, None, url
+    return 200, raw.decode("utf-8", "replace"), final
+
+_URI_ATTR = re.compile(r'URI="([^"]*)"')
+
+def rewrite_playlist(text, base):
+    """Every segment line and URI="..." attribute (EXT-X-KEY, EXT-X-MAP, ...) made absolute against base."""
+    if _mut("norewrite"):
+        return text
+    join = lambda u: urllib.parse.urljoin(base, u)
+    out = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            out.append(_URI_ATTR.sub(lambda m: 'URI="%s"' % join(m.group(1)), s) if 'URI="' in s else s)
+        else:
+            out.append(join(s))
+    return "\n".join(out) + "\n"
+
+def _expiring(url):
+    exp = signed_url_expiry(url)
+    return exp is not None and exp - time.time() < PLAN_EXP_MARGIN_S
+
+def _live_remaster(e):
+    """Re-fetch e's master and take the same rendition from it. Caller holds e.fetch_mu, not _LIVE_MU."""
+    with _LIVE_MU:
+        master, mseq, hdrs, rung, was_stale, old = e.master, e.master_seq, dict(e.hdrs), e.rung, e.stale, e.variant
+    meta = {}
+    st, text, final = origin_get(master, hdrs, timeout_s=6, meta=meta)
+    plan = plan_hls_master(text, final) if st == 200 else None
+    v = same_rung(plan, rung) if plan else None
+    with _LIVE_MU:
+        if meta.get("cookie"):
+            e.cookie = True
+        if e.master_seq != mseq:
+            return   # a newer /refresh landed meanwhile: the next GET re-fetches that one
+        if v is None:
+            if st == 200 or st in (403, 410):
+                e.stale = False   # that master is dead or has no in-spec rendition: keep the current one
+            log("held play: master re-fetch %s for %s; keeping the current rendition" % (
+                "found no in-spec variant" if plan is not None else "status %d" % st, log_src_tokenless(master)))
+            return
+        e.variant, e.rung, e.stale = v["variant_url"], _rung(v), False
+        if v.get("audio_url"):
+            e.audio = v["audio_url"]
+    if was_stale or v["variant_url"] != old:
+        log("held play: rendition re-signed from %s (%s)" % (log_src_tokenless(master), hls_log_line(dict(v, copy=True))))
+
+def access_line(requestline):
+    """An access-log request line with src= cut to log_src_tokenless and the hdr= value dropped: a cast src carries
+    signed path tokens and hdnts/hmac queries, hdr= can carry a Cookie. AIRPLAY_MUT=rawaccess keeps it as is."""
+    parts = str(requestline).split(" ")
+    if len(parts) != 3 or "?" not in parts[1] or _mut("rawaccess"):
+        return requestline
+    path, _, query = parts[1].partition("?")
+    qs = [(k, log_src_tokenless(v) if k == "src" else ("REDACTED" if k == "hdr" else v))
+          for k, v in urllib.parse.parse_qsl(query, keep_blank_values=True)]
+    return "%s %s?%s %s" % (parts[0], path, urllib.parse.urlencode(qs), parts[2])
 
 
 # LAN_AUTH (#62/#63, supersedes #140). Default off: nothing is checked.
@@ -1679,6 +2021,11 @@ class _NullCtx:
 class H(BaseHTTPRequestHandler):
     server_version = "airplay-xcode/2-standalone"
     def log_message(self, fmt, *a): log("%s %s" % (self.client_address[0], fmt % a))
+    def log_request(self, code="-", size="-"):
+        code = getattr(code, "value", code)
+        if self.path.startswith("/hls/") and str(code).startswith("2"):
+            return   # ffmpeg reloads its live playlist every target duration
+        self.log_message('"%s" %s %s', access_line(self.requestline), str(code), str(size))
     def text(self, code, body):
         b = body.encode()
         self.send_response(code)
@@ -1703,12 +2050,15 @@ class H(BaseHTTPRequestHandler):
         plan = None
         trusted_used = False
         if not yt and hls_playlist_url(src):
-            got = fetch_playlist(src, timeout_s=4 if admit else 15, headers=fwd)
+            meta = {}
+            got = fetch_playlist(src, timeout_s=4 if admit else 15, headers=fwd, meta=meta)
             if got and detect_drm(got[0]):
                 return None, None, None, True, False
             plan = plan_hls_master(got[0], got[1]) if got else None
             if plan:
                 hls = choose_hls(plan, lambda url: self._probe_url(url, budget, headers=fwd))
+                if hls and meta.get("cookie"):
+                    hls["cookie"] = True
                 if admit and (not hls or (not hls.get("copy") and not hls.get("refused"))):
                     trusted = choose_hls_playlist_trust(plan)
                     if trusted:
@@ -1736,20 +2086,112 @@ class H(BaseHTTPRequestHandler):
         remux = bool(hls.get("copy")) and stream_copy_ok(info)
         if not remux:
             return None
+        seq = url_seen(src)
         if cache_key and not trusted_used and not info.get("probe_failed"):
-            plan_cache_put(cache_key, {"hls": hls, "plan": plan, "info": info}, plan_ttl_s(plan_expiry(src, hls)))
-        inputs = [(hls["variant_url"], fwd_blob)]
-        if hls.get("audio_url"):
-            inputs.append((hls["audio_url"], fwd_blob))
+            plan_cache_put(cache_key, {"hls": hls, "plan": plan, "info": info, "seq": seq},
+                           plan_ttl_s(plan_expiry(src, hls)))
+        play, audio = self._hls_inputs(src, fwd, hls, seq)
+        inputs = [(play, fwd_blob)] + ([(audio, fwd_blob)] if audio else [])
         log("xcode re-resolved %s: %s" % (log_src_tokenless(src), hls_log_line(dict(hls, copy=True))))
-        return build_cmd(self.server.ffmpeg, hls["variant_url"], w, h, br, off, True, info, inputs,
+        return build_cmd(self.server.ffmpeg, play, w, h, br, off, True, info, inputs,
                          copy_audio=bool(hls.get("copy_audio")), fast=False)
+    def _hls_inputs(self, src, fwd, hls, plan_seq):
+        """ffmpeg inputs of an HLS stream copy: the helper's own live playlists (see live_register), or the origin
+        rendition itself when the origin sets a cookie (its segments need it; the proxy playlist would drop it)."""
+        if _mut("nolivehls"):
+            return hls["variant_url"], hls.get("audio_url")
+        key = live_register(src, fwd, hls, plan_seq, pin=self._live_pin is None)
+        if key is None:
+            log("hls live table full of running plays: %s reads the origin directly, a held play of it is kept "
+                "as is" % log_src_tokenless(src))
+            return hls["variant_url"], hls.get("audio_url")
+        self._live_key = self._live_pin = key
+        got = live_prepare(key)
+        if got and got[2] and not _mut("nocookiefall"):
+            log("hls source sets a cookie (%s): ffmpeg reads the origin playlist directly; a held play of it is "
+                "reopened, not re-signed in place" % log_src_tokenless(src))
+            return got[0], got[1]
+        return live_input_urls(self.server.server_address[1], key, bool(hls.get("audio_url")))
+    def _live_playlist(self, path):
+        """GET /hls/<key>/media.m3u8|audio.m3u8: the live entry's media playlist from the origin, URIs absolute."""
+        if not live_peer_ok(self.client_address[0]):
+            return self.text(403, "loopback only\n")
+        parts = path.split("/")
+        if len(parts) != 4 or parts[3] not in ("media.m3u8", "audio.m3u8"):
+            return self.text(404, "no such playlist\n")
+        audio = parts[3] == "audio.m3u8"
+        with _LIVE_MU:
+            e = _LIVE.get(parts[2])
+            if e is not None:
+                e.touched = _mono()
+        if e is None:
+            return self.text(404, "no live stream\n")
+        name = parts[3][:-5]
+        with e.fetch_mu:
+            with _LIVE_MU:
+                url = e.audio if audio else e.variant
+                need = e.master is not None and (e.stale or bool(url and _expiring(url)))
+                pre = e.pre.pop(name, None)
+            if need:
+                _live_remaster(e)
+            with _LIVE_MU:
+                url, hdrs = (e.audio if audio else e.variant), dict(e.hdrs)
+        if not url:
+            return self.text(404, "no rendition\n")
+        meta = {}
+        if pre and not need and pre[0] == url and _mono() - pre[3] <= LIVE_PREFETCH_REUSE_S:
+            st, text, final = 200, pre[1], pre[2]
+        else:
+            st, text, final = origin_get(url, hdrs, meta=meta)
+        if st != 200:
+            log("hls %s playlist: origin status %d (%s)" % ("audio" if audio else "media", st, log_src_tokenless(url)))
+            return self.text(st if st in (401, 403, 404, 410) else 502, "origin status %d\n" % st)
+        with _LIVE_MU:
+            if meta.get("cookie") and not e.cookie:
+                e.cookie = True
+                log("hls %s playlist: the origin set a cookie mid-play (%s): /refresh answers cookie" % (
+                    name, log_src_tokenless(url)))
+            if not audio:
+                e.kind = _playlist_kind(text)
+            if e.kind == "vod":
+                e.read_exp[name] = _read_expiry([url], [(text, final)])
+        body = rewrite_playlist(text, final).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def _refresh(self, src, fwd):
+        """GET /refresh?src=: a held play's newest signed URL. Stored only: the next playlist GET fetches it. The body
+        says whether the running ffmpeg will (refresh_answer); misterplexd reopens the play when it will not."""
+        if not refresh_peer_ok(self.client_address[0], self.headers.get(LAN_AUTH_HEADER, "")):
+            return self.text(403, "loopback only\n")
+        if not (src.startswith("http://") or src.startswith("https://")):
+            return self.text(400, "src must be http(s)\n")
+        stored, ans = live_refresh(src, fwd)
+        if stored:
+            log("held play: refreshed source %s (stored; %s)" % (
+                log_src_tokenless(src), "fetched at the next playlist reload" if ans.startswith("ok") else
+                "answered %s: its ffmpeg does not reload" % ans))
+        return self.text(200, ans + "\n")
+    def _orphan(self, job, head=b""):
+        """ladder_orphan. The live pin moves to the job first: its ffmpeg runs on, and a repeat open may adopt it."""
+        job.live_pin, self._live_pin = self._live_pin, None
+        ladder_orphan(job, head=head)
     def _refuse(self, kind):
         if kind not in _REFUSE_KINDS:
             kind = "format"
         log("airplay video refused reason=%s" % kind)
         return self.text(415, "refused\nreason=%s\nnotice=%s\n" % (kind, notice_for(kind)))
     def do_GET(self):  # noqa: N802
+        self._live_key = self._live_pin = None
+        try:
+            self._get()
+        finally:
+            if self._live_pin:
+                live_unpin(self._live_pin)
+    def _get(self):
         u = urllib.parse.urlparse(self.path); qs = urllib.parse.parse_qs(u.query)
         g = lambda k, d="": (qs.get(k) or [d])[0]
         auth = lan_auth_verdict(self.client_address[0], self.headers.get(LAN_AUTH_HEADER, ""))
@@ -1764,16 +2206,22 @@ class H(BaseHTTPRequestHandler):
             if not info or not info.get("audio"):
                 return self.text(502, "probe failed\n")
             return self.text(200, "".join("%s=%s\n" % kv for kv in info.items()))
+        if u.path.startswith("/hls/"):
+            return self._live_playlist(u.path)
         src = g("src")
         if u.path == "/yt.ts":
             src = "yt:" + g("v")
-        elif u.path not in ("/probe", "/ladder.ts", "/admit"):
+        elif u.path not in ("/probe", "/ladder.ts", "/admit", "/refresh"):
             return self.text(404, "use /probe, /ladder.ts, /admit or /yt.ts\n")
         if not ok_src(src, peer_is_local(self.client_address[0])):
             return self.text(400, "src must be http(s) or yt:<videoId>, and not a local address\n")
-        fwd = sanitize_fwd_headers(g("hdr")) if u.path in ("/probe", "/admit", "/ladder.ts") else {}
+        fwd = sanitize_fwd_headers(g("hdr")) if u.path in ("/probe", "/admit", "/ladder.ts", "/refresh") else {}
         if fwd:
             log("fwd headers names=%s" % ",".join(fwd.keys()))
+        if u.path == "/refresh":
+            return self._refresh(src, fwd)
+        if not src.startswith("yt:"):
+            url_seen(src)
         fwd_blob = _headers_blob(fwd)
         yt = yt_resolve(src[3:], self.server.ytdlp) if src.startswith("yt:") else None
         if src.startswith("yt:") and not yt: return self.text(502, "youtube resolve failed\n")
@@ -1787,12 +2235,14 @@ class H(BaseHTTPRequestHandler):
         try:  # held until the ffmpeg is started and registered: a repeat open of the same stream queues behind it
             hit = plan_cache_get(cache_key) if cache_key else None
             if hit is not None:
-                log("plan cache hit %s (%s)" % (u.path, log_src(src)))
+                log("plan cache hit %s (%s)" % (u.path, log_src_tokenless(src)))
                 if hit.get("drm"):
                     return self._refuse("drm")
                 hls, plan, info = copy.deepcopy((hit["hls"], hit["plan"], hit["info"]))
+                plan_seq = hit.get("seq", -1)
             else:
                 hls, plan, info, drm, trusted_used = self._plan_and_probe(src, fwd, yt, admit, budget)
+                plan_seq = -1 if src.startswith("yt:") else url_seen(src)
                 if drm:
                     if cache_key:
                         plan_cache_put(cache_key, {"drm": True})
@@ -1802,7 +2252,7 @@ class H(BaseHTTPRequestHandler):
                 if cache_key and (info or (hls and hls.get("refused"))) and \
                         (not trusted_used or _mut("plantrusted")) and not (info or {}).get("probe_failed"):
                     ttl = plan_ttl_s(plan_expiry(src, hls))
-                    if not plan_cache_put(cache_key, {"hls": hls, "plan": plan, "info": info}, ttl):
+                    if not plan_cache_put(cache_key, {"hls": hls, "plan": plan, "info": info, "seq": plan_seq}, ttl):
                         log("plan not cached: its signed URL expires in %.0fs (margin %.0fs)" % (
                             ttl + PLAN_EXP_MARGIN_S, PLAN_EXP_MARGIN_S))
             if not info:
@@ -1815,6 +2265,8 @@ class H(BaseHTTPRequestHandler):
                 if u.path == "/admit":
                     if dec["action"] == "refuse":
                         return self._refuse(dec["reason"])
+                    if hls and dec["action"] in ("copy", "audio"):
+                        live_admit(src)
                     if dec["action"] == "audio":
                         return self.text(200, "audio\n")
                     if dec["action"] == "copy":
@@ -1844,11 +2296,11 @@ class H(BaseHTTPRequestHandler):
                 # Out-of-spec video already returned 415. This x264 branch is the
                 # GCAST_MUT=videofallback path, RAOP spectrum, and probe-miss x264 attempt.
                 if hls:
-                    play = hls["variant_url"]
-                    inputs = [(play, fwd_blob)]
-                    if hls.get("audio_url"):
-                        inputs.append((hls["audio_url"], fwd_blob))
                     remux = bool(hls.get("copy")) and stream_copy_ok(info)
+                    play, audio = hls["variant_url"], hls.get("audio_url")
+                    if remux:
+                        play, audio = self._hls_inputs(src, fwd, hls, plan_seq)
+                    inputs = [(play, fwd_blob)] + ([(audio, fwd_blob)] if audio else [])
                     copy_audio = bool(remux and hls.get("copy_audio"))
                     slow_known = _slowstart_known(stream_identity(src))
                     cmd = build_cmd(self.server.ffmpeg, play, w, h, br, off, remux, info, inputs, copy_audio=copy_audio,
@@ -1867,13 +2319,19 @@ class H(BaseHTTPRequestHandler):
                     inputs = [(src, fwd_blob)] if fwd_blob else None
                     cmd = build_cmd(self.server.ffmpeg, src, w, h, br, off, remux, info, inputs, copy_audio=copy_audio)
                     log(direct_log_line(info, remux))
-                log("xcode %s %dx%d %dk off=%d copy=%d src=%s" % (u.path, w, h, br, off, int(remux), log_src(src)))
+                log("xcode %s %dx%d %dk off=%d copy=%d src=%s" % (u.path, w, h, br, off, int(remux), log_src_tokenless(src)))
             # A repeat open of the SAME stream adopts the ffmpeg of an open whose client dropped before the first byte.
             adoptable = (u.path == "/ladder.ts" and not src.startswith("yt:")
                          and not (info and info.get("vcodec") == "none"))
             job = ladder_adopt(ladder_job_key(src, w, h, br, off, remux)) if adoptable else None
             if job:
                 proc = job.proc
+                if job.live_pin:   # this request pins the same stream's entry now (or takes the orphan's pin)
+                    if self._live_pin:
+                        live_unpin(job.live_pin)
+                    else:
+                        self._live_pin = job.live_pin
+                    job.live_pin = None
                 log("xcode adopt /ladder.ts: repeat open of the same stream joins the running ffmpeg pid %d "
                     "(orphan head=%d bytes)" % (proc.pid, len(job.head)))
             else:
@@ -1891,6 +2349,7 @@ class H(BaseHTTPRequestHandler):
         kept = False
         out_fd, conn = proc.stdout.fileno(), self.connection
         watch_conn = adoptable
+        touch_at = _mono() + LIVE_TOUCH_S
         try:
             try:
                 self.send_response(200); self.send_header("Content-Type", "video/mp2t")
@@ -1898,7 +2357,7 @@ class H(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 # The client left while the plan/probe/ffmpeg start was running (the daemon dropped the open).
                 if adoptable:
-                    ladder_orphan(job)
+                    self._orphan(job)
                     kept = True
                 raise
             pending, job.head = job.head, b""
@@ -1906,7 +2365,7 @@ class H(BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(pending)
                 except (BrokenPipeError, ConnectionResetError):
-                    ladder_orphan(job, head=pending)   # the next repeat open still gets that chunk
+                    self._orphan(job, head=pending)   # the next repeat open still gets that chunk
                     kept = True
                     raise
                 sent += len(pending); job.sent += len(pending)
@@ -1923,7 +2382,7 @@ class H(BaseHTTPRequestHandler):
                         except OSError:
                             gone = True
                         if gone:
-                            ladder_orphan(job)
+                            self._orphan(job)
                             kept = True
                             break
                         watch_conn = False   # the client sent more bytes: stop watching, rely on write errors
@@ -1988,10 +2447,13 @@ class H(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     if adoptable and job.sent == 0:
-                        ladder_orphan(job, head=chunk)
+                        self._orphan(job, head=chunk)
                         kept = True
                     break
                 sent += len(chunk); job.sent += len(chunk)
+                if self._live_key and _mono() >= touch_at:
+                    live_touch(self._live_key)
+                    touch_at = _mono() + LIVE_TOUCH_S
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:

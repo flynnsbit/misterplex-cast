@@ -1,17 +1,22 @@
 #!/bin/sh
-# rc3 boot: after a reboot the MiSTer menu core is up (the FPGA fallback pattern is not
-# something to show). By default this launcher leaves the selected core alone,
-# paints the "daemon not running"
-# card (owenb_idle_card) until the daemon takes over, then starts
-# /media/fat/misterplex/bin/misterplexd so the idle screen is the chevron. It does not use misterplexd-boot.sh (that file is pinned to an
+# rc3 boot: starts /media/fat/misterplex/bin/misterplexd (Plex companion,
+# casting and AirPlay listeners) and never loads a core on its own: the user
+# loads MiSTerPlex from the MiSTer menu (_Utility). When the PlexOB core is
+# already up it paints the "daemon not running" card (owenb_idle_card) until
+# the daemon takes over, so the idle screen is the chevron. On any other core
+# (usually Menu after a reboot) no card is painted. It does not use misterplexd-boot.sh (that file is pinned to an
 # older cand binary and does not load a core) and it does not use the lab-only
 # misterplexd-boot-mast.sh.
 #
 # Sequence
 #   1. Read CORENAME (default $ROOT/tmp/CORENAME).
-#   2. Only when explicitly opted in with MPX_CORE_MANUAL_ONLY=0 (the Scripts
-#      mode launcher default), if it is not Plex or PlexOB, write one
-#      `load_core <rbf>` line to
+#   2. A boot (user-startup.sh, an empty argument, a plain `start`) never
+#      writes load_core, whatever core is up (Menu, empty, a user core).
+#      Only an explicit operator start (misterplex_mode.sh / Scripts menu /
+#      OSD service switch) may load a core through this hook, and only when
+#      it exports MPX_CORE_MANUAL_ONLY=0. This hook never assigns or exports
+#      a mode-switch environment flag. If the core is not Plex or PlexOB,
+#      write one `load_core <rbf>` line to
 #      MISTER_CMD (default /dev/MiSTer_cmd) and wait until CORENAME changes.
 #      RBF order: $PLEX_RBF (empty or unset counts as unset), else
 #      $ROOT/media/fat/PlexOB.rbf, else $ROOT/media/fat/_Utility/PlexOB.rbf,
@@ -85,11 +90,10 @@
 
 ROOT="${ROOT:-}"
 # Distinguish an operator-set policy from the hook default.
-# Default 1: do not yank a user-selected core. MENU/empty after reboot is the
-# FPGA fallback, not a user core — load PlexOB so CoreGate can open and Ready
-# can paint without a play (BOOTFIX-1023 / GH cold-boot 1121). Explicit
-# MPX_CORE_MANUAL_ONLY=1 (mode.sh / configure-misterplex bounce) still leaves
-# the loaded core alone.
+# Default 1 (MPX_CORE_MANUAL_DEFAULTED=1 tells the daemon the hook chose it):
+# a boot never loads a core, MiSTerPlex is the user's to load from the menu.
+# An explicit MPX_CORE_MANUAL_ONLY=0 (Scripts / OSD service switch) may load
+# one. This hook never assigns or exports a mode-switch environment flag.
 if [ -z "${MPX_CORE_MANUAL_ONLY:-}" ]; then
   MPX_CORE_MANUAL_ONLY=1
   MPX_CORE_MANUAL_DEFAULTED=1
@@ -135,6 +139,10 @@ pick_rbf
 # After a new MiSTerPlex.rbf is on the card and its md5 matches the shipped
 # MiSTerPlex.rbf.md5, drop the old filename, including _Console and cores.
 # A missing checksum, or a mismatch, leaves every old PlexOB.rbf in place.
+# Each one is removed only when an installer's backup folder holds an identical
+# copy (misterplex/backup-*/PlexOB.rbf.<root|_Utility|_Console|cores>): a stale
+# or leftover md5 must not delete a file the installer kept for want of a good
+# backup (v1.0.3 #9 FPGA Bug N1, the v1.0.2 F1 class).
 # A second successful run finds nothing to remove.
 retire_old_plexob() {
   new=
@@ -166,6 +174,21 @@ retire_old_plexob() {
   for old in "$FAT/PlexOB.rbf" "$FAT/_Utility/PlexOB.rbf" \
              "$FAT/_Console/PlexOB.rbf" "$FAT/cores/PlexOB.rbf"; do
     if [ -e "$old" ] && [ ! -d "$old" ]; then
+      case "$old" in
+        "$FAT/PlexOB.rbf") bk_key=root ;;
+        *) bk_key=${old%/PlexOB.rbf}; bk_key=${bk_key##*/} ;;
+      esac
+      bk_ok=
+      for bk_copy in "$FAT"/misterplex/backup-*/PlexOB.rbf."$bk_key"; do
+        if [ -f "$bk_copy" ] && cmp -s "$old" "$bk_copy"; then
+          bk_ok=1
+          break
+        fi
+      done
+      if [ -z "$bk_ok" ]; then
+        log "kept old core $old: no verified backup copy"
+        continue
+      fi
       rm -f "$old" || return 1
       log "removed old core $old"
     fi
@@ -606,26 +629,12 @@ case "$name" in
     log "core already $name"
     ;;
   *)
-    if [ "$MPX_CORE_MANUAL_ONLY" = 1 ]; then
-      case "$name" in
-        MENU|Menu|menu|'')
-          # Defaulted policy + MENU is a Plex cold boot (FPGA fallback), not a
-          # user-selected core. Do not take this path under SPELUNKR — channel
-          # play loads the core — or when the operator set MANUAL_ONLY=1
-          # (mode.sh / configure-misterplex bounce; test_service_switch_script).
-          if [ "${MPX_CORE_MANUAL_DEFAULTED:-0}" = 1 ] && [ "${SPELUNKR:-0}" != 1 ]; then
-            log "manual-only default: core is '${name:-empty}' (not a user core); loading PlexOB for Plex boot"
-            should_load=1
-          else
-            log "manual-only: leaving core '${name:-empty}' loaded; companion only"
-          fi
-          ;;
-        *)
-          log "manual-only: leaving core '${name:-empty}' loaded; companion only"
-          ;;
-      esac
-    else
+    if [ "$MPX_CORE_MANUAL_ONLY" = 0 ]; then
       should_load=1
+    elif [ "$MPX_CORE_MANUAL_ONLY" = 1 ] && [ "$MPX_CORE_MANUAL_DEFAULTED" = 0 ]; then
+      log "manual-only: leaving core '${name:-empty}' loaded; companion only"
+    else
+      log "boot: core load left to the user (core '${name:-empty}'); companion only"
     fi
     ;;
 esac
@@ -687,9 +696,10 @@ install_plexui_fonts() {
   done
   log "plexui fonts: missing (built-in bitmap fallback)"
 }
-# idle-card:boot -- the core is loaded and no daemon is up yet: paint "daemon not running" (not colorbars) until the
+# idle-card:boot -- PlexOB is up and no daemon is up yet: paint "daemon not running" (not colorbars) until the
 # daemon's own "Ready to cast" card replaces it (the daemon releases this painter first thing). Resident, detached,
 # no network, no video_mode. Before the net wait below, which this does not move. Missing binary: no card, no error.
+# The card lives in PlexOB DDR, so on any other core (Menu after a reboot) nothing is painted.
 IDLE_CARD="${MISTERPLEX_IDLE_CARD:-$(dirname "$BIN")/owenb_idle_card}"
 if [ -x "$IDLE_CARD" ]; then
   if [ "${SPELUNKR:-0}" = 1 ]; then
@@ -702,8 +712,15 @@ if [ -x "$IDLE_CARD" ]; then
     }
     log "idle card: Spelunkr — released prior painter; no boot card"
   else
-    log "idle card: $IDLE_CARD --card down"
-    "$IDLE_CARD" --card down </dev/null >/dev/null 2>&1 &
+    case "$name" in
+      Plex|PLEX|PlexOB|PLEXOB)
+        log "idle card: $IDLE_CARD --card down"
+        "$IDLE_CARD" --card down </dev/null >/dev/null 2>&1 &
+        ;;
+      *)
+        log "idle card: core '${name:-empty}' is not PlexOB; no boot card"
+        ;;
+    esac
   fi
 else
   log "idle card: missing or not executable: $IDLE_CARD (colorbars risk until daemon Ready)"
