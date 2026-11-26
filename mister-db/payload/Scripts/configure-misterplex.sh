@@ -509,7 +509,7 @@ the current answer in [brackets]; press Enter to keep it.
   --subtitles on|off     Text subtitles on the TV (on = use --sub-lang).
   --sub-lang CODE        Subtitle language, e.g. en, de, fr.
   --ui-size normal|large On-screen menu size.
-  --safe-margin 0-20     Keep menus this many percent inside the screen edge.
+  --safe-margin 0-15     Keep menus this many percent inside the screen edge.
   --name NAME            Player name shown in the cast list.
   --conf FILE            Settings file (default: $CONF).
   --example FILE         Default settings to start from.
@@ -725,9 +725,9 @@ settings_form() {
         fi ;;
       margin)
         if type menu_inputbox >/dev/null 2>&1; then
-          _v=$(menu_inputbox "Safe margin percent (CRT: 5-10, HDMI: 0-5)" "$MARGIN") && MARGIN=$_v
+          _v=$(menu_inputbox "Safe margin percent 0-15 (CRT: 5-10, HDMI: 0-5)" "$MARGIN") && MARGIN=$_v
         else
-          printf 'Safe margin percent [%s]: ' "$MARGIN" >&2; read -r _v || _v=$MARGIN; [ -n "$_v" ] && MARGIN=$_v
+          printf 'Safe margin percent 0-15 [%s]: ' "$MARGIN" >&2; read -r _v || _v=$MARGIN; [ -n "$_v" ] && MARGIN=$_v
         fi ;;
       name)
         if type menu_inputbox >/dev/null 2>&1; then
@@ -757,7 +757,7 @@ elif [ "$ASK" = 1 ]; then
     ask SUBLANG "Subtitle language (en, de, fr, ...)" "$sl"
   fi
   ask UISIZE "Menu size: normal or large" "$(cur_or UI_SIZE normal)"
-  ask MARGIN "Safe margin percent (CRT: 5-10, HDMI: 0-5)" "$(cur_or UI_SAFE_MARGIN 5)"
+  ask MARGIN "Safe margin percent 0-15 (CRT: 5-10, HDMI: 0-5)" "$(cur_or UI_SAFE_MARGIN 5)"
   ask NAME "Player name in the cast list (blank = automatic)" "$(cur FRIENDLY_NAME)"
 fi
 
@@ -773,7 +773,7 @@ case "$RASTER" in ''|480i|240p|auto|default) ;; *) die "--raster must be 480i, 2
 case "$SUBS" in ''|on|off) ;; *) die "--subtitles must be on or off" ;; esac
 case "$SUBLANG" in ''|*[!A-Za-z_-]*) [ -z "$SUBLANG" ] || die "bad subtitle language: $SUBLANG" ;; esac
 case "$UISIZE" in ''|normal|large) ;; *) die "--ui-size must be normal or large" ;; esac
-case "$MARGIN" in ''|[0-9]|1[0-9]|20) ;; *) die "--safe-margin must be 0-20" ;; esac
+case "$MARGIN" in ''|[0-9]|1[0-5]) ;; *) die "--safe-margin must be 0-15" ;; esac
 case "$NAME" in ''|*[!A-Za-z0-9._\ -]*) [ -z "$NAME" ] || die "player name: use letters, digits, space, . _ -" ;; esac
 
 # Build the new file: KEY=VAL edits replace the last uncommented KEY= line,
