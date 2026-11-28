@@ -211,6 +211,13 @@ public:
         return d + "servers.json";
     }
 
+    std::string lastPagesPath() const {
+        std::string d = dir_;
+        if (!d.empty() && d.back() != '/')
+            d.push_back('/');
+        return d + "last_pages.json";
+    }
+
     std::string thumbPath(const std::string& serverId, const std::string& ratingKey, int w, int h) const {
         std::string d = dir_;
         if (!d.empty() && d.back() != '/')
@@ -257,6 +264,29 @@ public:
             evict();
         }
         return true;
+    }
+
+    bool loadLastPagesJson(std::string& out) const {
+        std::ifstream in(lastPagesPath(), std::ios::binary);
+        if (!in)
+            return false;
+        out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return !out.empty();
+    }
+
+    bool saveLastPagesJson(const std::string& json) {
+        browseMkdirP(dir_);
+        const std::string path = lastPagesPath();
+        const std::string tmp = path + ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out)
+                return false;
+            out.write(json.data(), static_cast<std::streamsize>(json.size()));
+            if (!out)
+                return false;
+        }
+        return ::rename(tmp.c_str(), path.c_str()) == 0;
     }
 
     bool loadThumb(const std::string& serverId, const std::string& ratingKey, int w, int h,
@@ -514,6 +544,73 @@ inline std::vector<BrowseServerRow> browseServersFromJson(const std::string& jso
         i = obj1 + 1;
     }
     return rows;
+}
+
+inline std::string browseLastPagesToJson(const std::unordered_map<std::string, BrowseLastPage>& pages) {
+    std::ostringstream o;
+    o << "{\"pages\":[";
+    bool first = true;
+    for (const auto& kv : pages) {
+        const auto& p = kv.second;
+        if (p.serverId.empty() || p.sectionKey.empty())
+            continue;
+        if (!first)
+            o << ',';
+        first = false;
+        o << "{\"serverId\":\"" << browseEscapeJson(p.serverId) << "\",\"sectionKey\":\""
+          << browseEscapeJson(p.sectionKey) << "\",\"sectionTitle\":\""
+          << browseEscapeJson(p.sectionTitle) << "\",\"sectionType\":\""
+          << browseEscapeJson(p.sectionType) << "\",\"focus\":\"" << p.focus
+          << "\",\"scroll\":\"" << p.scroll << "\",\"view\":\""
+          << (p.view == BrowseViewMode::Grid ? "grid" : "list") << "\"}";
+    }
+    o << "]}";
+    return o.str();
+}
+
+inline std::unordered_map<std::string, BrowseLastPage> browseLastPagesFromJson(const std::string& json) {
+    std::unordered_map<std::string, BrowseLastPage> out;
+    std::size_t i = json.find("\"pages\"");
+    if (i == std::string::npos)
+        return out;
+    i = json.find('[', i);
+    if (i == std::string::npos)
+        return out;
+    ++i;
+    while (i < json.size()) {
+        const auto obj0 = json.find('{', i);
+        if (obj0 == std::string::npos)
+            break;
+        std::size_t obj1 = obj0 + 1;
+        bool quoted = false;
+        for (; obj1 < json.size(); ++obj1) {
+            if (quoted && json[obj1] == '\\') {
+                ++obj1;
+                continue;
+            }
+            if (json[obj1] == '"')
+                quoted = !quoted;
+            else if (!quoted && json[obj1] == '}')
+                break;
+        }
+        if (obj1 >= json.size())
+            break;
+        const std::string obj = json.substr(obj0, obj1 - obj0 + 1);
+        BrowseLastPage p;
+        p.serverId = browseJsonGet(obj, "serverId");
+        p.sectionKey = browseJsonGet(obj, "sectionKey");
+        p.sectionTitle = browseJsonGet(obj, "sectionTitle");
+        p.sectionType = browseJsonGet(obj, "sectionType");
+        const std::string f = browseJsonGet(obj, "focus");
+        const std::string sc = browseJsonGet(obj, "scroll");
+        p.focus = f.empty() ? 0 : std::max(0, static_cast<int>(std::strtol(f.c_str(), nullptr, 10)));
+        p.scroll = sc.empty() ? 0 : std::max(0, static_cast<int>(std::strtol(sc.c_str(), nullptr, 10)));
+        p.view = browseJsonGet(obj, "view") == "grid" ? BrowseViewMode::Grid : BrowseViewMode::List;
+        if (!p.serverId.empty() && !p.sectionKey.empty())
+            out[p.serverId] = std::move(p);
+        i = obj1 + 1;
+    }
+    return out;
 }
 
 } // namespace misterplex

@@ -43,11 +43,27 @@ struct BrowseServerRow {
     std::vector<std::string> connectionBases;
 };
 
+inline constexpr const char* kBrowseLibRecommended = "__recommended__";
+inline constexpr const char* kBrowseLibLastPage = "__last_page__";
+inline constexpr const char* kBrowseLibSearch = "__search__";
+
+struct BrowseLastPage {
+    std::string serverId;
+    std::string sectionKey;
+    std::string sectionTitle;
+    std::string sectionType;
+    int focus = 0;
+    int scroll = 0;
+    BrowseViewMode view = BrowseViewMode::List;
+};
+
 struct BrowseLibraryRow {
     std::string key;
     std::string title;
-    std::string type; // movie | show
+    std::string type; // movie | show | recommended | lastpage | search
     int count = 0;
+    // Optional right-column hint for virtual rows; kept last so brace-inits stay valid.
+    std::string subtitle;
 };
 
 struct BrowseTitleRow {
@@ -113,6 +129,7 @@ struct BrowseRenderModel {
     int totalTitles = 0;
     bool childList = false;
     bool searchResults = false;
+    bool recommendedList = false;
     int serverFocus = 0;
     int libraryFocus = 0;
     std::vector<BrowseServerRow> servers;
@@ -491,6 +508,8 @@ inline bool browseApplyNav(BrowseRenderModel& m, const BrowseShellLayout& L, Bro
         browseMoveFocus(m, L, +1);
         return true;
     case BrowseOp::Info:
+        // Pad X: handled by BrowseShellController to open Search from any browse screen.
+        return true;
     case BrowseOp::ToggleUiSize:
         if (m.screen == BrowseShellScreen::Titles)
             browseToggleView(m, L);

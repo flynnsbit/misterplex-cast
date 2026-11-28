@@ -1,9 +1,9 @@
-# Installing MiSTerPlex (v2.0.0)
+# Installing MiSTerPlex (v2.1.0)
 
-This guide covers installing, configuring, updating, and uninstalling **MiSTerPlex v2.0.0** on a MiSTer FPGA (DE10-Nano).
+This guide covers installing, configuring, updating, and uninstalling **MiSTerPlex v2.1.0** on a MiSTer FPGA (DE10-Nano).
 
 Two install methods are supported:
-- **Option A: Full release tarball** (`misterplex-v2.0.0.tar.gz`) using `install-misterplex.sh`.
+- **Option A: Full release tarball** (`misterplex-v2.1.0.tar.gz`) using `install-misterplex.sh`.
 - **Option B: `update_all` / MiSTer Downloader** (`[flynnsbit/misterplex]`), followed by running **Scripts > configure-misterplex** once on the MiSTer.
 
 Both methods install the default **MiSTerPlex.rbf** core (`BUILD_ID 0x0B112501`, seed 14, md5 `7f048508861967f857a5aacff79bfb6f`) to `/media/fat/_Utility/MiSTerPlex.rbf` only, and leave any existing `/media/fat/linux/misterplex.conf` untouched.
@@ -20,12 +20,12 @@ Both methods install the default **MiSTerPlex.rbf** core (`BUILD_ID 0x0B112501`,
 
 ### Option A: Release tarball (`install-misterplex.sh`)
 
-1. Download **`misterplex-v2.0.0.tar.gz`** and **`SHA256SUMS`** (or **`MD5SUMS`**) from https://github.com/flynnsbit/misterplex-cast/releases.
+1. Download **`misterplex-v2.1.0.tar.gz`** and **`SHA256SUMS`** (or **`MD5SUMS`**) from https://github.com/flynnsbit/misterplex-cast/releases.
 2. Verify and unpack the archive on your computer:
 
    ```sh
    sha256sum -c SHA256SUMS --ignore-missing
-   tar xzf misterplex-v2.0.0.tar.gz
+   tar xzf misterplex-v2.1.0.tar.gz
    ```
 
    *(On macOS: `shasum -a 256 -c SHA256SUMS` or check with `md5sum` against `MD5SUMS`.)*
@@ -33,14 +33,14 @@ Both methods install the default **MiSTerPlex.rbf** core (`BUILD_ID 0x0B112501`,
 3. Copy the unpacked folder to `/tmp` on your MiSTer and run `install-misterplex.sh`:
 
    ```sh
-   scp -r misterplex-v2.0.0 root@<mister-ip>:/tmp/
-   ssh root@<mister-ip> 'cd /tmp/misterplex-v2.0.0 && sh install-misterplex.sh'
+   scp -r misterplex-v2.1.0 root@<mister-ip>:/tmp/
+   ssh root@<mister-ip> 'cd /tmp/misterplex-v2.1.0 && sh install-misterplex.sh'
    ```
 
    Pass `--dry-run` first to preview every action without touching the SD card:
 
    ```sh
-   ssh root@<mister-ip> 'cd /tmp/misterplex-v2.0.0 && sh install-misterplex.sh --dry-run'
+   ssh root@<mister-ip> 'cd /tmp/misterplex-v2.1.0 && sh install-misterplex.sh --dry-run'
    ```
 
 #### What `install-misterplex.sh` does

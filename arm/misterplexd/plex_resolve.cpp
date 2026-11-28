@@ -2642,7 +2642,8 @@ std::string buildUniversalTranscodeUrl(const std::string& base,
     // transcode the video (not only when BURN_SUBS_FIX is on).
     const bool forceTranscode = misterplex::remoteStartForcesTranscode(
         misterplex::remoteH264TranscodeEnabled(), wan,
-        weak.burnSubtitles || burnSubsFixForcesTranscode(weak.burnSubtitles && weak.burnSubsFixImage) ||
+        weak.burnSubtitles || weak.forceAudioTranscode ||
+        burnSubsFixForcesTranscode(weak.burnSubtitles && weak.burnSubsFixImage) ||
         (weak.owenb ? weak.pmsLowered
                     : ((wan && weak.highCabac) || strictBaseline || fpgaBaselineOnly)));
     q << base << "/video/:/transcode/universal/start.mp4"
@@ -4902,6 +4903,19 @@ ResolveResult resolvePlayTarget(const std::string& rawKeyOrPath, const std::stri
             r.trackPick = pickFromSetStreams(r.tracks, r.trackPick, forced, r.partId);
         }
         applyTrackPickToLadder(playWeak, r, static_cast<bool>(pref) || pendingPlayMediaSubtitleId() >= 0);
+        // Never direct-play an audio codec that is not compiled into our static libavcodec
+        // (e.g. DTS/dca, TrueHD, MLP, MP2, Blu-ray PCM); force PMS transcode to stereo AAC.
+        {
+            const std::string effAudioCodec =
+                !r.trackPick.audioCodec.empty() ? r.trackPick.audioCodec : attr(xml, "Media", "audioCodec");
+            if (r.hasAudio && !misterplex::audioCodecSupportedForDirectPlay(effAudioCodec)) {
+                audioNeedsTranscode = true;
+                playWeak.forceAudioTranscode = true;
+                std::fprintf(stderr,
+                             "misterplexd: audio codec=%s unsupported for direct play — forcing PMS transcode to %s\n",
+                             effAudioCodec.c_str(), playWeak.audioCodec.c_str());
+            }
+        }
         // FU14: BURN_SUBS_FIX follows the painter already on main (#201-r3). The part PUT
         // (#234) runs only when that flag is explicitly on. Off: this block does not run.
         // #324: the PUT also needs a server the signed-in user owns (burnPartPutGate).

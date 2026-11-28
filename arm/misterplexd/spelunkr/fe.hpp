@@ -148,7 +148,10 @@ struct GuideRow {
     std::string id;
     std::string name;
     std::string nowTitle;
+    std::string nextTitle;
     std::string section;
+    int remainingMin = -1;
+    int progressPct = -1;
 };
 
 class Session {
@@ -276,13 +279,13 @@ public:
         }
         return selectIndex(next);
     }
-    void syncGuideViewToCursor() {
+    void syncGuideViewToCursor(int pageRows = kSpelunkrGuidePageRows) {
         const int n = static_cast<int>(lineup.channels.size());
         if (n <= 0) {
             guideViewStart = 0;
             return;
         }
-        const int step = std::min(kSpelunkrGuidePageRows, n);
+        const int step = std::min(std::max(1, pageRows), n);
         const int maxStart = std::max(0, n - step);
         int cur = guideCursor;
         if (cur < 0)
@@ -298,14 +301,14 @@ public:
         if (guideViewStart > maxStart)
             guideViewStart = maxStart;
     }
-    bool pageGuide(int delta) {
+    bool pageGuide(int delta, int pageRows = kSpelunkrGuidePageRows) {
         if (!guideOpen || lineup.channels.empty())
             return false;
 #ifdef MUT_SPELUNKR_GUIDE_PAGE_NOP
         return false;
 #endif
         const int n = static_cast<int>(lineup.channels.size());
-        const int step = std::min(kSpelunkrGuidePageRows, n);
+        const int step = std::min(std::max(1, pageRows), n);
         const int maxStart = std::max(0, n - step);
 #ifdef MUT_SPELUNKR_GUIDE_PAGE_SIGN
         delta = -delta;
@@ -332,11 +335,11 @@ public:
 #endif
         return true;
     }
-    void toggleGuide() {
+    void toggleGuide(int pageRows = kSpelunkrGuidePageRows) {
         guideOpen = !guideOpen;
         guideCursor = tv.index();
         if (guideOpen)
-            syncGuideViewToCursor();
+            syncGuideViewToCursor(pageRows);
         else
             guideViewStart = 0;
     }
@@ -351,8 +354,20 @@ public:
             r.section = lineup.channels[i].section;
             if (hasManifest(static_cast<int>(i))) {
                 const NowPlaying np = nowPlayingOrFirst(lineup.channels[i], mans[i], nowMs);
-                if (np.ok)
+                if (np.ok) {
                     r.nowTitle = np.title;
+                    if (!np.firstItemFallback && np.durationMs > 0) {
+                        const int64_t remMs = std::max<int64_t>(0, np.remainingMs);
+                        r.remainingMin = static_cast<int>((remMs + 59999) / 60000);
+                        r.progressPct =
+                            static_cast<int>(std::clamp<int64_t>((np.offsetMs * 100) / np.durationMs, 0, 100));
+                    }
+                    if (mans[i].items.size() > 1) {
+                        const NowPlaying nxt = skipToNextItem(lineup.channels[i], mans[i], np, nowMs);
+                        if (nxt.ok && nxt.itemIndex != np.itemIndex && !nxt.title.empty())
+                            r.nextTitle = nxt.title;
+                    }
+                }
             }
             rows.push_back(std::move(r));
         }

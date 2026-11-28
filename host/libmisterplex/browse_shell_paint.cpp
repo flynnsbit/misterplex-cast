@@ -350,8 +350,8 @@ void paintServers(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, 
              L.fontSm, false, DIM);
     }
     drawFooter(rgb, w, h, font, L,
-               fallback(m.footer, L.compact ? "PgUp/Dn  A select  B back" :
-                                              "PgUp/PgDn scroll · A select · B back"));
+               fallback(m.footer, L.compact ? "A open  X srch  Y refr  Start menu  B back" :
+                                              "A select · X search · Y refresh · Start menu · B back"));
 }
 
 void paintLibraries(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, const BrowseShellLayout& L,
@@ -367,21 +367,32 @@ void paintLibraries(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font
             continue;
         if (start + i == m.focus)
             focusRow(rgb, w, h, L.margin, y, rw, L.rowH);
-        PaintText label(lib.type == "show" ? "TV  " : "MOV  ");
+        const bool isVirtual =
+            lib.type == "recommended" || lib.type == "lastpage" || lib.type == "search";
+        const char* badge = lib.type == "recommended" ? "REC  "
+                          : lib.type == "lastpage"    ? "LAST "
+                          : lib.type == "search"      ? "SRCH "
+                          : lib.type == "show"        ? "TV   "
+                                                      : "MOV  ";
+        PaintText label(badge);
         label += lib.title;
-        PaintText right(lib.type);
+        PaintText right(lib.subtitle.empty() ? lib.type : lib.subtitle);
         if (lib.count > 0) {
             right = number(lib.count);
             right += " titles";
         }
         const int rwgt = textW(font, right, L.fontSm, false);
         const int rightX = w - L.margin - rwgt - 4;
-        text(font, L.margin + 8, y + 3,
-             rowFit(font, label, L.fontMd, std::max(0, rightX - 12 - (L.margin + 8))), L.fontMd, false, TEXT);
+        const int badgeW = textW(font, badge, L.fontMd, false);
+        text(font, L.margin + 8, y + 3, badge, L.fontMd, false, isVirtual ? AMBER : DIM);
+        text(font, L.margin + 8 + badgeW, y + 3,
+             rowFit(font, lib.title, L.fontMd, std::max(0, rightX - 12 - (L.margin + 8 + badgeW))),
+             L.fontMd, false, TEXT);
         text(font, rightX, y + 4, right, L.fontSm, false, DIM);
     }
-    drawFooter(rgb, w, h, font, L, fallback(m.footer, L.compact ? "PgUp/Dn  A open  B servers" :
-                                                              "PgUp/PgDn · A open · B servers"));
+    drawFooter(rgb, w, h, font, L,
+               fallback(m.footer, L.compact ? "A open  X srch  Start menu  B back" :
+                                              "A open · X search · Start menu · B servers"));
 }
 
 void paintTitlesList(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, const BrowseShellLayout& L,
@@ -441,8 +452,8 @@ void paintTitlesList(std::uint8_t* rgb, int w, int h, const plexui::FontSet& fon
         }
     }
     drawFooter(rgb, w, h, font, L,
-               fallback(m.footer, L.compact ? "PgUp/Dn A play Y grid B back" :
-                                              "PgUp/PgDn · A play · Y grid · B libraries"));
+               fallback(m.footer, L.compact ? "A play  X srch  Y grid  Start menu  B back" :
+                                              "A play · X search · Y grid · Start menu · B libraries"));
 }
 
 void paintTitlesGrid(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, const BrowseShellLayout& L,
@@ -477,6 +488,14 @@ void paintTitlesGrid(std::uint8_t* rgb, int w, int h, const plexui::FontSet& fon
                           th + (L.titleUnder ? L.fontSm + 5 : 0) + 2 * L.focusRing))
                 continue;
             cachedPoster(rgb, w, h, font, x, y, tw, th, t, i, focused, L.focusRing, thumbs);
+            if (t.progress > 0.f && th >= 16) {
+                const int bh = L.compact ? 2 : 3;
+                const int by = y + th - bh;
+                fillRect(rgb, w, h, x, by, x + tw, y + th, RULE);
+                fillRect(rgb, w, h, x, by,
+                         x + std::max(2, static_cast<int>(static_cast<float>(tw) * std::min(1.f, t.progress))),
+                         y + th, AMBER);
+            }
             if (L.titleUnder) {
                 const auto shortT = ellipsize(font, t.title, L.fontSm, false, tw);
                 const int twt = textW(font, shortT, L.fontSm, false);
@@ -485,14 +504,14 @@ void paintTitlesGrid(std::uint8_t* rgb, int w, int h, const plexui::FontSet& fon
         }
     }
     if (!L.titleUnder) {
-        const std::string_view controls = "  A play Y list";
+        const std::string_view controls = "  A play X srch Y list";
         auto foot = ellipsize(font, focusTitle, L.fontSm, false,
                                      w - 2 * L.margin - textW(font, controls, L.fontSm, false));
         foot += controls;
         drawFooter(rgb, w, h, font, L, m.footer.empty() ? std::string_view(foot) : m.footer);
     } else {
         drawFooter(rgb, w, h, font, L,
-                   fallback(m.footer, "PgUp/PgDn · A play · Y list · B libraries"));
+                   fallback(m.footer, "A play · X search · Y list · Start menu · B libraries"));
     }
 }
 
@@ -590,7 +609,7 @@ void paintDetail(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, c
              buttons[i].on, tc);
         bx += bw + gap;
     }
-    drawFooter(rgb, w, h, font, L, fallback(m.footer, "A select · B back to titles"));
+    drawFooter(rgb, w, h, font, L, fallback(m.footer, "A select · X search · Start menu · B back"));
 }
 
 void paintSearch(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, const BrowseShellLayout& L,
@@ -643,7 +662,7 @@ void paintSearch(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, c
         const int yw = textW(font, t.year, L.fontSm, false);
         text(font, w - L.margin - yw - 4, y + 4, t.year, L.fontSm, false, DIM);
     }
-    drawFooter(rgb, w, h, font, L, fallback(m.footer, "Type · A add · B back"));
+    drawFooter(rgb, w, h, font, L, fallback(m.footer, "A add · Start menu · B back"));
 }
 
 void paintLoading(std::uint8_t* rgb, int w, int h, const plexui::FontSet& font, const BrowseShellLayout& L,

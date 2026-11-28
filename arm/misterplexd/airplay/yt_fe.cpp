@@ -387,7 +387,10 @@ void YtFrontend::loungeLoop() {
                     std::lock_guard<std::mutex> lk(mu_);
                     const long before = ch_.aid;
                     fresh = ch_.accept(m);
-                    if (ch_.aid != before)
+                    // Only real commands (fresh == true) end the long-poll early for the next AID;
+                    // BrowserChannel sends an immediate "noop" flush on every GET /bind, and closing
+                    // on noop creates a 5 Hz TLS handshake storm burning ~46% of an ARM core.
+                    if (fresh && ch_.aid != before)
                         advanced = true;
                 }
                 if (fresh) onLounge(m);

@@ -7,6 +7,8 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
+#include <ctime>
 #include <vector>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +42,10 @@ void AirplayFrontend::audioIn(unsigned, const uint8_t*, int) {}
 void AirplayFrontend::audioVolume(float) {}
 void AirplayFrontend::audioFlushed() {}
 void AirplayFrontend::audioEnded(const char*) {}
+void AirplayFrontend::audioMetadata(const void*, int) {}
+void AirplayFrontend::audioCoverArt(const void*, int) {}
+void AirplayFrontend::audioCoverArtStop() {}
+void AirplayFrontend::audioProgress(uint32_t, uint32_t, uint32_t) {}
 void AirplayFrontend::audioServer() {}
 void AirplayFrontend::audioClient(int) {}
 bool AirplayFrontend::startAudio(const AirplayConfig&) { return true; }
@@ -47,9 +53,32 @@ void AirplayFrontend::advertiseOnce() {}
 #else
 namespace {
 AirplayFrontend* self(void* cls) { return static_cast<AirplayFrontend*>(cls); }
+bool airplayDebugEnabled() {
+    static const bool on = [] {
+        if (::access("/tmp/airplay-debug", F_OK) == 0)
+            return true;
+        const char* v = std::getenv("AIRPLAY_DEBUG");
+        return v && v[0] && std::strcmp(v, "0") != 0;
+    }();
+    return on;
+}
+void airplayStamp(char out[16]) {
+    using namespace std::chrono;
+    const auto now = system_clock::now();
+    const auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+    const std::time_t tt = system_clock::to_time_t(now);
+    struct tm tmBuf {};
+    gmtime_r(&tt, &tmBuf);
+    std::snprintf(out, 16, "%02d:%02d:%02d.%03d", tmBuf.tm_hour, tmBuf.tm_min, tmBuf.tm_sec,
+                  static_cast<int>(ms.count()));
+}
 void logCb(void*, int level, const char* msg) {
-    if (level <= LOGGER_INFO)
-        std::fprintf(stderr, "airplay: %s\n", msg);
+    const int maxLevel = airplayDebugEnabled() ? LOGGER_DEBUG : LOGGER_INFO;
+    if (level <= maxLevel) {
+        char ts[16];
+        airplayStamp(ts);
+        std::fprintf(stderr, "airplay[%s]: %s\n", ts, msg);
+    }
 }
 void audioProcess(void* cls, raop_ntp_t*, audio_decode_struct* a) {
     if (a && a->data)
@@ -79,6 +108,13 @@ bool checkRegister(void*, const char*) { return true; }
 // Missing stub = SEGV in the httpd thread and silent misterplexd death on a real iPhone.
 double audioClientVolume(void*) { return 0.0; }
 void audioSetVolume(void* cls, float db) { self(cls)->audioVolume(db); }
+void audioSetMetadata(void* cls, const void* buf, int len) { self(cls)->audioMetadata(buf, len); }
+void audioSetCoverart(void* cls, const void* buf, int len) { self(cls)->audioCoverArt(buf, len); }
+void audioStopCoverart(void* cls) { self(cls)->audioCoverArtStop(); }
+void audioSetProgress(void* cls, uint32_t* start, uint32_t* curr, uint32_t* end) {
+    if (start && curr && end)
+        self(cls)->audioProgress(*start, *curr, *end);
+}
 void audioFlush(void* cls) { self(cls)->audioFlushed(); }
 void connDestroy(void* cls) {
     self(cls)->mirrorEnded("conn_destroy");
@@ -213,31 +249,52 @@ void AirplayFrontend::audioIn(unsigned ct, const uint8_t* data, int len) {
         return;
     }
 #endif
-    if (urlActive_.load() || audioUrl_.empty())
+    if (urlActive_.load())
         return;   // a URL/HLS cast owns the screen; its audio comes through the HLS stream
+    const bool directRing = static_cast<bool>(cfg_.onAudioPcm);
+    if (!directRing && audioUrl_.empty())
+        return;
+    lastAudioMs_.store(nowMs());
+    if (!audioActive_.exchange(true)) {
+        const char* codecName = raopCodecName(raopCodecFromCt(ct));
+        if (directRing) {
+            std::fprintf(stderr, "airplay: RAOP audio start codec=%s -> direct OwenbRing\n", codecName);
+            if (cfg_.onAudioState)
+                cfg_.onAudioState(true, codecName ? codecName : "");
+            snap_.loading(0);
+            if (!q_.push({ApEventType::AudioStart, codecName ? codecName : "", 0}))
+                std::fprintf(stderr, "airplay: direct audio start dropped (queue)\n");
+        } else {
+            std::fprintf(stderr, "airplay: RAOP audio start codec=%s -> %s\n", codecName,
+                         misterplex::logUrl(audioUrl_).c_str());
+            if (cfg_.onAudioState)
+                cfg_.onAudioState(true, codecName ? codecName : "");
+            snap_.loading(0);
+            if (!q_.push({ApEventType::Play, audioUrl_, 0}))
+                std::fprintf(stderr, "airplay: audio play dropped (queue)\n");
+        }
+    }
 #ifdef MPX_HAVE_LIBAV
     auto* dec = static_cast<RaopDecoder*>(dec_);
-    if (decFlush_.exchange(false))
-        dec->flush();
-    dec->setVolumeDb(volumeDb_.load());
-    std::vector<uint8_t> pcm;
-    if (dec->decode(ct, data, len, pcm) && !pcm.empty())
-        pcm_.push(pcm.data(), pcm.size());
-    else if (dec->errors() == 1 || (dec->errors() && dec->errors() % 500 == 0))
-        std::fprintf(stderr, "airplay: audio decode error ct=%u len=%d errors=%llu (every packet failing = wrong AES key: advertised features bit 27 must be off)\n", ct, len,
-                     static_cast<unsigned long long>(dec->errors()));
+    if (dec) {
+        if (decFlush_.exchange(false))
+            dec->flush();
+        dec->setVolumeDb(volumeDb_.load());
+        std::vector<uint8_t> pcm;
+        if (dec->decode(ct, data, len, pcm) && !pcm.empty()) {
+            if (directRing)
+                cfg_.onAudioPcm(pcm.data(), pcm.size());
+            else
+                pcm_.push(pcm.data(), pcm.size());
+        } else if (dec->errors() == 1 || (dec->errors() && dec->errors() % 500 == 0)) {
+            std::fprintf(stderr, "airplay: audio decode error ct=%u len=%d errors=%llu (every packet failing = wrong AES key: advertised features bit 27 must be off)\n", ct, len,
+                         static_cast<unsigned long long>(dec->errors()));
+        }
+    }
 #else
     (void)data;
     (void)len;
 #endif
-    lastAudioMs_.store(nowMs());
-    if (!audioActive_.exchange(true)) {
-        std::fprintf(stderr, "airplay: RAOP audio start codec=%s -> %s\n", raopCodecName(raopCodecFromCt(ct)),
-                     misterplex::logUrl(audioUrl_).c_str());
-        snap_.loading(0);
-        if (!q_.push({ApEventType::Play, audioUrl_, 0}))
-            std::fprintf(stderr, "airplay: audio play dropped (queue)\n");
-    }
 }
 
 void AirplayFrontend::audioVolume(float db) {
@@ -248,16 +305,50 @@ void AirplayFrontend::audioVolume(float db) {
 void AirplayFrontend::audioFlushed() {
     decFlush_.store(true);
     pcm_.flush();
+    if (cfg_.onAudioFlush)
+        cfg_.onAudioFlush();
 }
 
 void AirplayFrontend::audioEnded(const char* why) {
     if (!audioActive_.exchange(false))
         return;
     std::fprintf(stderr, "airplay: RAOP audio end (%s)\n", why);
+    if (cfg_.onAudioState)
+        cfg_.onAudioState(false, "");
     decFlush_.store(true);
     pcm_.flush();
     pcm_.closeAll();   // live /raop.wav readers see EOF; the next session attaches fresh listeners
-    q_.push({ApEventType::Stop, "", 0});
+    q_.push({cfg_.onAudioPcm ? ApEventType::AudioStop : ApEventType::Stop, "", 0});
+}
+
+void AirplayFrontend::audioMetadata(const void* buf, int len) {
+    if (urlActive_.load() || mirrorActive_.load() || !buf || len <= 0)
+        return;
+    if (cfg_.onAudioMetadata)
+        cfg_.onAudioMetadata(static_cast<const uint8_t*>(buf), static_cast<size_t>(len));
+}
+
+void AirplayFrontend::audioCoverArt(const void* buf, int len) {
+    if (urlActive_.load() || mirrorActive_.load())
+        return;
+    if (cfg_.onAudioCoverArt) {
+        if (!buf || len <= 0)
+            cfg_.onAudioCoverArt(nullptr, 0);
+        else
+            cfg_.onAudioCoverArt(static_cast<const uint8_t*>(buf), static_cast<size_t>(len));
+    }
+}
+
+void AirplayFrontend::audioCoverArtStop() {
+    if (cfg_.onAudioCoverArt)
+        cfg_.onAudioCoverArt(nullptr, 0);
+}
+
+void AirplayFrontend::audioProgress(uint32_t start, uint32_t curr, uint32_t end) {
+    if (urlActive_.load() || mirrorActive_.load())
+        return;
+    if (cfg_.onAudioProgress)
+        cfg_.onAudioProgress(start, curr, end);
 }
 
 // Minimal live server: GET /raop.wav -> WAV header + PCM while the client stays connected.
@@ -351,6 +442,12 @@ bool AirplayFrontend::startAudio(const AirplayConfig& cfg) {
     std::fprintf(stderr, "airplay: RAOP audio off (no libav in this build)\n");
     return true;
 #else
+    if (cfg.onAudioPcm) {
+        if (!dec_)
+            dec_ = new RaopDecoder();
+        std::fprintf(stderr, "airplay: RAOP audio on: AAC-ELD/AAC-LC/ALAC -> 48k s16 (direct OwenbRing)\n");
+        return true;
+    }
     if (cfg.audioPort == 0)
         return true;
     if (audioFd_ >= 0)
@@ -446,6 +543,10 @@ bool AirplayFrontend::start(const AirplayConfig& cfg, Sink sink) {
     cb.audio_set_client_volume = audioClientVolume;
 #endif
     cb.audio_set_volume = audioSetVolume;
+    cb.audio_set_metadata = audioSetMetadata;
+    cb.audio_set_coverart = audioSetCoverart;
+    cb.audio_stop_coverart_rendering = audioStopCoverart;
+    cb.audio_set_progress = audioSetProgress;
     cb.audio_get_format = audioGetFormat;
     cb.video_report_size = videoReportSize;
     cb.mirror_video_running = mirrorVideoRunning;
@@ -464,7 +565,7 @@ bool AirplayFrontend::start(const AirplayConfig& cfg, Sink sink) {
         return false;
     }
     raop_set_log_callback(r, logCb, nullptr);
-    raop_set_log_level(r, LOGGER_INFO);
+    raop_set_log_level(r, airplayDebugEnabled() ? LOGGER_DEBUG : LOGGER_INFO);
     if (raop_init2(r, 1, devId.c_str(), cfg.keyfile.c_str())) {
         std::fprintf(stderr, "airplay: raop_init2 failed\n");
         raop_destroy(r);

@@ -42,13 +42,26 @@ inline std::string formatSpelunkrGuideText(int dial, std::string_view name, std:
 struct FormattedGuideRow {
     GuideSource source = GuideSource::None;
     std::string text;
+    std::string dial;
+    std::string channelName;
+    std::string nowTitle;
+    std::string nextTitle;
+    int remainingMin = -1;  // minutes left in current program, or -1 if unknown
+    int progressPct = -1;   // 0..100 elapsed percent, or -1 if unknown
 };
 
 inline FormattedGuideRow formatSpelunkrGuideRow(std::string_view section, int dial, std::string_view name,
-                                               std::string_view nowTitle) {
+                                               std::string_view nowTitle, std::string_view nextTitle = {},
+                                               int remainingMin = -1, int progressPct = -1) {
     FormattedGuideRow r;
     r.source = guideSourceFromSection(section);
     r.text = formatSpelunkrGuideText(dial, name, nowTitle);
+    r.dial = std::to_string(dial);
+    r.channelName.assign(name.data(), name.size());
+    r.nowTitle.assign(nowTitle.data(), nowTitle.size());
+    r.nextTitle.assign(nextTitle.data(), nextTitle.size());
+    r.remainingMin = remainingMin;
+    r.progressPct = progressPct;
     return r;
 }
 

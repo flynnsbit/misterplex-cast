@@ -312,6 +312,26 @@ std::string serverLinkLabel(const PlexServer& server) {
     return "remote";
 }
 
+std::string serverExpectedLocality(const PlexServer& server) {
+    if (!server.offline && !server.baseUrl.empty()) {
+        const std::string lbl = serverLinkLabel(server);
+        if (lbl == "local")
+            return "local";
+        if (lbl == "remote" || lbl == "relay")
+            return "remote";
+    }
+    if (!server.owned && !server.publicAddressMatches)
+        return "remote";
+    if (serverHasPrivateLanReach(server))
+        return "local";
+    for (const auto& c : server.connections) {
+        if (c.local && !c.relay &&
+            (c.address == "127.0.0.1" || c.address == "localhost" || c.address == "::1"))
+            return "local";
+    }
+    return "remote";
+}
+
 namespace {
 
 constexpr int kProbeConnectMs = 1500;
@@ -433,13 +453,17 @@ std::string probeServerBaseParallel(HttpGetFn get, PlexServer s, const BrowseCan
     const std::string expect = strict ? s.confTokenId : identityExpectId(s);
     std::mutex m;
     std::condition_variable cv;
+    std::atomic<bool> stopProbes{false};
+    const BrowseCancelFn probeCancel = [cancel, &stopProbes] {
+        return stopProbes.load(std::memory_order_relaxed) || (cancel && cancel());
+    };
     std::vector<int> res(bases.size(), -1);   // -1 running, 0 fail, 1 ok
     std::vector<std::string> gotIds(bases.size());
     std::vector<std::thread> th;
     for (size_t i = 0; i < bases.size(); ++i)
         th.emplace_back([&, i] {
             const bool ok =
-                probeIdentity(get, bases[i], s.accessToken, cancel, s.name, expect, &gotIds[i], strict);
+                probeIdentity(get, bases[i], s.accessToken, probeCancel, s.name, expect, &gotIds[i], strict);
             std::lock_guard<std::mutex> lk(m);
             res[i] = ok ? 1 : 0;
             cv.notify_all();
@@ -470,6 +494,7 @@ std::string probeServerBaseParallel(HttpGetFn get, PlexServer s, const BrowseCan
             cv.wait_for(lk, std::chrono::milliseconds(best >= 0 ? 20 : 50));
         }
     }
+    stopProbes.store(true, std::memory_order_relaxed);
     if (!win.empty() && outMachineId) {
         for (size_t i = 0; i < bases.size(); ++i) {
             if (bases[i] == win) {
@@ -522,8 +547,10 @@ void resolveServerBases(HttpGetFn get, std::vector<PlexServer>& servers,
                         const BrowseCancelFn& cancel) {
     auto& cache = serverBaseCache();
     const bool tlsVerify = !plexUiCaBundlePath().empty();
+    std::vector<std::string> prevBases(servers.size());
     std::vector<std::future<std::tuple<std::size_t, std::string, std::string>>> jobs;
     for (size_t i = 0; i < servers.size(); ++i) {
+        prevBases[i] = servers[i].baseUrl;
         if (servers[i].connections.empty())
             continue;
         if (!servers[i].machineIdentifier.empty() &&
@@ -538,27 +565,36 @@ void resolveServerBases(HttpGetFn get, std::vector<PlexServer>& servers,
         PlexServer copy = servers[i];
         jobs.push_back(std::async(std::launch::async, [get, copy, cancel, tlsVerify, i] {
             std::string got;
-            const std::string base = probeServerBase(get, std::move(copy), cancel, tlsVerify, &got);
+            const std::string base =
+                probeServerBaseParallel(get, std::move(copy), cancel, tlsVerify, {}, &got);
             return std::make_tuple(i, base, got);
         }));
     }
-    for (auto& j : jobs) {
-        const auto pr = j.get();
-        if (cancel && cancel())
-            return;
-        PlexServer& s = servers[std::get<0>(pr)];
-        if (!std::get<1>(pr).empty()) {
-            s.baseUrl = std::get<1>(pr);
-            s.offline = false;
-            if (!std::get<2>(pr).empty() &&
-                (s.machineIdentifier.empty() || isSyntheticLocalServerId(s.machineIdentifier)))
-                s.machineIdentifier = std::get<2>(pr);
-            if (!s.machineIdentifier.empty())
-                cache[s.machineIdentifier] = std::get<1>(pr);
-        } else {
-            s.offline = true;
+    const bool wasCancelled = [&] {
+        bool c = false;
+        for (auto& j : jobs) {
+            const auto pr = j.get();
+            const bool cancelledNow = cancel && cancel();
+            c = c || cancelledNow;
+            const std::size_t idx = std::get<0>(pr);
+            PlexServer& s = servers[idx];
+            if (!std::get<1>(pr).empty()) {
+                s.baseUrl = std::get<1>(pr);
+                s.offline = false;
+                if (!std::get<2>(pr).empty() &&
+                    (s.machineIdentifier.empty() || isSyntheticLocalServerId(s.machineIdentifier)))
+                    s.machineIdentifier = std::get<2>(pr);
+                if (!s.machineIdentifier.empty())
+                    cache[s.machineIdentifier] = std::get<1>(pr);
+            } else if (cancelledNow) {
+                s.baseUrl = prevBases[idx];
+            } else {
+                s.offline = true;
+            }
         }
-    }
+        return c;
+    }();
+    (void)wasCancelled;
     collapseServersByIdentity(servers);
 }
 
@@ -1298,6 +1334,11 @@ void mergeInto(std::vector<PlexServer>& out, const PlexServer& incoming, bool pr
         // refused, no chevron), or the dead row's token/id overwrote the live one. Answered wins.
         const bool eLive = !e.baseUrl.empty() && !e.offline;
         const bool inLive = !incoming.baseUrl.empty() && !incoming.offline;
+        // Synthetic conf seed upgraded by the authoritative plex.tv Device for the same verified id.
+        const bool seedToAcct = e.clientIdentifier.empty() && !incoming.clientIdentifier.empty() &&
+                                sameServerId(e, incoming);
+        // Existing plex.tv Device must not have its token/ownership clobbered by a later conf seed.
+        const bool acctVsSeed = !e.clientIdentifier.empty() && incoming.clientIdentifier.empty();
 #ifndef MUT_MERGE_DEAD_WINS
         const bool keepE = eLive && incoming.offline;   // probed dead: never overwrites a live row
         if (inLive)
@@ -1307,16 +1348,33 @@ void mergeInto(std::vector<PlexServer>& out, const PlexServer& incoming, bool pr
         (void)eLive;
         (void)inLive;
 #endif
-        if (!keepE) {
-            if (preferIncoming && !incoming.name.empty())
+        if (seedToAcct) {
+            if (!incoming.name.empty())
                 e.name = incoming.name;
-            if (!incoming.accessToken.empty() && incoming.accessToken != e.accessToken) {
+            e.clientIdentifier = incoming.clientIdentifier;
+            e.owned = incoming.owned;
+            e.publicAddressMatches = incoming.publicAddressMatches;
+            if (!incoming.sourceTitle.empty())
+                e.sourceTitle = incoming.sourceTitle;
+            if (!incoming.accessToken.empty()) {
+                e.accessToken = incoming.accessToken;
+                e.confTokenId = incoming.confTokenId;
+            }
+            if (!keepE && !incoming.baseUrl.empty())
+                e.baseUrl = incoming.baseUrl;
+        } else if (!keepE) {
+            if (preferIncoming && !incoming.name.empty() && !acctVsSeed)
+                e.name = incoming.name;
+            if (!incoming.accessToken.empty() && incoming.accessToken != e.accessToken &&
+                (!acctVsSeed || e.accessToken.empty())) {
                 e.accessToken = incoming.accessToken;
                 e.confTokenId = incoming.confTokenId;   // plex.tv token: no longer the conf token
             }
             if (!incoming.machineIdentifier.empty() &&
                 incoming.machineIdentifier.compare(0, 6, "local:") != 0)
                 e.machineIdentifier = incoming.machineIdentifier;
+            if (!incoming.clientIdentifier.empty() && e.clientIdentifier.empty())
+                e.clientIdentifier = incoming.clientIdentifier;
             if (!incoming.sourceTitle.empty())
                 e.sourceTitle = incoming.sourceTitle;
             if (!incoming.baseUrl.empty())
@@ -1339,7 +1397,10 @@ void mergeInto(std::vector<PlexServer>& out, const PlexServer& incoming, bool pr
             if (!dup)
                 e.connections.push_back(ic);
         }
-        e.owned = e.owned || incoming.owned;
+        if (!seedToAcct && !acctVsSeed) {
+            e.owned = e.owned || incoming.owned;
+            e.publicAddressMatches = e.publicAddressMatches || incoming.publicAddressMatches;
+        }
         return;
     }
     out.push_back(incoming);
@@ -1405,7 +1466,6 @@ PlexServer makeLocalPlexServer(std::string name, std::string baseUrl, const std:
         c.protocol = "https";
     else
         c.protocol = "http";
-    c.local = true;
     c.uri = s.baseUrl;
     std::string hp = hostPort;
     const size_t colon = hp.rfind(':');
@@ -1416,6 +1476,8 @@ PlexServer makeLocalPlexServer(std::string name, std::string baseUrl, const std:
         c.address = hp;
         c.port = c.protocol == "https" ? "443" : "32400";
     }
+    c.local = hostIsPrivateLan(c.address) || c.address == "127.0.0.1" ||
+              c.address == "localhost" || c.address == "::1";
     s.connections.push_back(std::move(c));
     return s;
 }

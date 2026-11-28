@@ -373,6 +373,24 @@ inline RemoteDirectPmsCheck remoteDirectCheckFromPmsXml(const std::string& xml) 
     return r;
 }
 
+// Audio codecs compiled into static libavcodec (scripts/check_arm_ffmpeg_static.py EXPECTED_DECODERS).
+// Any non-empty codec outside this allowlist (e.g. dca/dts, truehd, mlp, mp2, pcm_bluray, wmapro)
+// cannot be decoded on-device and must be transcoded to stereo AAC by PMS rather than direct-played.
+inline bool audioCodecSupportedForDirectPlay(const std::string& codec) {
+    size_t b = 0;
+    size_t e = codec.size();
+    while (b < e && (codec[b] == ' ' || codec[b] == '\t')) ++b;
+    while (e > b && (codec[e - 1] == ' ' || codec[e - 1] == '\t')) --e;
+    if (b == e)
+        return true;
+    const std::string c = remoteDirectPmsLower(codec.substr(b, e - b));
+    return c == "aac" || c == "aac_latm" || c == "mp4a" ||
+           c == "ac3" || c == "eac3" || c == "ec-3" || c == "ec3" ||
+           c == "mp3" || c == "mp3float" ||
+           c == "flac" || c == "alac" || c == "opus" || c == "vorbis" ||
+           c == "pcm_s16le" || c == "pcm_s24le" || c == "pcm_s32le" || c == "pcm_f32le";
+}
+
 // Flag on + remote + fits: take the Part directly. Flag off: never (tip path unchanged).
 inline bool remoteDirectPlay(bool flagOn, bool wan, bool fits, bool noAudioSubWork) {
 #ifdef MUT_RDIRECT_OFF_TAKES

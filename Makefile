@@ -1455,6 +1455,7 @@ $(ROOT)/build/test_owenb_core_gate.mutant-check: $(ROOT)/build/test_owenb_core_g
 # 48 kHz resample, a container seek); it builds only where the FFmpeg dev libs are (COMPRESSED_SYNTAX_OK pattern).
 # T6: the OB overlay renderer's headers (owenb_play.hpp includes them).
 OWENB_OSD_HDRS := $(ROOT)/host/libmisterplex/owenb_osd_layout.hpp $(ROOT)/host/libmisterplex/owenb_osd_draw.hpp \
+		$(ROOT)/host/libmisterplex/airplay_now_playing.hpp \
 		$(ROOT)/host/libmisterplex/owenb_osd_renderer.hpp $(ROOT)/host/libmisterplex/owenb_aspect_guard.hpp \
 		$(ROOT)/host/libmisterplex/owenb_aspect.hpp $(ROOT)/host/libmisterplex/h264_sps.hpp \
 		$(ROOT)/host/libmisterplex/fpga_playback_overlay.hpp \
@@ -6445,7 +6446,18 @@ $(ROOT)/build/test_ad_break_card.mutant-check: $(ROOT)/build/test_ad_break_card.
 		rm -f $@.$$m; done
 	@echo "test_ad_break_card: $(ADCARD_MUTANTS) FAIL as required" | tee $@
 unit-unlocked unit-host-unlocked: $(ROOT)/build/test_yt_live_adbreak.ok $(ROOT)/build/test_yt_live_adbreak.mutant-check \
-	$(ROOT)/build/test_ad_break_card.ok $(ROOT)/build/test_ad_break_card.mutant-check
+	$(ROOT)/build/test_ad_break_card.ok $(ROOT)/build/test_ad_break_card.mutant-check \
+	$(ROOT)/build/test_airplay_now_playing.ok
+
+APNP_SRC := $(ROOT)/tests/unit/test_airplay_now_playing.cpp $(ROOT)/host/libmisterplex/airplay_now_playing.hpp \
+	$(ROOT)/host/libmisterplex/airplay_cover_load.hpp $(ROOT)/host/libmisterplex/owenb_osd_draw.hpp \
+	$(ROOT)/host/libmisterplex/owenb_osd_renderer.hpp
+$(ROOT)/build/test_airplay_now_playing: $(APNP_SRC)
+	@mkdir -p $(ROOT)/build
+	$(CXX) $(CXXFLAGS) -pthread -I$(ROOT)/host -I$(ROOT)/third_party/owenb-h264ring/include -I$(ROOT)/arm/misterplexd -o $@ $(ROOT)/tests/unit/test_airplay_now_playing.cpp -lm
+$(ROOT)/build/test_airplay_now_playing.ok: $(ROOT)/build/test_airplay_now_playing
+	( ulimit -c 0; $(ROOT)/build/test_airplay_now_playing )
+	touch $@
 
 # YT_CAST_TITLE: OSD / now-playing uses the extract title already on the yt-dlp child. Unset stays the tip path.
 # #214 glass 10/31: caption yt-dlp child timeout + real VTT fixtures (fake yt-dlp sleeps 22 s).

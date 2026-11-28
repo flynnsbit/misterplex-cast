@@ -102,6 +102,9 @@ struct ObMenuState {
     // SPELUNKR=1 TV on the owenb core: pad Up/Down zap (or move the guide cursor).
     bool spelunkrTv = false;
     bool spelunkrGuideOpen = false;
+    // AirPlay Audio Now Playing screen active (pad A toggles full-screen cover art).
+    bool airplayAudioActive = false;
+    bool airplayFullArt = false;
 };
 
 enum class ObMenuCmd : uint8_t {
@@ -713,11 +716,17 @@ inline ObRoute obRoute(ObNav n, const ObMenuState& s) {
     if (n == ObNav::Info && s.libraryAvailable) return cmd(PlaybackCommand::Browse);   // mutant: X browses in a play / library
 #endif
     if (s.spelunkrTv) {
-      if (n == ObNav::Aux)
+      // Unified controller map: Start opens the sub-menu, X (and Home/Select) toggles
+      // the Streaming Guide, Y shows the channel info banner (or closes an open guide),
+      // B closes an open guide (never pops it open), A tunes/opens guide.
+      if (n == ObNav::Menu)
         return {ObRouteKind::OpenMenu, PlaybackCommand::None};
-      if (n == ObNav::Menu || n == ObNav::Home || n == ObNav::Info ||
-          n == ObNav::Back)
+      if (n == ObNav::Info || n == ObNav::Home)
         return cmd(PlaybackCommand::GuideToggle);
+      if (n == ObNav::Aux)
+        return cmd(s.spelunkrGuideOpen ? PlaybackCommand::GuideClose : PlaybackCommand::Info);
+      if (n == ObNav::Back)
+        return s.spelunkrGuideOpen ? cmd(PlaybackCommand::GuideClose) : ObRoute{};
 #ifndef MUT_SPELUNKR_GUIDE_LR_OFF
       if (s.spelunkrGuideOpen) {
 #ifndef MUT_SPELUNKR_GUIDE_LR_SWAP
@@ -743,13 +752,10 @@ inline ObRoute obRoute(ObNav n, const ObMenuState& s) {
                        : PlaybackCommand::GuideToggle);  // GH#411: never Plex pause (frozen frame / CH 8)
       return {};
     }
-    if (n == ObNav::Menu || (n == ObNav::Aux && !s.playing)) { // Aux: pad Y, the menu off a play
-        // Idle Program / Start / F12-after-OSD: skip the "Browse the library"
-        // panel. Y (Aux) still opens the panel so transport stays one button
-        // away. Keyboard P is that Aux only on Ready idle when IDLE_MENU_KEY is
-        // on (obIdleMenuKey). P is not a key in a play or in PlexUI.
-        if (n == ObNav::Menu && !s.playing && !s.libraryVisible && s.libraryAvailable)
-            return cmd(PlaybackCommand::Browse);
+    if (n == ObNav::Menu || (n == ObNav::Aux && !s.playing)) {
+        // Unified controller map: Start (Menu) always opens the MiSTerPlex sub-menu
+        // across Idle, Browse, Playback, and Live TV. Keyboard P (IDLE_MENU_KEY)
+        // maps to Aux on Ready idle and also opens the sub-menu.
         ObRoute r;
         r.kind = ObRouteKind::OpenMenu;
         return r;
@@ -812,6 +818,12 @@ inline ObRoute obRoute(ObNav n, const ObMenuState& s) {
             return cmd(PlaybackCommand::Back);
         default: return {};
         }
+    }
+    if (s.airplayAudioActive) {
+        if (n == ObNav::Select)
+            return cmd(PlaybackCommand::AirplayArtToggle);
+        if (n == ObNav::Back && s.airplayFullArt)
+            return cmd(PlaybackCommand::AirplayArtToggle);
     }
     if (s.playing && s.markerUiVisible) {
         if (n == ObNav::Select) {

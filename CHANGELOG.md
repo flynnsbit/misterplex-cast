@@ -2,12 +2,45 @@
 
 All notable changes to MiSTerPlex, written for people running it on a MiSTer.
 
+## v2.1.0 (27 November 2026)
+
+Minor feature release bringing a complete AirPlay Audio (RAOP / Apple Music) overhaul with instant connect, dropout-free direct PCM playback, and a CRT-friendly cover-art Now Playing screen, plus a 1990s Prevue Blue & Gold redesign for the Live TV Streaming Guide and matching Channel Overlay.
+
+### Features
+
+- **AirPlay Audio (RAOP) Now Playing screen & cover art (`78dfa4f1`, `4658eaea`).** Added a vertically stacked, 4:3/CRT-friendly AirPlay Audio Now Playing layout displaying album artwork on top with track/artist/album metadata, codec badge (`AIRPLAY · AAC-LC` / `ALAC`), and amber progress scrubber below across **720p**, **480p/480i**, and **240p**. Pressing pad **A** toggles full-screen album cover art and returns to the standard layout.
+- **Apple Music & iTunes desktop/mobile compatibility (`ea04db03`, `e6995217`).** Added clean-room FairPlay v2 (`0x02`) support for Apple Music / iTunes on macOS and Windows alongside classic RAOP `ANNOUNCE` + SDP `SETUP` negotiation.
+- **1990s Prevue Blue & Gold Live TV Streaming Guide (`5d415fd9`).** Redesigned the Live TV / Spelunkr guide into a 1990s Prevue Blue & Gold 2-line channel grid with a top featured box (wrapped full show title, `NEXT:` preview, remaining time, progress bar), local clock, page counter, bordered `CH` cells, and full-page `L`/`R` paging so long show titles are never truncated.
+- **Matching 90s Prevue Live TV Channel Overlay (`5d415fd9`, `7ccb421c`).** Redesigned the Live TV channel info / tune banner to match the Prevue guide with a gold `CH` dial plate, service badge (`S` / `BW` / `V` / `P`), `ON AIR` / `TUNING` status pill, local clock, `UP NEXT`, remaining time, and elapsed progress bar with playhead pip.
+- **Updated live HDMI screenshot gallery (`7ccb421c`).** Added live 1280×720 HDMI captures of the new 90s Prevue Streaming Guide (`docs/screenshots/hdmi/streaming-guide.png`), Live TV Channel Overlay (`docs/screenshots/hdmi/live-tv-channel-overlay.png`), and AirPlay Audio Cover Art (`docs/screenshots/hdmi/airplay-audio-coverart.png`) to `README.md` and `docs/SCREENSHOTS.md`.
+
+### Fixes
+
+- **Eliminated ~30 s Apple Music AirPlay connect delay (`8ebe68f9`).** Added mDNS `NSEC` negative host replies for unmatched `AAAA` / `HTTPS` / `SVCB` queries so macOS / iOS / Windows Apple Music resolves the MiSTer immediately instead of waiting on mDNS timeouts.
+- **Eliminated AirPlay audio dropouts & CPU contention (`e94592c0`, `3284d6e1`).** Routed AirPlay RAOP audio directly to `OwenbRing` PCM and moved cover-art JPEG/PNG decoding onto an async worker (removing the heavy `showspectrum`/x264 transcode loop), and stopped idle YouTube Lounge 5 Hz TLS reconnect churn while AirPlay is active.
+- **AirPlay audio stream-copy & faster fallback AAC encode (`76f91ff7`, `flynnsbit/misterplex-cast#4`).** Stream-copies MPEG-TS-native audio codecs directly and speeds up fallback AAC encoding in the AirPlay helper.
+- **Live TV channel overlay metadata preservation (`7ccb421c`).** Fixed `MediaPlayer::play()`'s `UiModel` reset and same-channel `UiBus::armPlayPending()` handoffs clearing the Prevue banner's service badge, clock, `UP NEXT`, remaining time, and progress bar right when video playback starts.
+
+### Known issues
+
+- **Live TV OSD service-switch timing.** Switching between Plex and Live TV via the core F12 **Service** menu typically takes ~6–8 s on a warm card (plus ~8 s for the first Live TV channel tune), and longer if the F12 OSD stays open during the switch.
+- **Picture subtitles (PGS / VobSub).** Text subtitles (`SRT`/`ASS`) render on the overlay; picture subtitles require opt-in server burn-in (`BURN_SUBS_FIX=1` / `AUTO_BURN=1`).
+- **Outputs not yet verified on real TVs.** S-Video, composite, analog CRT captures (`docs/screenshots/analog/`), CEA 1080p, and `HDMI Native 960x480` 2x browse layout await real-TV verification.
+- **Optional flags awaiting end-to-end TV testing.** `YT_CAPTIONS=1` and `YT_LIVE=1` (off by default) await end-to-end TV testing.
+- **LAN-only network trust.** Never forward TCP `3005`, TCP `7000`, or TCP `8008` to the internet or an untrusted network.
+
 ## v2.0.1 (25 November 2026)
 
 Bugfix and polish release over v2.0.0, fixing Vevo/Pluto post-ad-break A/V desync, Pluto 55 s `PREFETCH TIMEOUT`, and cold-boot Spelunkr guide landing, plus a Cold-Boot Guide and consolidated known-issues documentation.
 
 ### Fixes
 
+- **Pluto / Vevo Ad Break card timing sync.** `MediaPlayer::adFramePositionMs()` now polls the FPGA hardware `RC_PIC` decoded-frame counter (`OwenbPlayer::coreStatus().picsReconstructed`) directly on `OwenbRing` sessions instead of the demux-thread position (`adLastPosMs_`), so the Ad Break card waits until buffered DDR frames actually finish playing out on screen before showing right at the end of the video instead of overlaying several seconds early.
+- **Installer & configurator fixes.** Aligned `configure-misterplex.sh` (`--safe-margin` CLI, dialog, and help) to `0`–`15` matching `misterplexd`'s `UI_SAFE_MARGIN` clamp, and updated `install-misterplex.sh` to start `misterplexd` immediately at the end of a live MiSTer install when `--reboot` is not passed.
+- **Unsupported audio codec direct-play fix (DTS/`dca`, TrueHD, MLP, MP2, etc.).** Direct-play gating now checks `audioCodecSupportedForDirectPlay()` against the static `libavcodec` decoder set; titles whose selected audio track is not compiled in (such as DTS 5.1 MKVs) now automatically force PMS universal transcoding to stereo AAC instead of playing video with silence, and `openAudioDecoder()` logs a clear warning if a decoder ever fails to open.
+- **Remote Plex server locality & first-click HTTP 401 fix.** Public/WAN seed URLs now classify as `remote` immediately on cold boot instead of `local`; `resolveServerBases()` probes candidate URLs in parallel with immediate cancellation of losing probes; `mergeInto()` preserves `plex.tv` tokens/ownership; and `openLibraries()` / `runSearch()` automatically refresh credentials and retry on missing token or HTTP 401.
+- **On-device Plex Browse additions.** Added **Recommended** (Continue Watching / On Deck / Recently Added), persistent **Last Page** resume per server (`last_pages.json`), and server-wide **Search** at the top of Libraries (keeping initial focus on the first real library), plus episode `S01E03` / `Show · S01E03` formatting, 3 px amber Grid progress bars, and `Y` server refresh, while keeping `0.0` heap allocations/event on the nav benchmark.
+- **Unified controller buttons across Idle, Plex Browse, Plex Playback, and Live TV.** Standardized **Start** (`ObNav::Menu`) to always open/close the MiSTerPlex sub-menu, **A** = Select / Play-Pause / Tune, **B** = Back / Close / Stop (inert on Live TV when guide is closed), **X** = Search (Browse) / Streaming Guide toggle (Live TV) / Skip Forward (Playback), and **Y** = Grid/List or Refresh (Browse) / Channel Info banner (Live TV) / Skip Back (Playback). Fixed OSD yielding over Browse and Live TV Guide and full-band surface restore when closing the sub-menu over Browse.
 - **Vevo / Pluto ad-break → next video A/V sync.** On Pluto ad-skip content return, `LiveRelay` invokes `MediaPlayer::reopenLiveAfterAdBreak()` to cleanly reopen `/yt-live.ts` on a fresh `-copyts -avoid_negative_ts make_zero` first spawn (running `AvSource::avStartGate()` `skip_gop` and flushing `OwenbRing` STC) while holding the Ad Break card until aligned picture runs (`reopen=1`, `ad card cleared why=ad_reopen_picture`). `live_disc::notePacket()` also invalidates the opposite stream's stale pre-splice raw PTS on any discontinuity rebase so a cross-stream splice triggers one rebase instead of two, and `OwenbPlaySession::readOne()` honors a queued reopen `Seek` on intentional old-socket EOF.
 - **Cold-boot Live TV (`Spelunkr`) lands on the Streaming Guide (`481f7634`).** On cold daemon start / first core open (`!preferCurrent`), Spelunkr opens the Streaming Guide by design even when `SPELUNKR_LAST_CHANNEL` is set; in-session core reopens continue resuming the current or saved last channel.
 - **Pluto 55 s `PREFETCH TIMEOUT` fix (`49499247`).** `HeaderCacheAvio::doRead()` updates header-fetch progress only while recording (stopping steady-state playback on another channel from poisoning a concurrent Pluto tune's zap window), `tryPlutoLiveOpenRetry()` re-arms `zapWindowRestarts`/`zapWindowStartMs` for bounded retries, `avStartGate()` sets a single-consumption `skip_gop` progress guard, and `guideThr` yields between manifest fetches while a playjob is active.
@@ -15,12 +48,11 @@ Bugfix and polish release over v2.0.0, fixing Vevo/Pluto post-ad-break A/V desyn
 
 ### Known issues
 
-- **Static helper `ffmpeg`/`ffprobe` SDT streams require the launch wrapper.** Direct invocations without `GCONV_PATH` abort (`rc=134`) on DVB SDT-bearing MPEG-TS / HLS streams; invoke via `run-airplay-xcode.sh` (`60cba938`) / `run-gcast-xcode.sh` (`1f8c2b39`).
-- **Pluto / 1066 reopen, service-switch timing, & 960x480 glass status.** Rare 1066 core-reopen black pause (~10.1 s, 1/4 on glass, self-recovering), ~30 s first tune after an OSD service switch (longer if OSD stays open), and unscored `HDMI Native 960x480` 2x layout.
-- **Installer `_Utility` / `_Utilities` cleanup, reboot requirement, & `UI_SAFE_MARGIN` clamp.** `install-misterplex.sh` moves legacy `/media/fat/MiSTerPlex.rbf` into `/media/fat/misterplex/backup/`, migrates `/media/fat/_Utilities/misterplex/` into `/media/fat/misterplex/`, and requires a reboot after a fresh install (`misterplexd-boot-rc3.sh start` without reboot may not bring up the daemon). Uninstall lives in **Scripts > configure-misterplex > 4 Uninstall** (no standalone `bin/uninstall-misterplex.sh` in the runtime tar). Old root `PlexOB.rbf` copies from pre-v2 installs may remain visible in the Cores menu until removed. `configure-misterplex.sh --safe-margin` accepts `0`–`20` while `misterplexd` clamps above `15`.
-- **Analog CRT, S-Video/composite, CEA 1080p, & architecture diagram.** Analog CRT captures (`docs/screenshots/analog/`), S-Video/composite TV validation, CEA 1080p measurements, and redrawing `docs/misterplex-architecture.svg`/`.png` for seed-14 `0x0B112501` remain post-release work.
-- **Unverified optional / guard features.** `AIRPLAY_MIRROR=1` (on in shipped conf), on-card AirPlay helper live video/HLS on MiSTer hardware, YouTube `YT_CAPTIONS=1` and `YT_LIVE=1`, shared-server TV browsing, and the companion/DIAL/AirPlay browser-origin CSRF/CORS guard (`MPX_COMPANION_NO_ORIGIN` / `Origin` checks) await end-to-end TV/glass testing.
-- **Host build / test notes & `update_all` pin.** `Makefile` unit/mutant targets use `$(ROOT)/build/...` absolute paths; `test_spelunkr_auto_video.py`'s RTL tail needs `iverilog`; `mister-db/` / `db.json.zip` pin updates follow public release tagging.
+- **Live TV OSD service-switch timing.** Switching between Plex and Live TV via the core F12 **Service** menu typically takes ~6–8 s on a warm card (plus ~8 s for the first Live TV channel tune), and longer if the F12 OSD stays open during the switch.
+- **Picture subtitles (PGS / VobSub).** Text subtitles (`SRT`/`ASS`) render on the overlay; picture subtitles require opt-in server burn-in (`BURN_SUBS_FIX=1` / `AUTO_BURN=1`).
+- **Outputs not yet verified on real TVs.** S-Video, composite, analog CRT captures (`docs/screenshots/analog/`), CEA 1080p, and `HDMI Native 960x480` 2x browse layout await real-TV verification.
+- **Optional flags awaiting end-to-end TV testing.** `YT_CAPTIONS=1` and `YT_LIVE=1` (off by default) await end-to-end TV testing.
+- **LAN-only network trust.** Never forward TCP `3005` or TCP `8008` to the internet or an untrusted network.
 
 ## v2.0.0 (25 November 2026)
 

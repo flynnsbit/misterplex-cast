@@ -2373,15 +2373,63 @@ int main(int argc, char** argv) {
                 return false;
             return tvSess->setManifest(dest, std::move(man));
         };
+        auto formatGuideClock = []() -> std::string {
+            const std::time_t now = std::time(nullptr);
+            struct tm lt {};
+            if (!localtime_r(&now, &lt))
+                return {};
+            int hr = lt.tm_hour % 12;
+            if (hr == 0)
+                hr = 12;
+            char buf[24];
+            std::snprintf(buf, sizeof(buf), "%d:%02d %s", hr, lt.tm_min, lt.tm_hour >= 12 ? "PM" : "AM");
+            return buf;
+        };
+        int64_t lastGuideClockRefreshMs = 0;
         auto publishGuide = [&]() {
             std::lock_guard<std::recursive_mutex> lock(tvMu);
             if (!tvSess)
                 return;
             std::vector<misterplex::owenb_osd::FormattedGuideRow> rows;
-            for (const auto& g : tvSess->guideRows(spelunkrNowMs()))
-                rows.push_back(misterplex::owenb_osd::formatSpelunkrGuideRow(g.section, g.dial, g.name, g.nowTitle));
+            for (const auto& g : tvSess->guideRows(spelunkrNowMs())) {
+                rows.push_back(misterplex::owenb_osd::formatSpelunkrGuideRow(
+                    g.section, g.dial, g.name, g.nowTitle, g.nextTitle, g.remainingMin, g.progressPct));
+            }
             player.setSpelunkrGuideOverlay(tvSess->guideOpen, tvSess->guideCursor, tvSess->guideViewStart,
-                                           std::move(rows));
+                                           std::move(rows), tvSess->guideOpen ? formatGuideClock() : std::string());
+        };
+        auto publishBannerMeta = [&](int chIdx, const misterplex::spelunkr::NowPlaying* npOpt = nullptr) {
+            misterplex::owenb_osd::GuideSource src = misterplex::owenb_osd::GuideSource::None;
+            std::string nextTitle;
+            int remainingMin = -1;
+            int progressPct = -1;
+            {
+                std::lock_guard<std::recursive_mutex> lock(tvMu);
+                if (tvSess && chIdx >= 0 && chIdx < static_cast<int>(tvSess->lineup.channels.size())) {
+                    const auto& ch = tvSess->lineup.channels[static_cast<size_t>(chIdx)];
+                    src = misterplex::owenb_osd::guideSourceFromSection(ch.section);
+                    if (tvSess->hasManifest(chIdx)) {
+                        const int64_t nowMs = spelunkrNowMs();
+                        const auto& man = tvSess->mans[static_cast<size_t>(chIdx)];
+                        const misterplex::spelunkr::NowPlaying cur =
+                            (npOpt && npOpt->ok) ? *npOpt
+                                                 : misterplex::spelunkr::nowPlayingOrFirst(ch, man, nowMs);
+                        if (cur.ok) {
+                            if (cur.durationMs > 0) {
+                                const int64_t durMs = cur.durationMs;
+                                const int64_t offMs = std::clamp<int64_t>(cur.offsetMs, 0, durMs);
+                                const int64_t remMs = std::max<int64_t>(0, durMs - offMs);
+                                remainingMin = static_cast<int>(remMs / 60000);
+                                progressPct = static_cast<int>((offMs * 100) / durMs);
+                            }
+                            const auto nxt = misterplex::spelunkr::skipToNextItem(ch, man, cur, nowMs);
+                            if (nxt.ok && nxt.itemIndex != cur.itemIndex)
+                                nextTitle = nxt.title;
+                        }
+                    }
+                }
+            }
+            player.setSpelunkrBannerMeta(src, nextTitle, remainingMin, progressPct, formatGuideClock());
         };
         auto archiveHttpHeaders = []() -> std::string {
             return std::string("User-Agent: ") + misterplex::spelunkr::kArchiveUserAgent + "\r\n";
@@ -2585,7 +2633,7 @@ int main(int argc, char** argv) {
                             if (tvSess->guideCursor < 0)
                                 tvSess->guideCursor = tvSess->tv.index();
                             if (tvSess->guideOpen)
-                                tvSess->syncGuideViewToCursor();
+                                tvSess->syncGuideViewToCursor(player.spelunkrGuidePageRows());
                             recoverInputs = true;
                         }
                     }
@@ -2887,8 +2935,10 @@ int main(int argc, char** argv) {
                 }
                 tryingItem.store(np.itemIndex);
                 tryingIdent = misterplex::spelunkr::ItemIdent::from(np);
-                if (tvCurrent())
+                if (tvCurrent()) {
                     player.fillSpelunkrBannerTitle(np.title, np.channelName);
+                    publishBannerMeta(idx, &np);
+                }
             }
             if (np.ok && np.itemIndex >= 0) {
                 tryingItem.store(np.itemIndex);
@@ -2931,8 +2981,10 @@ int main(int argc, char** argv) {
                 tryingItem.store(np.itemIndex);
                 tryingIdent = misterplex::spelunkr::ItemIdent::from(np);
                 currentItem.store(np.itemIndex);
-                if (drawTitle && tvCurrent())
+                if (drawTitle && tvCurrent()) {
                     player.fillSpelunkrBannerTitle(np.title, np.channelName);
+                    publishBannerMeta(idx, &np);
+                }
                 return true;
             };
             // P2: the header cache is cross-process/persistent (SD), so "warm" is a disk lookup,
@@ -3390,6 +3442,7 @@ int main(int argc, char** argv) {
             if (cancelled() || !tvCurrent())
                 return;
             player.fillSpelunkrBannerTitle(np.title, np.channelName);
+            publishBannerMeta(idx, &np);
             // Only a probed, core-compatible source may replace the old picture.
             // Join callbacks under the OLD play gen, outside tvMu:
             // neither the demux nor its ended handler may wait on it.
@@ -3494,7 +3547,7 @@ int main(int argc, char** argv) {
                     misterplex::spelunkr::abandonDeferredResume(tvAwaitingBackWhenResume, [&] {
                         player.setSpelunkrDeferResume(false);
                     });
-                    tvSess->toggleGuide();
+                    tvSess->toggleGuide(player.spelunkrGuidePageRows());
                     publishGuide();
                     return;
                 }
@@ -3503,6 +3556,21 @@ int main(int argc, char** argv) {
                     // turn an OSD "close" back into an open (browse-lane #646 P3-1).
                     if (misterplex::spelunkr::applyGuideClose(tvSess->guideOpen))
                         publishGuide();
+                    return;
+                }
+                if (c == misterplex::PlaybackCommand::Info) {
+                    const int curIdx = tvSess->tv.index();
+                    const auto rows = tvSess->guideRows(spelunkrNowMs());
+                    if (curIdx >= 0 && curIdx < static_cast<int>(rows.size())) {
+                        const auto& g = rows[static_cast<size_t>(curIdx)];
+                        player.showSpelunkrBanner("CH " + std::to_string(g.dial), g.name,
+                                                  g.nowTitle.empty() ? g.name : g.nowTitle, false);
+                        player.setSpelunkrBannerMeta(misterplex::owenb_osd::guideSourceFromSection(g.section),
+                                                     g.nextTitle, g.remainingMin, g.progressPct, formatGuideClock());
+                    } else {
+                        tvSess->toggleGuide(player.spelunkrGuidePageRows());
+                        publishGuide();
+                    }
                     return;
                 }
                 if (tvSess->guideOpen && (c == misterplex::PlaybackCommand::ChannelUp ||
@@ -3517,7 +3585,7 @@ int main(int argc, char** argv) {
                     const int cur = misterplex::spelunkr::channelDelta(tvSess->lineup, from, delta);
                     if (cur >= 0) {
                         tvSess->guideCursor = cur;
-                        tvSess->syncGuideViewToCursor();
+                        tvSess->syncGuideViewToCursor(player.spelunkrGuidePageRows());
                         publishGuide();
                     }
                     std::fprintf(stderr,
@@ -3529,7 +3597,7 @@ int main(int argc, char** argv) {
                 if (tvSess->guideOpen && (c == misterplex::PlaybackCommand::PageUp ||
                                           c == misterplex::PlaybackCommand::PageDown)) {
                     const int delta = (c == misterplex::PlaybackCommand::PageDown) ? 1 : -1;
-                    if (tvSess->pageGuide(delta))
+                    if (tvSess->pageGuide(delta, player.spelunkrGuidePageRows()))
                         publishGuide();
                     return;
                 }
@@ -3552,6 +3620,7 @@ int main(int argc, char** argv) {
                                                  (to >= 0 && to < static_cast<int>(tvSess->lineup.channels.size()))
                                                      ? tvSess->lineup.channels[static_cast<size_t>(to)].name
                                                      : "");
+                        publishBannerMeta(to);
                         playQ.post(std::move(r));
                         tvHadCoreOpenOnce = true;  // browse-lane N-3 guide
                     }
@@ -3597,6 +3666,7 @@ int main(int argc, char** argv) {
                                          (to >= 0 && to < static_cast<int>(tvSess->lineup.channels.size()))
                                              ? tvSess->lineup.channels[static_cast<size_t>(to)].name
                                              : "");
+                publishBannerMeta(to);
                 playQ.post(std::move(r));
                 tvHadCoreOpenOnce = true;  // browse-lane N-3 zap
             });
@@ -5514,6 +5584,8 @@ int main(int argc, char** argv) {
         misterplex::gcast::yt_live::liveRelay().stop();
         apOpenGuard.settle();
         std::lock_guard<std::mutex> handoff(playHandoffMu);
+        if (owner == misterplex::gcast::Owner::AirPlay)
+            player.clearAirplayAudio();
         player.abandonPlayPending(castGen.load());   // cast stop: IDLE card, no big chevron
         misterplex::retirePlayback(player, pmsTimeline);
         if (cur == owner)
@@ -6651,7 +6723,25 @@ int main(int argc, char** argv) {
             };
             apCfg.onMirrorPcm = [&](const uint8_t* p, size_t n) { return player.pushAirplayMirrorPcm(p, n); };
         }
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+        if (auto* prod = player.owenbRingProducer())
+            player.setAirplayMirrorProducer(prod);
+        apCfg.onAudioPcm = [&](const uint8_t* p, size_t n) { return player.pushAirplayAudioPcm(p, n); };
+        apCfg.onAudioFlush = [&] { player.flushAirplayAudioPcm(); };
+#endif
         apCfg.castAdmit = castAdmit;
+        apCfg.onAudioState = [&](bool active, const std::string& codec) {
+            player.setAirplayAudioState(active, codec);
+        };
+        apCfg.onAudioMetadata = [&](const uint8_t* dmap, size_t len) {
+            player.setAirplayAudioMetadata(dmap, len);
+        };
+        apCfg.onAudioCoverArt = [&](const uint8_t* img, size_t len) {
+            player.setAirplayAudioCoverArt(img, len);
+        };
+        apCfg.onAudioProgress = [&](uint32_t start, uint32_t curr, uint32_t end) {
+            player.setAirplayAudioProgress(start, curr, end);
+        };
         gcastApUp = airplayFe.start(apCfg, [&](const misterplex::gcast::ApEvent& e) {
             switch (e.type) {
             case ApEventType::Play:
@@ -6706,6 +6796,7 @@ int main(int argc, char** argv) {
                     airplayFe.snapshot().ended();
                     break;
                 }
+                player.clearAirplayAudio();
                 const uint64_t tok = gcastArbiter.claim(Owner::AirPlay);
                 castToken.store(tok);
                 if (misterplex::gcast::mirrorStartAction(player.playing() && !player.airplayMirrorActive()) ==
@@ -6730,6 +6821,36 @@ int main(int argc, char** argv) {
                     std::lock_guard<std::mutex> handoff(playHandoffMu);
                     misterplex::retirePlayback(player, pmsTimeline);   // no mirror frame ever came: idle card
                 }
+                gcastArbiter.release(Owner::AirPlay, castToken.load());
+                airplayFe.snapshot().ended();
+                break;
+            }
+            case ApEventType::AudioStart: {
+                if (!castAdmit("airplay audio")) {
+                    player.setAirplayAudioState(false, "");
+                    airplayFe.snapshot().ended();
+                    break;
+                }
+                const uint64_t tok = gcastArbiter.claim(Owner::AirPlay);
+                castToken.store(tok);
+                {
+                    std::lock_guard<std::mutex> handoff(playHandoffMu);
+                    ++playGen;
+                    if (player.playing() && !player.airplayAudioRingActive())
+                        misterplex::retirePlayback(player, pmsTimeline);
+                }
+                if (!player.beginAirplayAudioSession()) {
+                    std::fprintf(stderr,
+                                 "misterplexd: airplay direct audio session begin failed (ring not attached)\n");
+                    player.setAirplayAudioState(false, "");
+                    gcastArbiter.release(Owner::AirPlay, tok);
+                    airplayFe.snapshot().ended();
+                }
+                break;
+            }
+            case ApEventType::AudioStop: {
+                player.endAirplayAudioSession();
+                player.setAirplayAudioState(false, "");
                 gcastArbiter.release(Owner::AirPlay, castToken.load());
                 airplayFe.snapshot().ended();
                 break;
@@ -7115,6 +7236,7 @@ int main(int argc, char** argv) {
                       resumeName = tvSess->lineup.channels[static_cast<size_t>(resume.idx)].name;
                   player.beginSpelunkrTune(resume.generation, "CH " + std::to_string(resume.dial),
                                            resumeName);
+                  publishBannerMeta(resume.idx);
                   playQ.post(resume);
                   tvHadCoreOpenOnce = true;  // browse-lane N-3: only after a real tune posts
               } else if (!preferCurrent &&
@@ -7136,6 +7258,19 @@ int main(int argc, char** argv) {
                   player.showSpelunkrLanding();
               }
               publishGuide();
+            }
+            {
+                bool refreshGuide = false;
+                const int64_t nowSteady = zapSteadyMs();
+                {
+                    std::lock_guard<std::recursive_mutex> lock(tvMu);
+                    if (tvSess->guideOpen && (lastGuideClockRefreshMs == 0 || nowSteady - lastGuideClockRefreshMs >= 15000)) {
+                        lastGuideClockRefreshMs = nowSteady;
+                        refreshGuide = true;
+                    }
+                }
+                if (refreshGuide)
+                    publishGuide();
             }
             {
                 std::lock_guard<std::recursive_mutex> lock(tvMu);
@@ -7233,6 +7368,7 @@ int main(int argc, char** argv) {
                     spelunkrEofIdent.applyTo(r);
                     std::string nm = tvSess->lineup.channels[static_cast<size_t>(idx)].name;
                     player.beginSpelunkrTune(r.generation, "CH " + std::to_string(r.dial), nm);
+                    publishBannerMeta(idx);
                     std::fprintf(stderr,
                                  "misterplexd: spelunkr: eof next-item idx=%d id=%s dial=%d gen=%llu\n",
                                  idx, r.id.c_str(), r.dial,
@@ -7340,6 +7476,7 @@ int main(int argc, char** argv) {
                         resumeName = tvSess->lineup.channels[static_cast<size_t>(deferred.idx)].name;
                     player.beginSpelunkrTune(deferred.generation, "CH " + std::to_string(deferred.dial),
                                              resumeName);
+                    publishBannerMeta(deferred.idx);
                     playQ.post(deferred);
                     tvHadCoreOpenOnce = true;  // browse-lane N-3: only after a real tune posts
                     std::fprintf(stderr,

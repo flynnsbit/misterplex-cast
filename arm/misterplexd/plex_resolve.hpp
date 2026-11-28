@@ -358,6 +358,9 @@ struct WeakLadder {
     // >0 names audioStreamID on the universal URL. -1 omits it. A default transcode
     // still names the picked stream so the player does not guess a container index.
     int audioStreamId = -1;
+    // Selected audio codec is not in our static libavcodec decoder set (e.g. dca/dts,
+    // truehd, mlp, mp2): force PMS universal transcode so audio converts to stereo AAC.
+    bool forceAudioTranscode = false;
     int fpgaFpsNum = 0;
     int fpgaFpsDen = 0;
     // MPX_BROWSE_V2 plays of an mpx-menu "ladder" row only (empty for every cast): the ladder

@@ -24,6 +24,7 @@ inline bool spelunkrTvForwardsToFrontend(PlaybackCommand c, bool guideOpen) {
     case PlaybackCommand::PlayPause:
     case PlaybackCommand::SkipForward:
     case PlaybackCommand::SkipBack:
+    case PlaybackCommand::Info:
         return true;
     case PlaybackCommand::PageUp:
     case PlaybackCommand::PageDown:

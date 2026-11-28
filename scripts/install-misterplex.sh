@@ -508,13 +508,22 @@ $b
 "*) ;; *) created "$b" ;; esac
 done
 
-say "done. Load MiSTerPlex from _Utility after the reboot. Settings: $CONF"
+if [ "$DO_REBOOT" = 1 ]; then
+  say "done. Settings: $CONF"
+  say "rebooting"
+  run reboot
+elif [ "$DRY" = 0 ] && [ -z "$ROOT" ] && [ "${MPX_INSTALL_NO_START:-0}" != 1 ]; then
+  say "starting MiSTerPlex companion"
+  if sh "$HOOK" start; then
+    say "done. MiSTerPlex companion is running; load MiSTerPlex from _Utility (no reboot needed). Settings: $CONF"
+  else
+    warn "could not start the companion immediately; reboot the MiSTer or run: sh $HOOK start"
+    say "done. Load MiSTerPlex from _Utility after rebooting. Settings: $CONF"
+  fi
+else
+  say "done. Load MiSTerPlex from _Utility after the reboot. Settings: $CONF"
+  say "reboot the MiSTer: the companion starts at boot; then load MiSTerPlex from _Utility"
+fi
 say "then link it: note the code on the Ready screen (plex.tv/link ABCD), go to https://plex.tv/link, sign in and enter it."
 say "until it is linked, Browse Plex on the TV shows FETCH FAILED."
 say "to change settings, repair or uninstall: Scripts > configure-misterplex (or sh $FAT/Scripts/configure-misterplex.sh)"
-if [ "$DO_REBOOT" = 1 ]; then
-  say "rebooting"
-  run reboot
-else
-  say "reboot the MiSTer: the companion starts at boot; then load MiSTerPlex from _Utility"
-fi

@@ -307,6 +307,14 @@ void OwenbPlayer::releaseExternalPlay() {
     }
 }
 
+uint32_t OwenbPlayer::currentRasterWidth() const {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!port_)
+        return 0;
+    const owenb_osd::OvlStatus st = port_->status();
+    return st.valid ? st.raster.w : 0;
+}
+
 void OwenbPlayer::setIdleHint(const std::string& hint) {
     std::lock_guard<std::mutex> g(mu_);
     idleCfg_.hint = hint;
@@ -843,6 +851,11 @@ int OwenbPlayer::readInput(struct ::h264ring_input& in) const {
 bool OwenbPlayer::overlayMenuOptions(unsigned out[H264RING_OPT_COUNT]) const {
     std::lock_guard<std::mutex> g(mu_);
     return ring_ && ring_->liveOsdMenuOptions(out);
+}
+
+CoreStatus OwenbPlayer::coreStatus() const {
+    std::lock_guard<std::mutex> g(mu_);
+    return ring_ ? ring_->coreStatus() : CoreStatus{};
 }
 
 int OwenbPlayer::syncService(bool spelunkr, const unsigned* plexSettings) {

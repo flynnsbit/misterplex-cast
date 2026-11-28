@@ -19,7 +19,7 @@
 namespace misterplex {
 namespace airplay {
 
-enum class ApEventType : uint8_t { Play, Scrub, Rate, Stop, Notice, MirrorStart, MirrorStop };
+enum class ApEventType : uint8_t { Play, Scrub, Rate, Stop, Notice, MirrorStart, MirrorStop, AudioStart, AudioStop };
 
 struct ApEvent {
     ApEventType type = ApEventType::Stop;
@@ -40,7 +40,8 @@ public:
         if (q_.size() >= kCap) {
             if (e.type != ApEventType::Play && e.type != ApEventType::Stop &&
                 e.type != ApEventType::Notice && e.type != ApEventType::MirrorStart &&
-                e.type != ApEventType::MirrorStop)
+                e.type != ApEventType::MirrorStop && e.type != ApEventType::AudioStart &&
+                e.type != ApEventType::AudioStop)
                 return false;
             q_.pop_front();
         }

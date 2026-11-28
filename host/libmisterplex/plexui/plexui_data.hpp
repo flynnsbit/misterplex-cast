@@ -55,6 +55,8 @@ std::vector<PlexServer> discoverLocalPlexServers(int timeoutMs);
 // The connection the local → public → relay probe actually kept in baseUrl:
 // "local", "remote", "relay", "Offline", or "Connecting...".
 std::string serverLinkLabel(const PlexServer& server);
+// Expected locality ("local" or "remote") even before probing finishes or when offline.
+std::string serverExpectedLocality(const PlexServer& server);
 void resolveServerBases(HttpGetFn get, std::vector<PlexServer>& servers,
                         const BrowseCancelFn& cancel);
 // Ranked unique connection base URLs (plex.direct / address / relay) for select-time retry.

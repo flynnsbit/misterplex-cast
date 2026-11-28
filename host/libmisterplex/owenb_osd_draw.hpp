@@ -22,6 +22,7 @@
 #include "spelunkr_guide_format.hpp"
 #include "spelunkr_guide_icons.hpp"
 #include "ad_break_card.hpp"
+#include "airplay_now_playing.hpp"
 
 #include <algorithm>
 #include <array>
@@ -77,6 +78,13 @@ struct LibraryRow {
     bool dir = false;          // a container: drawn with a trailing "/"
     bool selectable = true;    // false: dim (a header, "Loading...")
     GuideSource source = GuideSource::None;  // GH#650: badge, or none
+    // Live TV (Spelunkr) structured guide fields (empty for Plex library / legacy rows):
+    std::string dial;
+    std::string channelName;
+    std::string nowTitle;
+    std::string nextTitle;
+    int remainingMin = -1;     // minutes left in current program, or -1 if unknown
+    int progressPct = -1;      // 0..100 elapsed percent, or -1 if unknown
 };
 struct LibraryPage {
     bool open = false;
@@ -192,17 +200,25 @@ struct UiState {
         std::string dial;
         std::string name;
         std::string title;
+        GuideSource source = GuideSource::None;
+        std::string nextTitle;
+        int remainingMin = -1;
+        int progressPct = -1;
+        std::string clockText;
+        bool tuning = false;
     } spelunkrBanner;
     struct SpelunkrGuide {
         bool open = false;
         int cursor = -1;
         int viewStart = 0;
+        std::string clockText;
         std::vector<LibraryRow> rows;
     } spelunkrGuide;
+    misterplex::AirplayNowPlayingState airplayAudio;
     bool anyVisible() const {
         return bar != Bar::Hidden || !chip.empty() || !toasts.empty() || error != ErrorScreen::None || menu.open ||
                idle || pending || library.open || surface || captionArmed || !caption1.empty() || !caption2.empty() ||
-               marker.visible() || overscan.open || spelunkrBanner.on || spelunkrGuide.open
+               marker.visible() || overscan.open || spelunkrBanner.on || spelunkrGuide.open || airplayAudio.active
 #ifndef MUT_ADBREAK_NOT_VISIBLE   // N15 root cause: a card-only state was "nothing visible" -> the overlay was hidden
                || adBreak
 #endif
@@ -319,14 +335,39 @@ inline uint64_t contentKey(const UiState& s, const Layout& L) {
         h = fnvMix(h, s.spelunkrBanner.dial);
         h = fnvMix(h, s.spelunkrBanner.name);
         h = fnvMix(h, s.spelunkrBanner.title);
+        h = fnvMix(h, s.spelunkrBanner.nextTitle);
+        h = fnvMix(h, s.spelunkrBanner.clockText);
+        const int32_t meta[4] = {static_cast<int32_t>(s.spelunkrBanner.source), s.spelunkrBanner.remainingMin,
+                                 s.spelunkrBanner.progressPct, s.spelunkrBanner.tuning ? 1 : 0};
+        h = fnvMix(h, meta, sizeof meta);
     }
     if (s.spelunkrGuide.open) {
         h = fnvMix(h, &s.spelunkrGuide.cursor, sizeof s.spelunkrGuide.cursor);
         h = fnvMix(h, &s.spelunkrGuide.viewStart, sizeof s.spelunkrGuide.viewStart);
+        h = fnvMix(h, s.spelunkrGuide.clockText);
         for (const auto& r : s.spelunkrGuide.rows) {
             h = fnvMix(h, r.text);
+            h = fnvMix(h, r.dial);
+            h = fnvMix(h, r.channelName);
+            h = fnvMix(h, r.nowTitle);
+            h = fnvMix(h, r.nextTitle);
+            const int32_t meta[2] = {r.remainingMin, r.progressPct};
+            h = fnvMix(h, meta, sizeof meta);
             const uint8_t src = static_cast<uint8_t>(r.source);
             h = fnvMix(h, &src, 1);
+        }
+    }
+    if (s.airplayAudio.active) {
+        const int64_t apv[] = {int64_t(s.airplayAudio.active), int64_t(s.airplayAudio.paused),
+                               int64_t(s.airplayAudio.fullArt), int64_t(s.airplayAudio.coverGen),
+                               int64_t(s.airplayAudio.progressValid),
+                               s.airplayAudio.fullArt ? int64_t{0} : (s.airplayAudio.elapsedMs / 1000),
+                               s.airplayAudio.fullArt ? int64_t{0} : (s.airplayAudio.durationMs / 1000)};
+        h = fnvMix(h, apv, sizeof apv);
+        if (!s.airplayAudio.fullArt) {
+            for (const std::string* t :
+                 {&s.airplayAudio.codec, &s.airplayAudio.title, &s.airplayAudio.artist, &s.airplayAudio.album})
+                h = fnvMix(h, *t);
         }
     }
     return h;
@@ -345,8 +386,17 @@ inline uint64_t screenKey(const UiState& s, const Layout& L) {
                          s.surface ? int64_t{1} : int64_t{0},
                          s.spelunkrBanner.on ? int64_t{1} : int64_t{0},
                          s.spelunkrBanner.on ? int64_t(s.spelunkrBanner.alpha) : int64_t{0},
-                         s.spelunkrGuide.open ? int64_t{1} : int64_t{0}};
+                         s.spelunkrGuide.open ? int64_t{1} : int64_t{0},
+                         s.airplayAudio.active ? int64_t{1} : int64_t{0},
+                         s.airplayAudio.active ? int64_t(s.airplayAudio.paused) : int64_t{0},
+                         s.airplayAudio.active ? int64_t(s.airplayAudio.fullArt) : int64_t{0},
+                         s.airplayAudio.active ? int64_t(s.airplayAudio.coverGen) : int64_t{0}};
     h = fnvMix(h, v, sizeof v);
+    if (s.airplayAudio.active && !s.airplayAudio.fullArt) {
+        for (const std::string* t :
+             {&s.airplayAudio.codec, &s.airplayAudio.title, &s.airplayAudio.artist, &s.airplayAudio.album})
+            h = fnvMix(h, *t);
+    }
     for (const std::string* t : {&s.title, &s.transport, &s.chip, &s.errorDetail, &s.menu.title,
                                  &s.idleHint, &s.idleName, &s.caption1, &s.caption2, &s.statusText})
         h = fnvMix(h, *t);
@@ -556,13 +606,25 @@ inline Font spelunkrBannerFont(const Font &menu, bool evenLines) {
 }
 
 // GH#410/#412: pending and playing layouts share this so odd safe.y cannot drift.
+// Sized for the 90s Prevue broadcast channel banner (header strip + NOW + UP NEXT + progress rail).
 inline Rect spelunkrBannerRect(const Layout& L, int pad, int fontH) {
-    int h = 2 * fontH + 2 * pad;
+    (void)pad;
+    (void)fontH;
+    int h = 0;
+    if (L.H >= 700)
+        h = 108;
+    else if (L.H <= 288)
+        h = 40;
+    else
+        h = 74;
     int y = L.safe.y;
     if (L.evenLines) {
         h = (h + 1) & ~1;
         y &= ~1;
     }
+    h = std::min(h, std::max(0, L.safe.h));
+    if (L.evenLines)
+        h &= ~1;
     return {L.safe.x, y, L.safe.w, h};
 }
 
@@ -1113,10 +1175,10 @@ inline Frame planFrame(const UiState& s, const Layout& L) {
         f.menu = {L.safe.x + (L.safe.w - w) / 2, top, w, h};
     }
     placeMarker(f, s, L);
-    if (s.spelunkrGuide.open) {
+    if (s.spelunkrGuide.open && !s.menu.open) {
         f.spelunkrGuide = L.safe;
         f.idleField = true;
-    } else if (s.spelunkrBanner.on) {
+    } else if (s.spelunkrBanner.on && !s.menu.open) {
         const int fh = spelunkrBannerFont(f.font, L.evenLines).height();
         f.spelunkrBanner = spelunkrBannerRect(L, f.pad, fh);
     }
@@ -1140,6 +1202,19 @@ inline Frame planFrame(const UiState& s, const Layout& L) {
 #endif
     }
 #endif
+    if (s.airplayAudio.active && !s.adBreak && s.error == ErrorScreen::None) {
+        // AirPlay Audio Now Playing owns the full field; redundant bar/idle/captions sit out,
+        // while menu (Start), library, and toasts paint cleanly on top.
+        f.idleField = true;
+        f.bar = {};
+        f.reserve = {};
+        f.card = {};
+        f.caption = {};
+        f.scrubThumb = {};
+        f.markerBtn = {};
+        f.markerCard = {};
+        f.spelunkrBanner = {};
+    }
     if (s.bar == Bar::Seeking && !f.bar.empty()) {
         const int anchor = f.caption.empty() ? f.bar.y : std::min(f.bar.y, f.caption.y);
 #ifdef MUT_SCRUB_THUMBS_BOX_WITHOUT_FRAME
@@ -1577,9 +1652,9 @@ inline int guideIconDrawY(int rowY, int rowH, int badgeH, bool evenLines) {
 }
 
 inline void blitGuideIcon(Surface& S, int x, int y, GuideSource src, const Rect& clip,
-                          int drawH = kGuideIconSize) {
+                          int drawH = kGuideIconSize, uint8_t alpha = 255) {
     const uint8_t* p = guideIconPixels(src);
-    if (!p)
+    if (!p || alpha == 0)
         return;
     if (S.evenLines)
         y &= ~1;
@@ -1603,7 +1678,10 @@ inline void blitGuideIcon(Surface& S, int x, int y, GuideSource src, const Rect&
             pix = intersect(pix, clip);
             if (pix.empty())
                 continue;
-            S.fill(pix, Rgba{px[2], px[1], px[0], px[3]}, false);
+            const uint8_t a = alpha == 255 ? px[3] : uint8_t((int(px[3]) * int(alpha)) / 255);
+            if (a == 0)
+                continue;
+            S.fill(pix, Rgba{px[2], px[1], px[0], a}, false);
         }
     }
 }
@@ -1906,6 +1984,1100 @@ inline void paintAdBreakCard(Surface& S, const Layout& L) {
     }
 }
 
+// Layout geometry for the AirPlay Audio "Now Playing" screen across 720p, 960x480, 480p/480i, and 240p/288p.
+// Standard mode stacks centered album art on top with title/artist/album + progress bar & scrubber on bottom
+// so 4:3 CRTs get a full-width transport deck and large centered cover. Full-art mode (pad A toggle) shows
+// pure full-height PAR-corrected cover art with no chrome.
+struct AirplayNowPlayingGeom {
+    bool isHd = false;
+    bool is240p = false;
+    bool fullArt = false;
+    bool showAlbumLine = false;
+    int border = 2;
+    Rect artFrame{};
+    Rect artRect{};
+    Rect textRect{};
+    Rect ruleRect{};
+    Rect barRect{};
+    int badgeY = 0;
+    int titleY = 0;
+    int artistY = 0;
+    int albumY = 0;
+    int clockY = 0;
+    int lineGap = 6;
+    int secGap = 10;
+    Font badgeFont{};
+    Font titleFont{};
+    Font artistFont{};
+    Font albumFont{};
+    Font clockFont{};
+};
+
+inline AirplayNowPlayingGeom planAirplayNowPlaying(const Layout& L, bool fullArt = false) {
+    AirplayNowPlayingGeom g;
+    const double par = L.par > 0.1 ? L.par : 1.0;
+    const bool even = L.evenLines;
+    g.is240p = (L.H <= 288);
+    g.isHd = (L.H >= 600 && !g.is240p);
+    g.fullArt = fullArt;
+
+    auto makeFont = [&](int sy, double sxScale) {
+        if (even && (sy & 1))
+            sy = std::max(2, sy - 1);
+        Font f;
+        f.sy = std::max(even ? 2 : 1, sy);
+        const double sx = (double(f.sy) / par) * sxScale;
+        f.sx256 = std::max(256, int(sx * 256.0 + 0.5));
+        return f;
+    };
+
+    if (fullArt) {
+        g.border = 0;
+        const int maxH = even ? std::max(32, int(L.H) & ~1) : std::max(32, int(L.H));
+        const int maxW = std::max(32, int(L.W));
+        int artH = maxH;
+        int artW = std::max(32, int(std::lround(double(artH) / par)));
+        if (artW > maxW) {
+            artW = maxW;
+            artH = std::max(32, std::min(maxH, int(std::lround(double(artW) * par))));
+        }
+        if (even)
+            artH = std::max(32, artH & ~1);
+        const int frameX = std::max(0, (int(L.W) - artW) / 2);
+        int frameY = std::max(0, (int(L.H) - artH) / 2);
+        if (even)
+            frameY &= ~1;
+        g.artFrame = {frameX, frameY, artW, artH};
+        g.artRect = g.artFrame;
+        return g;
+    }
+
+    int padX = 12, padY = 8, artGap = 12, trackH = 6, barGap = 6;
+    if (g.isHd) {
+        g.border = 2;
+        padX = 24;
+        padY = 12;
+        artGap = 18;
+        trackH = 8;
+        barGap = 10;
+        g.lineGap = 8;
+        g.secGap = 14;
+        g.showAlbumLine = true;
+        g.badgeFont = makeFont(2, 0.85);
+        g.titleFont = makeFont(4, 0.88);
+        g.artistFont = makeFont(3, 0.85);
+        g.albumFont = makeFont(2, 0.85);
+        g.clockFont = makeFont(3, 0.85);
+    } else if (g.is240p) {
+        g.border = even ? 2 : 1;
+        padX = L.safe.w >= 400 ? 8 : 4;
+        padY = 2;
+        artGap = 5;
+        trackH = 4;
+        barGap = 3;
+        g.lineGap = 3;
+        g.secGap = 4;
+        g.showAlbumLine = false;
+        g.badgeFont = makeFont(1, 0.85);
+        g.titleFont = makeFont(2, 0.72);
+        g.artistFont = makeFont(1, 0.88);
+        g.albumFont = makeFont(1, 0.85);
+        g.clockFont = makeFont(1, 0.85);
+    } else {
+        // SD: 960x480 NativeSd, 720x480 480p/480i, 720x576 576i, 640x480
+        g.border = 2;
+        const bool wideSd = L.safe.w >= 700;
+        padX = wideSd ? 18 : 10;
+        padY = 8;
+        artGap = even ? 12 : 12;
+        trackH = 6;
+        barGap = 6;
+        g.lineGap = even ? 6 : 6;
+        g.secGap = even ? 10 : 10;
+        g.showAlbumLine = (L.safe.h >= 440);   // 576i gets a dedicated album row; 480p/i combines Artist • Album
+        if (even) {
+            // Interlaced 480i/576i: strictly even sy >= 2 to prevent 1-line twitter.
+            g.badgeFont = makeFont(2, 0.85);
+            g.titleFont = makeFont(4, 0.72);
+            g.artistFont = makeFont(2, 0.90);
+            g.albumFont = makeFont(2, 0.85);
+            g.clockFont = makeFont(2, 0.85);
+        } else {
+            g.badgeFont = makeFont(2, 0.85);
+            g.titleFont = makeFont(3, 0.84);
+            g.artistFont = makeFont(2, 0.90);
+            g.albumFont = makeFont(2, 0.85);
+            g.clockFont = makeFont(2, 0.85);
+        }
+    }
+
+    const int maxAvailW = std::max(80, L.safe.w - 2 * padX);
+    int deckW = maxAvailW;
+    if (g.isHd)
+        deckW = std::min(maxAvailW, 820);
+    else if (!g.is240p && L.safe.w >= 700)
+        deckW = std::min(maxAvailW, 660);
+    const int deckX = L.safe.x + (L.safe.w - deckW) / 2;
+
+    // Anchor bottom transport deck (clocks, progress bar + scrubber, metadata) from bottom of safe area.
+    if (even)
+        trackH = std::max(2, trackH & ~1);
+    g.clockY = L.safe.bottom() - padY - g.clockFont.height();
+    if (even)
+        g.clockY &= ~1;
+    g.badgeY = g.clockY;
+
+    int barY = g.clockY - barGap - trackH;
+    if (even)
+        barY &= ~1;
+    g.barRect = {deckX, barY, deckW, trackH};
+
+    const int metaH = g.titleFont.height() + g.lineGap + g.artistFont.height() +
+                      (g.showAlbumLine ? (g.lineGap + g.albumFont.height()) : 0);
+    int titleY = barY - g.secGap - metaH;
+    if (even)
+        titleY &= ~1;
+    g.titleY = titleY;
+    g.artistY = evenUp(g.titleY + g.titleFont.height() + g.lineGap, even);
+    g.albumY = g.showAlbumLine ? evenUp(g.artistY + g.artistFont.height() + g.lineGap, even) : 0;
+    g.textRect = {deckX, g.titleY, deckW, std::max(0, barY - g.titleY)};
+
+    // Place centered PAR-corrected square album art in the top zone above the metadata deck.
+    const int artTop = even ? ((L.safe.y + padY + 1) & ~1) : (L.safe.y + padY);
+    const int artBottom = g.titleY - artGap;
+    const int availArtH = std::max(32 + 2 * g.border, artBottom - artTop);
+    const int availArtW = std::max(32 + 2 * g.border, maxAvailW);
+
+    int artH = std::max(32, availArtH - 2 * g.border);
+    int artW = std::max(32, int(std::lround(double(artH) / par)));
+    if (artW + 2 * g.border > availArtW) {
+        artW = std::max(32, availArtW - 2 * g.border);
+        artH = std::max(32, std::min(availArtH - 2 * g.border, int(std::lround(double(artW) * par))));
+    }
+    if (even)
+        artH = std::max(32, artH & ~1);
+
+    const int frameW = artW + 2 * g.border;
+    const int frameH = even ? ((artH + 2 * g.border) & ~1) : (artH + 2 * g.border);
+    const int frameX = L.safe.x + (L.safe.w - frameW) / 2;
+    int frameY = artTop + std::max(0, (artBottom - artTop - frameH) / 2);
+    if (even)
+        frameY &= ~1;
+
+    g.artFrame = {frameX, frameY, frameW, frameH};
+    g.artRect = {frameX + g.border, frameY + g.border, artW, frameH - 2 * g.border};
+    return g;
+}
+
+// Draw a PAR-corrected music note emblem inside r when no album cover art has arrived yet.
+inline void paintAirplayArtPlaceholder(Surface& S, const Rect& r, double par, bool even) {
+    S.fill(r, Rgba{24, 28, 36, 0xFF}, false);
+    if (r.w < 24 || r.h < 24)
+        return;
+    const double p = par > 0.1 ? par : 1.0;
+    const int noteH = std::max(16, (r.h * 48) / 100);
+    const int noteW = std::max(16, std::min((r.w * 56) / 100, int(std::lround(double(noteH) * 0.85 / p))));
+    const int nx = r.x + (r.w - noteW) / 2;
+    int ny = r.y + (r.h - noteH) / 2;
+    if (even)
+        ny &= ~1;
+    const int stemW = std::max(2, int(std::lround(double(std::max(2, noteH / 16)) / p)));
+    int beamH = std::max(even ? 4 : 3, noteH / 8);
+    if (even)
+        beamH = (beamH + 1) & ~1;
+    int headH = std::max(even ? 6 : 5, noteH / 4);
+    if (even)
+        headH = (headH + 1) & ~1;
+    const int headW = std::max(stemW + 2, int(std::lround(double(headH) * 1.25 / p)));
+
+    const int leftStemX = nx + headW - stemW;
+    const int rightStemX = nx + noteW - stemW;
+    const int stemTop = ny;
+    const int stemBot = ny + noteH - headH / 2;
+    const int leftHeadY = even ? ((ny + noteH - headH) & ~1) : (ny + noteH - headH);
+    const int rightHeadY = even ? ((ny + noteH - headH - std::max(2, noteH / 14)) & ~1)
+                                : (ny + noteH - headH - std::max(1, noteH / 14));
+
+    // Top beam connecting two stems
+    S.fill({leftStemX, stemTop, std::max(stemW, rightStemX - leftStemX + stemW), beamH}, kAccent, false);
+    // Two vertical stems
+    S.fill({leftStemX, stemTop, stemW, std::max(2, stemBot - stemTop)}, kAccent, false);
+    S.fill({rightStemX, stemTop, stemW, std::max(2, rightHeadY + headH / 2 - stemTop)}, kAccent, false);
+    // Two note heads
+    S.fill({nx, leftHeadY, headW, headH}, kAccent, false);
+    S.fill({std::max(nx, rightStemX - headW + stemW), rightHeadY, headW, headH}, kAccent, false);
+}
+
+inline void paintAirplayNowPlaying(Surface& S, const UiState& s, const Layout& L) {
+    const AirplayNowPlayingGeom g = planAirplayNowPlaying(L, s.airplayAudio.fullArt);
+    const auto bm = s.airplayAudio.coverGen > 0
+                        ? misterplex::AirplayCoverStore::get().bitmapFor(g.artRect.w, g.artRect.h, L.par,
+                                                                         L.evenLines, g.is240p)
+                        : nullptr;
+
+    // Deep subtle tinted backdrop derived from cover art average color (high contrast >= 12:1).
+    Rgba bg{12, 14, 18, 0xFF};
+    if (bm && bm->ok()) {
+        bg.r = uint8_t(std::min(34, 10 + int(bm->avgR) / 9));
+        bg.g = uint8_t(std::min(34, 12 + int(bm->avgG) / 9));
+        bg.b = uint8_t(std::min(40, 15 + int(bm->avgB) / 9));
+    }
+    S.fill({0, S.y0, int(S.W), S.h}, bg, false);
+
+    // Album cover frame + bitmap (or placeholder note).
+    if (g.border > 0)
+        S.fill(g.artFrame, Rgba{64, 70, 82, 0xFF}, false);
+    if (bm && bm->ok()) {
+        S.fill(g.artRect, Rgba{8, 10, 12, 0xFF}, false);
+        const int dstX = g.artRect.x + bm->offX;
+        const int dstY = g.artRect.y + bm->offY;
+        for (int y = 0; y < bm->h; ++y) {
+            const int cy = dstY + y;
+            if (cy < S.y0 || cy >= S.y0 + S.h || cy < g.artRect.y || cy >= g.artRect.bottom())
+                continue;
+            const int copyW = std::min(bm->w, g.artRect.right() - dstX);
+            if (copyW > 0 && dstX >= 0 && dstX + copyW <= int(S.W))
+                std::memcpy(S.at(dstX, cy), &bm->bgra[size_t(y) * size_t(bm->w) * 4u], size_t(copyW) * 4u);
+        }
+    } else {
+        paintAirplayArtPlaceholder(S, g.artRect, L.par, L.evenLines);
+    }
+
+    if (g.fullArt || g.textRect.w <= 0)
+        return;
+
+    auto drawCentered = [&](const Font& F, int y, const std::string& text, Rgba col) {
+        if (text.empty())
+            return;
+        const std::string fit = F.fit(text, g.textRect.w);
+        const int x = g.textRect.x + std::max(0, (g.textRect.w - F.width(fit)) / 2);
+        F.draw(S, x, y, fit, col);
+    };
+
+    // Centered metadata block above the progress bar.
+    const std::string rawTitle =
+        s.airplayAudio.title.empty() ? std::string("STREAMING AUDIO") : upper(s.airplayAudio.title);
+    drawCentered(g.titleFont, g.titleY, rawTitle, kFg);
+
+    if (g.showAlbumLine) {
+        if (!s.airplayAudio.artist.empty()) {
+            drawCentered(g.artistFont, g.artistY, upper(s.airplayAudio.artist), Rgba{216, 220, 226, 0xFF});
+            if (!s.airplayAudio.album.empty())
+                drawCentered(g.albumFont, g.albumY, upper(s.airplayAudio.album), kDim);
+        } else if (!s.airplayAudio.album.empty()) {
+            drawCentered(g.artistFont, g.artistY, upper(s.airplayAudio.album), kDim);
+        }
+    } else {
+        std::string sub;
+        if (!s.airplayAudio.artist.empty() && !s.airplayAudio.album.empty())
+            sub = upper(s.airplayAudio.artist) + " \x02 " + upper(s.airplayAudio.album);
+        else if (!s.airplayAudio.artist.empty())
+            sub = upper(s.airplayAudio.artist);
+        else if (!s.airplayAudio.album.empty())
+            sub = upper(s.airplayAudio.album);
+        drawCentered(g.artistFont, g.artistY, sub, Rgba{216, 220, 226, 0xFF});
+    }
+
+    // Bottom progress bar + scrubber knob + elapsed/status/duration clocks.
+    std::string badge = s.airplayAudio.paused ? "PAUSED" : "AIRPLAY";
+    if (!s.airplayAudio.paused && !s.airplayAudio.codec.empty())
+        badge += " \x02 " + upper(s.airplayAudio.codec);
+
+    if (s.airplayAudio.progressValid && s.airplayAudio.durationMs > 0) {
+        S.fill(g.barRect, kTrack, false);
+        const int64_t clamped = std::clamp<int64_t>(s.airplayAudio.elapsedMs, 0, s.airplayAudio.durationMs);
+        const int fillW = int((clamped * g.barRect.w) / s.airplayAudio.durationMs);
+        if (fillW > 0)
+            S.fill({g.barRect.x, g.barRect.y, fillW, g.barRect.h}, kAccent, false);
+        const int knobW = std::max(g.is240p ? 3 : 4, g.clockFont.colX(2));
+        const int knobPad = g.is240p ? 1 : 2;
+        const Rect knob{std::clamp(g.barRect.x + fillW - knobW / 2, g.barRect.x,
+                                   std::max(g.barRect.x, g.barRect.right() - knobW)),
+                        g.barRect.y - knobPad, knobW, g.barRect.h + 2 * knobPad};
+        S.fill(knob, kFg, false);
+
+        const std::string elStr = misterplex::airplayClockText(clamped);
+        const std::string durStr = misterplex::airplayClockText(s.airplayAudio.durationMs);
+        const int elW = g.clockFont.width(elStr);
+        const int durW = g.clockFont.width(durStr);
+        g.clockFont.draw(S, g.barRect.x, g.clockY, elStr, kFg);
+        const bool drewDur = (durW + elW + g.clockFont.colX(4) <= g.barRect.w);
+        if (drewDur)
+            g.clockFont.draw(S, g.barRect.right() - durW, g.clockY, durStr, kDim);
+
+        // Centered subtle AirPlay/codec badge between the left and right clocks when it fits cleanly.
+        const int gap = g.clockFont.colX(4);
+        const int midLeft = g.barRect.x + elW + gap;
+        const int midRight = drewDur ? (g.barRect.right() - durW - gap) : g.barRect.right();
+        const int badgeW = g.clockFont.width(badge);
+        if (midRight - midLeft >= badgeW) {
+            const int bx = g.barRect.x + (g.barRect.w - badgeW) / 2;
+            if (bx >= midLeft && bx + badgeW <= midRight)
+                g.clockFont.draw(S, bx, g.clockY, badge, kAccent);
+        }
+    } else {
+        int thinH = std::max(2, g.barRect.h / 2);
+        if (L.evenLines)
+            thinH = std::max(2, thinH & ~1);
+        S.fill({g.barRect.x, g.barRect.y, g.barRect.w, thinH}, Rgba{46, 52, 62, 0xFF}, false);
+        const std::string status = s.airplayAudio.paused ? "PAUSED"
+                                                         : (s.airplayAudio.codec.empty()
+                                                                ? "LIVE AUDIO"
+                                                                : ("LIVE AUDIO \x02 " + upper(s.airplayAudio.codec)));
+        drawCentered(g.clockFont, g.clockY, status, kAccent);
+    }
+}
+
+// Classic 1990s Prevue / Cable TV Guide layout and painter for Live TV (Spelunkr).
+inline Font guideFontFor(const Layout& L, int sy, double widthScale = 1.0) {
+    Font f;
+    if (L.evenLines && (sy & 1))
+        sy = std::max(2, sy - 1);
+    f.sy = std::max(1, sy);
+    const double par = (L.par > 0.1) ? L.par : 1.0;
+    const double sx = (double(f.sy) / par) * widthScale;
+    f.sx256 = std::max(192, int(sx * 256.0 + 0.5));
+    return f;
+}
+
+inline int guideEvenFloor(int v, bool even) { return even ? (v & ~1) : v; }
+inline int guideEvenCeil(int v, bool even) { return even ? ((v + 1) & ~1) : v; }
+
+// Word-wrap `text` into at most `maxLines` lines that fit inside `maxW` pixels.
+inline std::vector<std::string> wrapGuideLines(const Font& font, const std::string& text, int maxW,
+                                               int maxLines = 2) {
+    std::vector<std::string> out;
+    if (text.empty() || maxW <= 0 || maxLines <= 0)
+        return out;
+    if (maxLines == 1 || font.width(text) <= maxW) {
+        out.push_back(font.fit(text, maxW));
+        return out;
+    }
+    size_t pos = 0;
+    while (pos < text.size() && static_cast<int>(out.size()) < maxLines) {
+        while (pos < text.size() && text[pos] == ' ')
+            ++pos;
+        if (pos >= text.size())
+            break;
+        if (static_cast<int>(out.size()) == maxLines - 1) {
+            out.push_back(font.fit(text.substr(pos), maxW));
+            break;
+        }
+        size_t end = pos;
+        size_t lastSpace = std::string::npos;
+        while (end < text.size()) {
+            const std::string cand = text.substr(pos, end - pos + 1);
+            if (font.width(cand) > maxW)
+                break;
+            if (text[end] == ' ')
+                lastSpace = end;
+            ++end;
+        }
+        if (end >= text.size()) {
+            out.push_back(text.substr(pos));
+            break;
+        }
+        if (lastSpace != std::string::npos && lastSpace > pos) {
+            out.push_back(text.substr(pos, lastSpace - pos));
+            pos = lastSpace + 1;
+        } else {
+            if (end == pos)
+                ++end;
+            out.push_back(text.substr(pos, end - pos));
+            pos = end;
+        }
+    }
+    return out;
+}
+
+struct SpelunkrGuideGeom {
+    bool is240p = false;
+    bool isHd = false;
+    int border = 2;
+    int pad = 6;
+    int innerPad = 6;
+    int chColW = 0;
+    int rowH = 38;
+    int visibleRows = 6;
+    int rowTopPad = 2;
+    int rowMidGap = 2;
+    int featPad = 4;
+    int featGap = 2;
+    int barH = 4;
+    Rect panel;
+    Rect headerRect;
+    Rect featRect;
+    Rect colHdrRect;
+    Rect gridRect;
+    Rect footerRect;
+    Font hdrFont;
+    Font featTitleFont;
+    Font featMetaFont;
+    Font dialFont;
+    Font chFont;
+    Font showFont;
+    Font footFont;
+};
+
+inline SpelunkrGuideGeom planSpelunkrGuide(const Layout& L) {
+    SpelunkrGuideGeom g;
+    g.is240p = (L.H <= 288);
+    g.isHd = (L.H >= 700);
+    g.border = g.is240p ? 1 : 2;
+    g.pad = L.evenLines ? 4 : (g.is240p ? 2 : 6);
+    g.innerPad = g.is240p ? 3 : (g.isHd ? 8 : 6);
+    g.barH = g.is240p ? 2 : 4;
+
+    Rect panel = L.safe;
+    if (L.evenLines) {
+        const int y0 = evenUp(panel.y, true);
+        const int y1 = guideEvenFloor(panel.bottom(), true);
+        panel = {panel.x, y0, panel.w, std::max(0, y1 - y0)};
+    }
+    g.panel = panel;
+
+    if (g.isHd) {
+        g.hdrFont = guideFontFor(L, 3, 0.85);
+        g.featTitleFont = guideFontFor(L, 3, 0.85);
+        g.featMetaFont = guideFontFor(L, 2, 0.90);
+        g.dialFont = guideFontFor(L, 3, 0.82);
+        g.chFont = guideFontFor(L, 2, 0.90);
+        g.showFont = guideFontFor(L, 3, 0.78);
+        g.footFont = guideFontFor(L, 2, 0.85);
+        g.featPad = 4;
+        g.featGap = 4;
+        g.rowTopPad = 5;
+        g.rowMidGap = 4;
+    } else if (!g.is240p) {
+        g.hdrFont = guideFontFor(L, 2, 0.82);
+        g.featTitleFont = guideFontFor(L, 2, 0.84);
+        g.featMetaFont = guideFontFor(L, 2, 0.78);
+        g.dialFont = guideFontFor(L, 2, 0.80);
+        g.chFont = guideFontFor(L, 2, 0.76);
+        g.showFont = guideFontFor(L, 2, 0.80);
+        g.footFont = guideFontFor(L, 2, 0.74);
+        g.featPad = 4;
+        g.featGap = 2;
+        g.rowTopPad = 2;
+        g.rowMidGap = 2;
+    } else {
+        g.hdrFont = guideFontFor(L, 1, 0.90);
+        g.featTitleFont = guideFontFor(L, 1, 0.90);
+        g.featMetaFont = guideFontFor(L, 1, 0.85);
+        g.dialFont = guideFontFor(L, 1, 0.90);
+        g.chFont = guideFontFor(L, 1, 0.85);
+        g.showFont = guideFontFor(L, 1, 0.90);
+        g.footFont = guideFontFor(L, 1, 0.82);
+        g.featPad = 1;
+        g.featGap = 1;
+        g.rowTopPad = 1;
+        g.rowMidGap = 1;
+    }
+
+    const Rect inner{panel.x + g.pad, panel.y + g.pad, std::max(0, panel.w - 2 * g.pad),
+                     std::max(0, panel.h - 2 * g.pad)};
+    const int vGap = g.is240p ? 1 : (L.evenLines ? 2 : 4);
+
+    const int headerH = guideEvenCeil(g.hdrFont.height() + (g.is240p ? 4 : 10), L.evenLines);
+    const int featH = guideEvenCeil(
+        g.is240p
+            ? (g.border + g.featPad + g.featMetaFont.height() + g.featGap + g.featTitleFont.height() + g.featGap +
+               g.featTitleFont.height() + g.featGap + g.barH + g.featPad + g.border)
+            : (g.border + g.featPad + g.featMetaFont.height() + g.featGap + g.featTitleFont.height() + g.featGap +
+               g.featTitleFont.height() + g.featGap + g.featMetaFont.height() + g.featGap + g.barH + g.featPad),
+        L.evenLines);
+    const int colHdrH = g.is240p ? 0 : guideEvenCeil(g.chFont.height() + (L.evenLines ? 6 : 8), L.evenLines);
+    const int footerH = guideEvenCeil(g.footFont.height() + (g.is240p ? 3 : 8), L.evenLines);
+
+    int y = inner.y;
+    g.headerRect = {inner.x, y, inner.w, headerH};
+    y = g.headerRect.bottom() + vGap;
+    g.featRect = {inner.x, y, inner.w, featH};
+    y = g.featRect.bottom() + vGap;
+    if (colHdrH > 0) {
+        g.colHdrRect = {inner.x, y, inner.w, colHdrH};
+        y = g.colHdrRect.bottom();
+    } else {
+        g.colHdrRect = {};
+    }
+
+    const int footY = guideEvenFloor(inner.bottom() - footerH, L.evenLines);
+    g.footerRect = {inner.x, footY, inner.w, std::max(0, inner.bottom() - footY)};
+
+    const int gridTop = y;
+    const int gridBot = std::max(gridTop, g.footerRect.y - vGap);
+    const int gridAvailH = std::max(0, gridBot - gridTop);
+
+    const int rowBotPad = g.is240p ? 2 : (g.isHd ? 6 : 4);
+    int rowH = g.rowTopPad + g.chFont.height() + g.rowMidGap + g.showFont.height() + rowBotPad + g.border;
+    rowH = std::max(rowH, kGuideIconSize + (L.evenLines ? 4 : 2) + g.border);
+    g.rowH = guideEvenCeil(rowH, L.evenLines);
+    g.visibleRows = std::max(1, gridAvailH / std::max(1, g.rowH));
+    g.gridRect = {inner.x, gridTop, inner.w, std::min(gridAvailH, g.visibleRows * g.rowH)};
+
+    // Left CH column holds badge (at inner.x + g.pad) + gap + 4-digit dial + right pad.
+    const int wantChW = g.pad + guideIconTextInset() + g.dialFont.width("8888") + g.innerPad;
+    const int maxChW = std::max(kGuideIconSize + g.pad * 2, (inner.w * 28) / 100);
+    g.chColW = std::clamp(wantChW, std::min(inner.w, kGuideIconSize + g.pad * 2), maxChW);
+    return g;
+}
+
+inline int spelunkrGuideVisibleRows(const Layout& L) { return planSpelunkrGuide(L).visibleRows; }
+
+inline std::string formatGuideRemaining(int remainingMin) {
+    if (remainingMin < 0)
+        return {};
+    if (remainingMin == 0)
+        return "<1M LEFT";
+    if (remainingMin >= 60) {
+        const int h = remainingMin / 60;
+        const int m = remainingMin % 60;
+        return m > 0 ? (std::to_string(h) + "H " + std::to_string(m) + "M LEFT")
+                     : (std::to_string(h) + "H LEFT");
+    }
+    return std::to_string(remainingMin) + "M LEFT";
+}
+
+inline void paintSpelunkrGuide(Surface& S, const UiState& s, const Layout& L) {
+    // Classic 1990s Prevue Channel / Cable TV Guide Royal Blue & Gold palette.
+    // Note: warm gold (#F2C638) intentionally differs from pure #FFFF00 used in the S badge.
+    const Rgba kGuideBg{0x0B, 0x1D, 0x52, 0xF5};
+    const Rgba kGuideHeaderBg{0x12, 0x33, 0x80, 0xFF};
+    const Rgba kGuideFeatBg{0x0E, 0x24, 0x62, 0xFF};
+    const Rgba kGuideColHdrBg{0x09, 0x18, 0x44, 0xFF};
+    const Rgba kGuideRowEvenBg{0x10, 0x29, 0x6E, 0xFF};
+    const Rgba kGuideRowOddBg{0x16, 0x34, 0x86, 0xFF};
+    const Rgba kGuideBorder{0x42, 0x6E, 0xC4, 0xFF};
+    const Rgba kGuideGold{0xF2, 0xC6, 0x38, 0xFF};
+    const Rgba kGuideSelChBg{0xD4, 0xA6, 0x22, 0xFF};
+    const Rgba kGuideSelInk{0x08, 0x12, 0x33, 0xFF};
+    const Rgba kGuideSelTrack{0xB5, 0x8B, 0x1A, 0xFF};
+    const Rgba kGuideChanName{0x94, 0xD4, 0xFF, 0xFF};
+    const Rgba kGuideMuted{0x85, 0xA4, 0xD6, 0xFF};
+    const Rgba kGuideTrack{0x1E, 0x3C, 0x82, 0xFF};
+
+    const SpelunkrGuideGeom g = planSpelunkrGuide(L);
+    const int n = static_cast<int>(s.spelunkrGuide.rows.size());
+    const int room = g.visibleRows;
+
+    int start = s.spelunkrGuide.viewStart;
+    if (start < 0)
+        start = 0;
+    const int maxStart = std::max(0, n - room);
+    if (start > maxStart)
+        start = maxStart;
+    if (s.spelunkrGuide.cursor >= 0 && s.spelunkrGuide.cursor < n) {
+        if (s.spelunkrGuide.cursor < start)
+            start = s.spelunkrGuide.cursor;
+        if (s.spelunkrGuide.cursor >= start + room)
+            start = s.spelunkrGuide.cursor - room + 1;
+        if (start > maxStart)
+            start = maxStart;
+    }
+
+    // Outer Prevue navy frame + subtle border.
+    S.fill(g.panel, kGuideBg, L.evenLines);
+    S.fill({g.panel.x, g.panel.y, g.panel.w, g.border}, kGuideBorder, false);
+    S.fill({g.panel.x, g.panel.bottom() - g.border, g.panel.w, g.border}, kGuideBorder, false);
+    S.fill({g.panel.x, g.panel.y, g.border, g.panel.h}, kGuideBorder, false);
+    S.fill({g.panel.right() - g.border, g.panel.y, g.border, g.panel.h}, kGuideBorder, false);
+
+    // 1. Header bar: LIVE TV GUIDE | <clock>  PAGE X/Y
+    S.fill(g.headerRect, kGuideHeaderBg, L.evenLines);
+    S.fill({g.headerRect.x, g.headerRect.bottom() - g.border, g.headerRect.w, g.border}, kGuideGold, false);
+    const int totalPages = std::max(1, (n + room - 1) / room);
+    int curPage = (start / room) + 1;
+    if (maxStart > 0 && start == maxStart)
+        curPage = totalPages;
+    curPage = std::clamp(curPage, 1, totalPages);
+    const std::string pageLabel =
+        (g.is240p ? "PG " : "PAGE ") + std::to_string(curPage) + "/" + std::to_string(totalPages);
+    std::string rightHdr = pageLabel;
+    if (!s.spelunkrGuide.clockText.empty())
+        rightHdr = upper(s.spelunkrGuide.clockText) + "   " + pageLabel;
+    const int hdrTextY = evenUp(g.headerRect.y + std::max(0, (g.headerRect.h - g.border - g.hdrFont.height()) / 2),
+                                L.evenLines);
+    const int rightHdrW = g.hdrFont.width(rightHdr);
+    const int rightHdrX = std::max(g.headerRect.x + g.innerPad, g.headerRect.right() - g.innerPad - rightHdrW);
+    const int titleMaxW = std::max(0, rightHdrX - g.innerPad - (g.headerRect.x + g.innerPad));
+    g.hdrFont.draw(S, g.headerRect.x + g.innerPad, hdrTextY,
+                   g.hdrFont.fit(upper(misterplex::service::kGuideTitle), titleMaxW), kGuideGold);
+    g.hdrFont.draw(S, rightHdrX, hdrTextY, rightHdr, kFg, g.headerRect.right() - rightHdrX);
+
+    // 2. Top Featured Box for the highlighted channel (full wrapped title + Up Next + progress)
+    S.fill(g.featRect, kGuideFeatBg, L.evenLines);
+    S.fill({g.featRect.x, g.featRect.y, g.featRect.w, g.border}, kGuideGold, false);
+    S.fill({g.featRect.x, g.featRect.bottom() - g.border, g.featRect.w, g.border}, kGuideBorder, false);
+    S.fill({g.featRect.x, g.featRect.y, g.border, g.featRect.h}, kGuideBorder, false);
+    S.fill({g.featRect.right() - g.border, g.featRect.y, g.border, g.featRect.h}, kGuideBorder, false);
+
+    const int featIdx = (s.spelunkrGuide.cursor >= 0 && s.spelunkrGuide.cursor < n)
+                            ? s.spelunkrGuide.cursor
+                            : (n > 0 ? start : -1);
+    if (featIdx >= 0 && featIdx < n) {
+        const LibraryRow& selRow = s.spelunkrGuide.rows[static_cast<size_t>(featIdx)];
+        const int fx = g.featRect.x + g.innerPad + g.border;
+        const int fw = std::max(0, g.featRect.w - 2 * (g.innerPad + g.border));
+        int fy = evenUp(g.featRect.y + g.border + g.featPad, L.evenLines);
+
+        // Line 1: [badge] CH <dial>  <CHANNEL NAME>    <time left>
+        const std::string remText = formatGuideRemaining(selRow.remainingMin);
+        const int remW = remText.empty() ? 0 : g.featMetaFont.width(remText);
+        if (!remText.empty() && remW < fw / 2)
+            g.featMetaFont.draw(S, fx + fw - remW, fy, remText, kGuideGold);
+        std::string hdrLine;
+        if (!selRow.dial.empty())
+            hdrLine = "CH " + selRow.dial;
+        if (!selRow.channelName.empty()) {
+            if (!hdrLine.empty())
+                hdrLine += "  ";
+            hdrLine += upper(selRow.channelName);
+        } else if (hdrLine.empty()) {
+            hdrLine = upper(selRow.text);
+        }
+        const int hdrMaxW = std::max(0, fw - (remW > 0 ? remW + g.innerPad : 0));
+        g.featMetaFont.draw(S, fx, fy, g.featMetaFont.fit(hdrLine, hdrMaxW), kGuideGold);
+        fy = evenUp(fy + g.featMetaFont.height() + g.featGap, L.evenLines);
+
+        // Lines 2-3: Full currently airing show title wrapped cleanly across up to 2 lines
+        const std::string showFull = !selRow.nowTitle.empty()
+                                         ? upper(selRow.nowTitle)
+                                         : (selRow.dial.empty() ? std::string() : std::string("LIVE BROADCAST"));
+        const std::vector<std::string> wrapped = wrapGuideLines(g.featTitleFont, showFull, fw, 2);
+        const int lineGap = g.is240p ? 1 : g.featGap;
+        for (size_t li = 0; li < wrapped.size(); ++li) {
+            g.featTitleFont.draw(S, fx, fy, wrapped[li], kFg, fw);
+            fy = evenUp(fy + g.featTitleFont.height() + lineGap, L.evenLines);
+        }
+        if (wrapped.size() < 2)
+            fy = evenUp(fy + g.featTitleFont.height() + lineGap, L.evenLines);
+
+        // Line 4: Up Next (or Watch hint if single-item / live)
+        const std::string nextLine =
+            !selRow.nextTitle.empty() ? ("NEXT: " + upper(selRow.nextTitle)) : std::string("PRESS A TO WATCH");
+        const Rgba nextCol = !selRow.nextTitle.empty() ? kGuideChanName : kGuideMuted;
+        const int barY = guideEvenFloor(g.featRect.bottom() - g.border - g.featPad - g.barH, L.evenLines);
+        if (fy + g.featMetaFont.height() <= barY)
+            g.featMetaFont.draw(S, fx, fy, g.featMetaFont.fit(nextLine, fw), nextCol);
+
+        // Thin elapsed progress bar along bottom of featured box
+        if (selRow.progressPct >= 0 && barY >= g.featRect.y + g.border) {
+            const Rect barR{fx, barY, fw, g.barH};
+            S.fill(barR, kGuideTrack, L.evenLines);
+            const int pct = std::clamp(selRow.progressPct, 0, 100);
+            const int fillW = (barR.w * pct) / 100;
+            if (fillW > 0)
+                S.fill({barR.x, barR.y, fillW, barR.h}, kGuideGold, L.evenLines);
+        }
+    } else {
+        const int fy = evenUp(g.featRect.y + (g.featRect.h - g.featTitleFont.height()) / 2, L.evenLines);
+        g.featTitleFont.draw(S, g.featRect.x + g.innerPad, fy, "LOADING LINEUP...", kGuideMuted);
+    }
+
+    // 3. Column header strip (480p+ / HD)
+    const int progX = g.gridRect.x + g.chColW + g.border;
+    const int progW = std::max(0, g.gridRect.right() - progX);
+    if (!g.colHdrRect.empty()) {
+        S.fill(g.colHdrRect, kGuideColHdrBg, L.evenLines);
+        S.fill({g.colHdrRect.x, g.colHdrRect.bottom() - g.border, g.colHdrRect.w, g.border}, kGuideBorder, false);
+        S.fill({g.gridRect.x + g.chColW, g.colHdrRect.y, g.border, g.colHdrRect.h}, kGuideBorder, false);
+        const int cy =
+            evenUp(g.colHdrRect.y + std::max(0, (g.colHdrRect.h - g.border - g.chFont.height()) / 2), L.evenLines);
+        g.chFont.draw(S, g.colHdrRect.x + g.pad, cy, "CH", kGuideGold);
+        g.chFont.draw(S, progX + g.innerPad, cy, "CHANNEL / NOW PLAYING", kGuideGold);
+    }
+
+    // 4. 2-line channel grid rows
+    int ry = g.gridRect.y;
+    const int iconX = g.panel.x + 2 * g.pad;
+    for (int i = 0; i < room && start + i < n; ++i) {
+        const int idx = start + i;
+        const LibraryRow& row = s.spelunkrGuide.rows[static_cast<size_t>(idx)];
+        const bool sel = idx == s.spelunkrGuide.cursor;
+        const int cellH = std::max(2, g.rowH - g.border);
+        const Rect fullRowR{g.gridRect.x, ry, g.gridRect.w, cellH};
+        const bool structured = !row.dial.empty() || !row.channelName.empty() || !row.nowTitle.empty();
+
+        if (structured) {
+            const Rect chCell{g.gridRect.x, ry, g.chColW, cellH};
+            const Rect progCell{progX, ry, progW, cellH};
+
+            S.fill(chCell, sel ? kGuideSelChBg : kGuideBg, L.evenLines);
+            S.fill({g.gridRect.x + g.chColW, ry, g.border, cellH}, kGuideBorder, false);
+            S.fill(progCell, sel ? kGuideGold : ((idx & 1) ? kGuideRowOddBg : kGuideRowEvenBg), L.evenLines);
+
+            // Badge + channel dial in left CH cell
+            const bool hasBadge = guideIconPixels(row.source) != nullptr;
+            if (hasBadge) {
+                const int badgeH = guideIconDrawHeight(chCell.h, L.evenLines);
+                const int iy = guideIconDrawY(chCell.y, chCell.h, badgeH, L.evenLines);
+                blitGuideIcon(S, iconX, iy, row.source, chCell, badgeH);
+            }
+            const int dialX = hasBadge ? (iconX + guideIconTextInset()) : iconX;
+            const int dialY = evenUp(chCell.y + std::max(0, (chCell.h - g.dialFont.height()) / 2), L.evenLines);
+            const int dialMaxW = std::max(0, chCell.right() - g.pad - dialX);
+            const Rgba dialCol = sel ? kGuideSelInk : kGuideGold;
+            g.dialFont.draw(S, dialX, dialY, g.dialFont.fit(row.dial, dialMaxW), dialCol);
+
+            // Right Program Cell: Line 1 = Channel Name (+ time left on selected), Line 2 = Full Show Title
+            const int px = progCell.x + g.innerPad;
+            const int pw = std::max(0, progCell.w - 2 * g.innerPad);
+            const int y1 = evenUp(progCell.y + g.rowTopPad, L.evenLines);
+            const int y2 = evenUp(y1 + g.chFont.height() + g.rowMidGap, L.evenLines);
+
+            const std::string remStr = sel ? formatGuideRemaining(row.remainingMin) : std::string();
+            const int remW = remStr.empty() ? 0 : g.chFont.width(remStr);
+            if (!remStr.empty() && remW < pw / 2)
+                g.chFont.draw(S, px + pw - remW, y1, remStr, kGuideSelInk);
+            const int chNameMaxW = std::max(0, pw - (remW > 0 ? remW + g.innerPad : 0));
+            g.chFont.draw(S, px, y1, g.chFont.fit(upper(row.channelName), chNameMaxW),
+                          sel ? kGuideSelInk : kGuideChanName);
+
+            const std::string showLine = !row.nowTitle.empty() ? upper(row.nowTitle) : std::string("LIVE STREAM");
+            const Rgba showCol = sel ? kGuideSelInk : (!row.nowTitle.empty() ? kFg : kGuideMuted);
+            g.showFont.draw(S, px, y2, g.showFont.fit(showLine, pw), showCol);
+
+            // Subtle progress bar tucked along the bottom of the selected row
+            if (sel && row.progressPct >= 0) {
+                const int pBarH = g.is240p ? 2 : (L.evenLines ? 2 : 3);
+                const int pBarY = guideEvenFloor(progCell.bottom() - pBarH - (g.is240p ? 1 : 2), L.evenLines);
+                if (pBarY >= y2 + g.showFont.height()) {
+                    S.fill({px, pBarY, pw, pBarH}, kGuideSelTrack, L.evenLines);
+                    const int fillW = (pw * std::clamp(row.progressPct, 0, 100)) / 100;
+                    if (fillW > 0)
+                        S.fill({px, pBarY, fillW, pBarH}, kGuideSelInk, L.evenLines);
+                }
+            }
+        } else {
+            // Backward-compatible fallback for legacy single-string rows (e.g. unit tests)
+            S.fill(fullRowR, sel ? kGuideGold : kGuideBg, L.evenLines);
+            const Rgba fg = sel ? kGuideSelInk : kFg;
+            const int ty = evenUp(fullRowR.y + std::max(0, (fullRowR.h - g.showFont.height()) / 2), L.evenLines);
+            if (!guideIconPixels(row.source)) {
+                const int maxW = std::max(0, fullRowR.right() - g.pad - iconX);
+                g.showFont.draw(S, iconX, ty, upper(row.text), fg, maxW);
+            } else {
+                const int badgeH = guideIconDrawHeight(fullRowR.h, L.evenLines);
+                const int iy = guideIconDrawY(fullRowR.y, fullRowR.h, badgeH, L.evenLines);
+                blitGuideIcon(S, iconX, iy, row.source, fullRowR, badgeH);
+                const int textX = iconX + guideIconTextInset();
+                const int maxW = std::max(0, fullRowR.right() - g.pad - textX);
+                g.showFont.draw(S, textX, ty, upper(row.text), fg, maxW);
+            }
+        }
+
+        // Row bottom divider
+        S.fill({g.gridRect.x, ry + cellH, g.gridRect.w, g.border}, kGuideBorder, false);
+        ry += g.rowH;
+    }
+
+    // 5. Footer legend bar
+    if (!g.footerRect.empty()) {
+        S.fill(g.footerRect, kGuideColHdrBg, L.evenLines);
+        S.fill({g.footerRect.x, g.footerRect.y, g.footerRect.w, g.border}, kGuideBorder, false);
+        const std::string hint = g.is240p ? "U/D MOVE  L/R PAGE  A WATCH  B CLOSE"
+                                          : "UP/DN: MOVE   LEFT/RIGHT: PAGE   A: WATCH   B: CLOSE";
+        const int fw = g.footerRect.w - 2 * g.innerPad;
+        const std::string fitHint = g.footFont.fit(hint, std::max(0, fw));
+        const int fy =
+            evenUp(g.footerRect.y + g.border + std::max(0, (g.footerRect.h - g.border - g.footFont.height()) / 2),
+                   L.evenLines);
+        const int fx = g.footerRect.x + std::max(g.innerPad, (g.footerRect.w - g.footFont.width(fitHint)) / 2);
+        g.footFont.draw(S, fx, fy, fitHint, kGuideMuted);
+    }
+}
+
+inline void paintSpelunkrBanner(Surface& S, const UiState& s, const Layout& L, const Frame& f) {
+    const Rect box = f.spelunkrBanner;
+    if (box.empty() || !s.spelunkrBanner.on || s.spelunkrBanner.alpha == 0)
+        return;
+
+    const uint8_t alpha = s.spelunkrBanner.alpha;
+
+    // Classic 1990s Prevue Channel / Cable Box Royal Blue & Gold palette (matches the Guide).
+    // Paint cleanly at full opacity over a fresh erased box, then apply one unified
+    // broadcast fade pass over `box` at the end so layered elements never double-blend.
+    const Rgba kOuterBg{0x0B, 0x1D, 0x52, 0xF5};
+    const Rgba kHdrBg{0x12, 0x33, 0x80, 0xFF};
+    const Rgba kBorder{0x42, 0x6E, 0xC4, 0xFF};
+    const Rgba kGold{0xF2, 0xC6, 0x38, 0xFF};
+    const Rgba kGoldDeep{0xD4, 0xA6, 0x22, 0xFF};
+    const Rgba kGoldTrim{0xB5, 0x8B, 0x1A, 0xFF};
+    const Rgba kNavyInk{0x08, 0x12, 0x33, 0xFF};
+    const Rgba kPillBg{0x07, 0x13, 0x38, 0xFF};
+    const Rgba kChanName{0x94, 0xD4, 0xFF, 0xFF};
+    const Rgba kMuted{0x85, 0xA4, 0xD6, 0xFF};
+    const Rgba kTrack{0x1E, 0x3C, 0x82, 0xFF};
+    const Rgba kOnAirRed{0xFF, 0x45, 0x3A, 0xFF};
+    const Rgba kWhite{0xFF, 0xFF, 0xFF, 0xFF};
+
+    S.erase(box);
+
+    const bool is240p = (L.H <= 288);
+    const bool isHd = (L.H >= 700);
+    const int border = is240p ? 1 : 2;
+    const int padX = is240p ? 4 : (isHd ? 10 : 7);
+    const int barH = is240p ? 2 : (isHd ? 6 : 4);
+
+    // Outer steel-blue frame + deep royal-blue fill + crisp top/bottom Prevue gold broadcast rails.
+    S.fill(box, kOuterBg, L.evenLines);
+    S.fill({box.x, box.y, box.w, border}, kGold, L.evenLines);
+    S.fill({box.x, box.bottom() - border, box.w, border}, kBorder, L.evenLines);
+    S.fill({box.x, box.y, border, box.h}, kBorder, L.evenLines);
+    S.fill({box.right() - border, box.y, border, box.h}, kBorder, L.evenLines);
+
+    const int contentX = box.x + border;
+    const int contentY = box.y + border;
+    const int contentW = std::max(0, box.w - 2 * border);
+    const int contentH = std::max(0, box.h - 2 * border);
+    if (contentW < 16 || contentH < 12)
+        return;
+
+    // Typography per resolution tier (strictly even sy on interlaced rasters).
+    Font hdrFont, titleFont, subFont, dialFont, chTagFont;
+    if (isHd) {
+        hdrFont = guideFontFor(L, 2, 0.92);
+        titleFont = guideFontFor(L, 3, 0.84);
+        subFont = guideFontFor(L, 2, 0.90);
+        dialFont = guideFontFor(L, 4, 0.92);
+        chTagFont = guideFontFor(L, 2, 0.85);
+    } else if (!is240p) {
+        hdrFont = guideFontFor(L, 2, 0.86);
+        titleFont = guideFontFor(L, 2, 0.90);
+        subFont = guideFontFor(L, 2, 0.82);
+        dialFont = guideFontFor(L, 4, 0.78);
+        chTagFont = guideFontFor(L, 2, 0.78);
+    } else {
+        hdrFont = guideFontFor(L, 1, 0.86);
+        titleFont = guideFontFor(L, 1, 0.92);
+        subFont = guideFontFor(L, 1, 0.84);
+        dialFont = guideFontFor(L, 2, 0.86);
+        chTagFont = guideFontFor(L, 1, 0.84);
+    }
+
+    // Extract bare channel digits when dial starts with "CH " for the bold retro channel plate.
+    std::string dialNum = upper(s.spelunkrBanner.dial);
+    if (dialNum.size() > 3 && dialNum.compare(0, 3, "CH ") == 0)
+        dialNum.erase(0, 3);
+    else if (dialNum.size() > 2 && dialNum.compare(0, 2, "CH") == 0 &&
+             std::isdigit(static_cast<unsigned char>(dialNum[2])))
+        dialNum.erase(0, 2);
+    if (dialNum.empty())
+        dialNum = "--";
+
+    const int minChW = is240p ? 56 : (isHd ? 132 : 96);
+    const int maxChW = std::max(minChW, (contentW * 24) / 100);
+    const int wantChW = std::max(minChW, dialFont.width("8888") + 2 * padX);
+    const int chW = std::clamp(wantChW, std::min(contentW / 3, minChW), std::min(contentW / 2, maxChW));
+
+    const int hdrH = guideEvenCeil(hdrFont.height() + (is240p ? 4 : (isHd ? 12 : 6)), L.evenLines);
+    const Rect chBox{contentX, contentY, chW, contentH};
+    const int divX = chBox.right();
+    const Rect infoBox{divX + border, contentY, std::max(0, contentX + contentW - (divX + border)), contentH};
+
+    // === LEFT GOLD CHANNEL PLATE ===
+    const Rect chTop{chBox.x, chBox.y, chBox.w, std::min(hdrH, chBox.h)};
+    S.fill(chTop, kGoldDeep, L.evenLines);
+    const int chDivY = chTop.bottom();
+    const int chBodyY = std::min(chBox.bottom(), chDivY + border);
+    const Rect chBody{chBox.x, chBodyY, chBox.w, std::max(0, chBox.bottom() - chBodyY)};
+    S.fill(chBody, kGold, L.evenLines);
+    if (chBody.h > border * 2) {
+        // Subtle retro broadcast bevel rail along the bottom of the gold channel plate.
+        S.fill({chBody.x, chBody.bottom() - border, chBody.w, border}, kGoldTrim, L.evenLines);
+    }
+    S.fill({chBox.x, chDivY, chBox.w, std::min(border, std::max(0, chBox.bottom() - chDivY))}, kNavyInk, L.evenLines);
+
+    // Top bar of channel plate: service badge (S / BW) in a dark-navy recess + "CH" label.
+    const bool hasBadge = guideIconPixels(s.spelunkrBanner.source) != nullptr && !is240p && chTop.w >= 48;
+    const int chTagY = guideEvenFloor(chTop.y + std::max(0, (chTop.h - chTagFont.height()) / 2), L.evenLines);
+    if (hasBadge) {
+        const int iconH = guideIconDrawHeight(chTop.h, L.evenLines);
+        const int pillW = kGuideIconSize + 4;
+        const int pillH = guideEvenCeil(iconH + 2, L.evenLines);
+        const int pillX = chTop.x + (isHd ? 8 : 5);
+        const int pillY = guideEvenFloor(chTop.y + std::max(0, (chTop.h - pillH) / 2), L.evenLines);
+        const int drawPillH = std::min(pillH, chTop.bottom() - pillY);
+        S.fill({pillX, pillY, pillW, drawPillH}, kPillBg, L.evenLines);
+        const int iy = guideIconDrawY(pillY, drawPillH, iconH, L.evenLines);
+        blitGuideIcon(S, pillX + 2, iy, s.spelunkrBanner.source, chTop, iconH);
+        const std::string tag = "CH";
+        const int tagX = pillX + pillW + (isHd ? 8 : 5);
+        const int tagMaxW = std::max(0, chTop.right() - tagX - 3);
+        chTagFont.draw(S, tagX, chTagY, chTagFont.fit(tag, tagMaxW), kNavyInk);
+    } else {
+        const std::string tag = chTop.w >= chTagFont.width("CHANNEL") + 8 ? "CHANNEL" : "CH";
+        const int tw = chTagFont.width(tag);
+        const int tx = chTop.x + std::max(2, (chTop.w - tw) / 2);
+        chTagFont.draw(S, tx, chTagY, chTagFont.fit(tag, std::max(0, chTop.w - 4)), kNavyInk);
+    }
+
+    // Huge bold channel digits centered inside the warm-gold dial block (auto-fits 4+ digits).
+    Font fitDial = dialFont;
+    const int dialMaxW = std::max(8, chBody.w - 2 * (is240p ? 3 : 6));
+    while (fitDial.width(dialNum) > dialMaxW && fitDial.sx256 > 256)
+        fitDial.sx256 = std::max(256, (fitDial.sx256 * 7) / 8);
+    if (fitDial.height() > chBody.h - 2 && fitDial.sy > (L.evenLines ? 2 : 1))
+        fitDial.sy = L.evenLines ? 2 : 1;
+    const std::string dialShown = fitDial.fit(dialNum, dialMaxW);
+    const int dialX = chBody.x + std::max(2, (chBody.w - fitDial.width(dialShown)) / 2);
+    const int dialY = guideEvenFloor(chBody.y + std::max(0, (chBody.h - border - fitDial.height()) / 2), L.evenLines);
+    fitDial.draw(S, dialX, dialY, dialShown, kNavyInk);
+
+    // Crisp vertical steel-blue divider between channel plate and program info plate.
+    S.fill({divX, contentY, border, contentH}, kBorder, L.evenLines);
+
+    if (infoBox.w < 24)
+        return;
+
+    // === RIGHT PROGRAM INFO PLATE ===
+    // 1. Broadcast Header Strip: Channel Name (left) + [● ON AIR / ■ TUNING] pill + Local Clock (right)
+    const Rect infoHdr{infoBox.x, infoBox.y, infoBox.w, std::min(hdrH, infoBox.h)};
+    S.fill(infoHdr, kHdrBg, L.evenLines);
+    const int hdrRuleY = infoHdr.bottom();
+    S.fill({infoBox.x, hdrRuleY, infoBox.w, std::min(border, std::max(0, infoBox.bottom() - hdrRuleY))},
+           kBorder, L.evenLines);
+
+    const int hdrTextY = guideEvenFloor(infoHdr.y + std::max(0, (infoHdr.h - hdrFont.height()) / 2), L.evenLines);
+    int hdrRightEdge = infoHdr.right() - padX;
+
+    // Local clock on far right of broadcast header strip.
+    if (!s.spelunkrBanner.clockText.empty()) {
+        const std::string clk = upper(s.spelunkrBanner.clockText);
+        const int cw = hdrFont.width(clk);
+        if (hdrRightEdge - cw > infoHdr.x + infoHdr.w / 3) {
+            hdrFont.draw(S, hdrRightEdge - cw, hdrTextY, clk, kGold);
+            hdrRightEdge -= cw + (is240p ? 6 : 12);
+        }
+    }
+
+    // Retro broadcast status bug pill: [● ON AIR] or [■ TUNING]
+    {
+        const std::string statusTxt = s.spelunkrBanner.tuning ? (is240p ? "TUNE" : "TUNING") : "ON AIR";
+        const int dotSize = is240p ? 4 : (isHd ? 8 : 6);
+        const int pillPadX = is240p ? 3 : 6;
+        const int dotGap = is240p ? 3 : 5;
+        const int pillW = pillPadX + dotSize + dotGap + hdrFont.width(statusTxt) + pillPadX;
+        const int pillH = guideEvenCeil(hdrFont.height() + (is240p ? 2 : 4), L.evenLines);
+        if (hdrRightEdge - pillW > infoHdr.x + infoHdr.w / 3) {
+            const int px = hdrRightEdge - pillW;
+            const int py = guideEvenFloor(infoHdr.y + std::max(0, (infoHdr.h - pillH) / 2), L.evenLines);
+            const Rect pill{px, py, pillW, std::min(pillH, infoHdr.bottom() - py)};
+            S.fill(pill, kPillBg, L.evenLines);
+            const Rgba pillEdge = s.spelunkrBanner.tuning ? kGold : kBorder;
+            S.fill({pill.x, pill.y, pill.w, is240p ? 1 : 2}, pillEdge, L.evenLines);
+            S.fill({pill.x, pill.bottom() - (is240p ? 1 : 2), pill.w, is240p ? 1 : 2}, pillEdge, L.evenLines);
+            const int dotY = guideEvenFloor(pill.y + std::max(0, (pill.h - dotSize) / 2), L.evenLines);
+            S.fill({pill.x + pillPadX, dotY, dotSize, dotSize},
+                   s.spelunkrBanner.tuning ? kGold : kOnAirRed, L.evenLines);
+            hdrFont.draw(S, pill.x + pillPadX + dotSize + dotGap, hdrTextY, statusTxt,
+                         s.spelunkrBanner.tuning ? kGold : kWhite);
+            hdrRightEdge = px - (is240p ? 5 : 10);
+        }
+    }
+
+    // Channel Name on the left of broadcast header strip.
+    const std::string chanName = upper(!s.spelunkrBanner.name.empty() ? s.spelunkrBanner.name : s.spelunkrBanner.dial);
+    const int nameMaxW = std::max(0, hdrRightEdge - (infoHdr.x + padX));
+    if (nameMaxW > 8)
+        hdrFont.draw(S, infoHdr.x + padX, hdrTextY, hdrFont.fit(chanName, nameMaxW), kChanName);
+
+    // 2. Program Body: fading inner royal-blue panel + NOW show + UP NEXT + Gold progress bar.
+    // GH#410: inner panel must fade with the bar. kPanel at 0xD0 never faded, so the
+    // box looked stuck until the whole overlay dropped.
+    Rgba inner = kPanel;
+    inner.a = uint8_t(int(kPanel.a) * int(s.spelunkrBanner.alpha) / 255);
+    int innerY = hdrRuleY + border;
+    if (L.evenLines)
+        innerY &= ~1;  // GH#410/#412: odd fill twitters on 480i
+    const int innerH = std::max(0, infoBox.bottom() - innerY);
+    const Rect body{infoBox.x, innerY, infoBox.w, innerH};
+    if (body.h < 8)
+        return;
+    S.erase(body);
+    S.fill(body, Rgba{0x0E, 0x24, 0x62, kPanel.a}, L.evenLines);
+    (void)inner;
+
+    const int textX = body.x + padX;
+    const int textW = std::max(0, body.w - 2 * padX);
+    const int line1Y = evenUp(body.y + (is240p ? 2 : (isHd ? 8 : 4)), L.evenLines);
+
+    // Right-aligned remaining time on the NOW line (e.g. "24M LEFT").
+    const std::string remStr = formatGuideRemaining(s.spelunkrBanner.remainingMin);
+    int line1Budget = textW;
+    if (!remStr.empty() && textW > subFont.width(remStr) + 40) {
+        const int rw = subFont.width(remStr);
+        const int remY = evenUp(line1Y + std::max(0, (titleFont.height() - subFont.height()) / 2), L.evenLines);
+        subFont.draw(S, body.right() - padX - rw, remY, remStr, kGold);
+        line1Budget = std::max(0, textW - rw - (is240p ? 5 : 12));
+    }
+
+    const std::string rawTitle = upper(s.spelunkrBanner.title);
+    const std::string rawNext = upper(s.spelunkrBanner.nextTitle);
+    const int line2Y = evenUp(line1Y + titleFont.height() + (is240p ? 2 : (isHd ? 8 : 4)), L.evenLines);
+    const int barY = guideEvenFloor(body.bottom() - barH - (is240p ? 2 : (isHd ? 6 : 4)), L.evenLines);
+    const bool line2Fits = (line2Y + subFont.height() <= barY - (is240p ? 1 : 2));
+
+    if (!rawNext.empty()) {
+        // Dedicated NOW line + dedicated UP NEXT line.
+        const std::string nowDisp = !rawTitle.empty() ? rawTitle : (s.spelunkrBanner.tuning ? "TUNING CHANNEL..." : chanName);
+        titleFont.draw(S, textX, line1Y, titleFont.fit(nowDisp, line1Budget), kWhite);
+        if (line2Fits) {
+            const std::string prefix = is240p ? "NEXT: " : "UP NEXT: ";
+            const int pw = subFont.width(prefix);
+            if (pw < textW) {
+                subFont.draw(S, textX, line2Y, prefix, kGold);
+                subFont.draw(S, textX + pw, line2Y, subFont.fit(rawNext, textW - pw), kChanName);
+            }
+        }
+    } else if (!rawTitle.empty()) {
+        // No UP NEXT available: word-wrap long show titles / status notices across up to 2 lines!
+        if (line2Fits && titleFont.width(rawTitle) > line1Budget) {
+            const auto lines = wrapGuideLines(titleFont, rawTitle, line1Budget, 2);
+            if (!lines.empty())
+                titleFont.draw(S, textX, line1Y, titleFont.fit(lines[0], line1Budget), kWhite);
+            if (lines.size() > 1)
+                subFont.draw(S, textX, line2Y, subFont.fit(lines[1], textW), kWhite);
+        } else {
+            titleFont.draw(S, textX, line1Y, titleFont.fit(rawTitle, line1Budget), kWhite);
+            if (line2Fits && s.spelunkrBanner.tuning)
+                subFont.draw(S, textX, line2Y, subFont.fit("TUNING CHANNEL...", textW), kMuted);
+        }
+    } else if (s.spelunkrBanner.tuning) {
+        titleFont.draw(S, textX, line1Y, titleFont.fit("TUNING CHANNEL...", line1Budget), kMuted);
+    }
+
+    // 3. Bottom Gold Progress Bar (elapsed show progress + crisp white leading playhead pip).
+    if (barY >= body.y && barY + barH <= body.bottom() && textW > 12) {
+        S.fill({textX, barY, textW, barH}, kTrack, L.evenLines);
+        if (s.spelunkrBanner.progressPct >= 0) {
+            const int pct = std::clamp(s.spelunkrBanner.progressPct, 0, 100);
+            const int fillW = (textW * pct) / 100;
+            if (fillW > 0) {
+                S.fill({textX, barY, fillW, barH}, kGold, L.evenLines);
+                const int pipW = is240p ? 2 : 3;
+                const int pipX = std::clamp(textX + fillW - pipW, textX, textX + textW - pipW);
+                S.fill({pipX, barY, pipW, barH}, kWhite, L.evenLines);
+            }
+        } else {
+            // Subtle bottom Prevue gold rail when live stream has unknown duration or while tuning.
+            const int railH = is240p ? 1 : 2;
+            S.fill({textX, barY + barH - railH, textW, railH}, kGoldDeep, L.evenLines);
+        }
+    }
+
+    // Unified broadcast fade pass: scales every pixel in the banner smoothly with alpha.
+    if (alpha < 255) {
+        const Rect clip = intersect(box, {0, S.y0, int(S.W), S.h});
+        for (int y = clip.y; y < clip.bottom(); ++y) {
+            for (int x = clip.x; x < clip.right(); ++x) {
+                uint8_t* p = S.at(x, y);
+                p[3] = uint8_t((int(p[3]) * int(alpha)) / 255);
+            }
+        }
+    }
+}
+
 inline void paint(Surface& S, const UiState& s, const Layout& L, const Frame& f) {
     int first, last;
     f.band(L, first, last);
@@ -1914,6 +3086,11 @@ inline void paint(Surface& S, const UiState& s, const Layout& L, const Frame& f)
         return;
     if (f.idleField && s.adBreak && !s.overscan.open) {
         paintAdBreakCard(S, L);   // the field; menu / library / guide are painted over it below
+    } else if (f.idleField && s.airplayAudio.active && !s.overscan.open && s.error == ErrorScreen::None) {
+        paintAirplayNowPlaying(S, s, L);   // full-screen AirPlay Now Playing; menu / library / toasts paint over it
+    } else if (f.idleField && !f.spelunkrGuide.empty()) {
+        // Fast solid-black border behind the opaque Live TV guide (skip hidden idle/chevron paint).
+        S.fill({0, S.y0, int(S.W), S.h}, Rgba{0, 0, 0, 255}, false);
     } else if (f.idleField) {
 #ifdef MUT_F3_IDLE_BG_NOT_BLACK
         if (f.lib.empty())
@@ -1986,84 +3163,9 @@ inline void paint(Surface& S, const UiState& s, const Layout& L, const Frame& f)
     if (!f.menu.empty())
         paintMenu(S, s, f);
     if (!f.spelunkrGuide.empty()) {
-        Frame gf = f;
-        gf.font = inPlayFont(Font::forLayout(L), L.evenLines);
-        Rgba bg{0x1c, 0x0a, 0x57, 0xE0};
-        S.fill(f.spelunkrGuide, bg, L.evenLines);
-        const int fh = gf.font.height() + gf.pad;
-        int y = f.spelunkrGuide.y + f.pad;
-        paintBox(S, gf, {f.spelunkrGuide.x + f.pad, y, f.spelunkrGuide.w - 2 * f.pad, fh},
-                 misterplex::service::kGuideTitle, kAccent);
-        y += fh + f.pad;
-        const int room = std::max(1, (f.spelunkrGuide.bottom() - y - f.pad) / fh);
-        int start = s.spelunkrGuide.viewStart;
-        if (start < 0)
-            start = 0;
-        const int maxStart = std::max(0, int(s.spelunkrGuide.rows.size()) - room);
-        if (start > maxStart)
-            start = maxStart;
-        if (s.spelunkrGuide.cursor >= 0) {
-            if (s.spelunkrGuide.cursor < start)
-                start = s.spelunkrGuide.cursor;
-            if (s.spelunkrGuide.cursor >= start + room)
-                start = s.spelunkrGuide.cursor - room + 1;
-            if (start > maxStart)
-                start = maxStart;
-        }
-        for (int i = 0; i < room && start + i < int(s.spelunkrGuide.rows.size()); ++i) {
-            const int idx = start + i;
-            const LibraryRow& row = s.spelunkrGuide.rows[static_cast<size_t>(idx)];
-            const bool sel = idx == s.spelunkrGuide.cursor;
-            Rgba fg = sel ? Rgba{0xff, 0xff, 0x00, 0xFF} : kFg;
-            const Rect rowR{f.spelunkrGuide.x + f.pad, y, f.spelunkrGuide.w - 2 * f.pad, fh};
-            // Unknown / None: no inset (P3-5). Every guide row sits on the
-            // guide purple, not kPanel, so badge-less rows are not a dark
-            // bar between purple ones (P3-6 / N1). Text origin matches
-            // paintBox (pre-#650).
-            if (!guideIconPixels(row.source)) {
-                const int maxW = std::max(0, rowR.w - 2 * gf.pad);
-                gf.font.draw(S, rowR.x + gf.pad, evenUp(rowR.y + gf.pad, S.evenLines),
-                             upper(row.text), fg, maxW);
-            } else {
-                const int badgeH = guideIconDrawHeight(rowR.h, L.evenLines);
-                const int iy = guideIconDrawY(rowR.y, rowR.h, badgeH, L.evenLines);
-                blitGuideIcon(S, rowR.x + gf.pad, iy, row.source, rowR, badgeH);
-                const int textX = rowR.x + gf.pad + guideIconTextInset();
-                const int maxW = std::max(0, rowR.right() - gf.pad - textX);
-                gf.font.draw(S, textX, evenUp(rowR.y + gf.pad, S.evenLines), upper(row.text), fg, maxW);
-            }
-            y += fh;
-        }
+        paintSpelunkrGuide(S, s, L);
     } else if (!f.spelunkrBanner.empty() && s.spelunkrBanner.on) {
-        Rgba bg{0x1c, 0x0a, 0x57, s.spelunkrBanner.alpha};
-        S.fill(f.spelunkrBanner, bg, L.evenLines);
-        Frame bf = f;
-        bf.font = spelunkrBannerFont(f.font, L.evenLines);
-        const int fh = bf.font.height();
-        std::string line1 = s.spelunkrBanner.dial;
-        if (!s.spelunkrBanner.name.empty()) {
-            if (!line1.empty())
-                line1 += "  ";
-            line1 += s.spelunkrBanner.name;
-        }
-        std::string line2 = s.spelunkrBanner.title;
-        Rgba fg{0xff, 0xff, 0xff, s.spelunkrBanner.alpha};
-        // GH#410: inner panel must fade with the bar. kPanel at 0xD0 never faded, so the
-        // box looked stuck until the whole overlay dropped.
-        Rgba inner = kPanel;
-        inner.a = uint8_t(int(kPanel.a) * int(s.spelunkrBanner.alpha) / 255);
-        int innerY = f.spelunkrBanner.y + f.pad / 2;
-        if (L.evenLines)
-            innerY &= ~1;  // GH#410/#412: pad/2 is odd (pad=6); odd fill twitters
-        int innerH = 2 * fh;
-        if (L.evenLines)
-            innerH = (innerH + 1) & ~1;
-        S.fill({f.spelunkrBanner.x + f.pad, innerY, f.spelunkrBanner.w - 2 * f.pad, innerH}, inner);
-        const int x = f.spelunkrBanner.x + 2 * f.pad;
-        const int y = evenUp(innerY + f.pad, L.evenLines);
-        const int maxW = std::max(0, f.spelunkrBanner.w - 4 * f.pad);
-        bf.font.draw(S, x, y, upper(line1), fg, maxW);
-        bf.font.draw(S, x, evenUp(y + fh, L.evenLines), upper(line2), fg, maxW);
+        paintSpelunkrBanner(S, s, L, f);
     }
 }
 

@@ -1383,6 +1383,8 @@ private:
         const AVCodec* c = avcodec_find_decoder(as->codecpar->codec_id);
         if (!c || !(adec_ = avcodec_alloc_context3(c)) ||
             avcodec_parameters_to_context(adec_, as->codecpar) < 0 || avcodec_open2(adec_, c, nullptr) < 0) {
+            std::fprintf(stderr, "media: [owenb-av] audio decoder unavailable for codec=%s (id=%d) — playing silence\n",
+                         avcodec_get_name(as->codecpar->codec_id), static_cast<int>(as->codecpar->codec_id));
             avcodec_free_context(&adec_);   // video only: the core plays silence
             return false;
         }

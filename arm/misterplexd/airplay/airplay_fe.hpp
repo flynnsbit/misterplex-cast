@@ -41,8 +41,19 @@ struct AirplayConfig {
     // Production: MediaPlayer::pushAirplayMirrorPcm. Decoded 48k s16 stereo during a mirror session goes here
     // (same ring as the video) instead of being dropped. Unset = mirror stays silent (rc-1027 behaviour).
     std::function<bool(const uint8_t* pcm, size_t len)> onMirrorPcm;
+    // Production: MediaPlayer::pushAirplayAudioPcm. When set, audio-only RAOP pushes decoded 48k s16le stereo
+    // directly into OwenbRing (low-latency mode, same as mirroring) instead of looping through /raop.wav and
+    // airplay_xcode.py. Emits ApEventType::AudioStart / AudioStop. Unset keeps the /raop.wav fallback path.
+    std::function<bool(const uint8_t* pcm, size_t len)> onAudioPcm;
+    std::function<void()> onAudioFlush;
     // Asked before /play (false: 415) and a mirror SETUP (false: refused). Unset admits.
     std::function<bool(const char* kind)> castAdmit;
+    // RAOP audio Now Playing metadata / cover art / progress callbacks (UxPlay RTSP SET_PARAMETER).
+    // Invoked on UxPlay's httpd/RTP threads; handlers must be thread-safe and non-blocking.
+    std::function<void(bool active, const std::string& codec)> onAudioState;
+    std::function<void(const uint8_t* dmap, size_t len)> onAudioMetadata;
+    std::function<void(const uint8_t* img, size_t len)> onAudioCoverArt;
+    std::function<void(uint32_t start, uint32_t curr, uint32_t end)> onAudioProgress;
 };
 
 // "http://host:port/..." -> host ("" if not http)
@@ -143,6 +154,10 @@ public:
     void audioVolume(float db);
     void audioFlushed();
     void audioEnded(const char* why);
+    void audioMetadata(const void* buf, int len);
+    void audioCoverArt(const void* buf, int len);
+    void audioCoverArtStop();
+    void audioProgress(uint32_t start, uint32_t curr, uint32_t end);
     void urlSession(bool on) { urlActive_.store(on); }
     std::string audioUrl() const { return audioUrl_; }
     PcmFanout& pcm() { return pcm_; }

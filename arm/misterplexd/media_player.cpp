@@ -13,6 +13,7 @@
 #include <sstream>
 
 #include "libmisterplex/spelunkr_guide_format.hpp"
+#include "libmisterplex/airplay_cover_load.hpp"
 #include "libmisterplex/cast_advertise_gate.hpp"
 #include "libmisterplex/embedded_srt_fallback.hpp"
 #include "libmisterplex/embedded_text_part.hpp"
@@ -2194,10 +2195,16 @@ void MediaPlayer::dispatchPlaybackInput(PlaybackCommand command) {
         handleMarkerCommand(command);
         return;
     }
+    if (command == PlaybackCommand::AirplayArtToggle) {
+        toggleAirplayAudioFullArt();
+        return;
+    }
     if (!spelunkrTv_.load() && libraryHandleInput(command))
         return;
-    if (command == PlaybackCommand::Stop)
+    if (command == PlaybackCommand::Stop) {
         userStop_ = true;
+        clearAirplayAudio();
+    }
     const PlaybackTransportState state{playing_.load(), paused_.load(), positionMs_.load(),
                                        durationMs()};
     (void)dispatchPlaybackCommand(command, state, skipForwardMs_, skipBackMs_, steadyMs(),
@@ -4678,6 +4685,16 @@ void MediaPlayer::shutdown() {
     }
     // Join outside lifeMu_: browse worker calls stop() which takes lifeMu_.
     {
+        std::lock_guard<std::mutex> lk(airplayCoverMu_);
+        airplayCoverStop_ = true;
+        airplayCoverHasJob_ = false;
+        airplayCoverPending_.clear();
+        ++airplayCoverSeq_;
+    }
+    airplayCoverCv_.notify_all();
+    if (airplayCoverThr_.joinable())
+        airplayCoverThr_.join();
+    {
         std::lock_guard<std::mutex> lk(browseThrMu_);
         if (browseThr_.joinable())
             browseThr_.join();
@@ -5283,6 +5300,15 @@ void MediaPlayer::ensureOwenbPlayerLocked() {
         },
         [](const owenb::OpenRequest& req, std::string& err) { return owenb::openAvSource(req, err); });
     ob_->ui().setSpelunkrMode(spelunkrTv_.load());
+    {
+        AirplayNowPlayingState snap;
+        {
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            snap = airplayAudio_;
+        }
+        if (snap.active)
+            ob_->ui().setAirplayAudio(snap);
+    }
     const auto serviceState = service::readState();
     ob_->ui().setServiceNotice(serviceState.overlay(), serviceState.phase == "error");
     ob_->setOsd(owenbOsdConfigFromEnv());
@@ -5629,6 +5655,7 @@ bool MediaPlayer::prepareAirplayMirrorProducer() {
 }
 
 bool MediaPlayer::beginAirplayMirrorSession() {
+    endAirplayAudioSession();
     if (!airplayMirrorProd_)
         prepareAirplayMirrorProducer();
 #if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
@@ -5827,9 +5854,204 @@ static const uint8_t kRestoreBlackAu[] = {
     0x5d,0x75,0xd7,0x5d,0x75,0xd7,0x5d,0x75,0xd7,0x5d,0x75,0xd7,0x5d,0x75,0xd7,0x5e
 };
 
+// A 1280x720 black Main/CABAC IDR (SPS+PPS+IDR) so direct RAOP audio on 720p HDMI
+// latches H264RING_F_LOW_LATENCY without dropping the raster down to 720x480.
+static const uint8_t kRestoreBlackAu720p[] = {
+    0x00,0x00,0x00,0x01,0x67,0x4d,0x40,0x1f,0xda,0x01,0x40,0x16,0xec,0x04,0x40,0x00,
+    0x00,0x03,0x00,0x40,0x00,0x00,0x0f,0x03,0xc6,0x0c,0xa8,0x00,0x00,0x00,0x01,0x68,
+    0xef,0x0f,0x2c,0x80,0x00,0x00,0x00,0x01,0x65,0x88,0x84,0x09,0xff,0xfe,0xf5,0xb1,
+    0x7c,0x0a,0x6a,0xe9,0xea,0x8a,0x0c,0xe8,0x32,0x2e,0xe1,0x97,0x24,0xc9,0xae,0xb6,
+    0x22,0xe2,0x6d,0x00,0xc0,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,
+    0x04,0x4d,0xed,0xf8,0xa6,0x77,0xae,0xd9,0xb6,0xea,0x00,0x00,0x03,0x00,0x00,0x03,
+    0x00,0xf6,0x00,0x01,0x1c,0x00,0x01,0xb4,0x00,0x04,0xe4,0x00,0x11,0xf0,0x00,0x3b,
+    0x80,0x01,0x08,0x00,0x05,0x90,0x00,0x23,0x80,0x00,0xbe,0x00,0x05,0xe0,0x00,0x22,
+    0x00,0x01,0x10,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,
+    0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,
+    0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,
+    0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,
+    0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,
+    0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,
+    0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,0x00,0x03,0x00,
+    0x00,0x03,0x00,0x00,0x03,0x00,0x04,0x05
+};
+
 bool MediaPlayer::airplayMirrorActive() {
     std::lock_guard<std::mutex> lock(airplayMirrorMu_);
     return airplayMirrorActive_;
+}
+
+bool MediaPlayer::airplayAudioRingActive() {
+    std::lock_guard<std::mutex> lock(airplayMirrorMu_);
+    return airplayAudioRingActive_;
+}
+
+bool MediaPlayer::beginAirplayAudioSession() {
+    if (!airplayMirrorProd_)
+        prepareAirplayMirrorProducer();
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    std::shared_ptr<owenb::OwenbPlayer> ob;
+    {
+        std::lock_guard<std::mutex> lock(obMu_);
+        ob = ob_;
+    }
+    if (ob && ob->mediaPlayActive())
+        stopOwenbPlay();
+#endif
+    endAirplayMirrorSession();
+    std::unique_lock<std::mutex> lock(airplayMirrorMu_);
+    if (airplayAudioRingActive_)
+        return true;
+    if (!airplayMirrorProd_) {
+        airplayAudioPreRollArmed_ = false;
+        airplayAudioPreRoll_.clear();
+        return false;
+    }
+    uint32_t rasterW = 0;
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    if (ob) {
+        rasterW = ob->currentRasterWidth();
+        std::string err;
+        const int pic = pictureSessionMode().load();
+        ob->armPicture(pic);
+        if (!ob->claimExternalPlay(err)) {
+            log("media: airplay audio idle->play claim failed: " + err);
+            airplayAudioPreRollArmed_ = false;
+            airplayAudioPreRoll_.clear();
+            return false;
+        }
+        ob->requestPicture(pic);
+    }
+#endif
+    const auto r = airplayMirrorProd_->begin(airplayMirrorSession_);
+    if (r != h264stream::ControlResult::Ok) {
+        log("media: airplay audio ring begin failed");
+        airplayAudioPreRollArmed_ = false;
+        airplayAudioPreRoll_.clear();
+        lock.unlock();
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+        if (ob)
+            ob->releaseExternalPlay();
+#endif
+        return false;
+    }
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    if (ob && picturePumpShared())
+        ob->pumpPicture();
+#endif
+    // Push two raster-matched low-latency black IDRs so the decoder commits a clean black
+    // frame immediately and latches H264RING_AUD_LL=1 for direct PCM without STC/video wait
+    // or a raster mode switch.
+    const bool use720p = (rasterW >= 1280);
+    const uint8_t* blackAu = use720p ? kRestoreBlackAu720p : kRestoreBlackAu;
+    const size_t blackLen = use720p ? sizeof kRestoreBlackAu720p : sizeof kRestoreBlackAu;
+    for (uint32_t i = 0; i < 2; ++i) {
+        h264stream::AccessUnitView au;
+        au.session_id = airplayMirrorSession_;
+        au.seq = i;
+        au.discontinuity = (i == 0);
+        au.annexb = blackAu;
+        au.len = blackLen;
+        au.pts90k = h264stream::kNoPts90k;
+        au.low_latency = true;
+        const auto auRc = airplayMirrorProd_->pushAccessUnit(au);
+        if (auRc != h264stream::PushResult::Ok) {
+            log("media: airplay audio low-latency black AU[" + std::to_string(i) +
+                "] failed rc=" + std::to_string(static_cast<int>(auRc)));
+            airplayMirrorProd_->end(airplayMirrorSession_);
+            ++airplayMirrorSession_;
+            airplayAudioPreRollArmed_ = false;
+            airplayAudioPreRoll_.clear();
+            lock.unlock();
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+            if (ob)
+                ob->releaseExternalPlay();
+#endif
+            return false;
+        }
+    }
+    airplayAudioRingActive_ = true;
+    airplayAudioPreRollArmed_ = false;
+    airplayAudioPcm_.reset();
+    airplayAudioPcm_.setMinChunk(1920);   // >= 10 ms @ 48 kHz s16le stereo (h264ring.h: >= 5 ms)
+    playing_.store(true);
+    paused_.store(false);
+    const size_t preRollBytes = airplayAudioPreRoll_.size();
+    if (preRollBytes > 0) {
+        airplayAudioPcm_.push(airplayMirrorProd_, true, airplayMirrorSession_, airplayAudioPreRoll_.data(),
+                              preRollBytes);
+        airplayAudioPreRoll_.clear();
+    }
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    if (ob) {
+        AirplayNowPlayingState snap;
+        {
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            airplayAudio_.active = true;
+            airplayAudio_.paused = false;
+            snap = airplayAudio_;
+        }
+        ob->ui().setAirplayAudio(snap);
+    }
+#endif
+    log("media: airplay audio session begin (direct OwenbRing, " +
+        std::string(use720p ? "720p" : "480p") + " black AU, preroll=" + std::to_string(preRollBytes) + "B)");
+    return true;
+}
+
+bool MediaPlayer::pushAirplayAudioPcm(const uint8_t* pcm, size_t len) {
+    if (!pcm || len == 0)
+        return false;
+    std::lock_guard<std::mutex> lock(airplayMirrorMu_);
+    if (!airplayAudioRingActive_) {
+        if (!airplayAudioPreRollArmed_)
+            return false;
+        constexpr size_t kMaxPreRollBytes = 192000;   // ~1.0 s @ 48 kHz s16le stereo
+        if (airplayAudioPreRoll_.size() + len <= kMaxPreRollBytes)
+            airplayAudioPreRoll_.insert(airplayAudioPreRoll_.end(), pcm, pcm + len);
+        return true;
+    }
+    return airplayAudioPcm_.push(airplayMirrorProd_, true, airplayMirrorSession_, pcm, len) > 0;
+}
+
+void MediaPlayer::flushAirplayAudioPcm() {
+    std::lock_guard<std::mutex> lock(airplayMirrorMu_);
+    airplayAudioPreRoll_.clear();
+    airplayAudioPcm_.reset();
+}
+
+void MediaPlayer::endAirplayAudioSession() {
+    bool wasActive = false;
+    uint64_t accepted = 0, dropped = 0;
+    {
+        std::lock_guard<std::mutex> lock(airplayMirrorMu_);
+        if (airplayAudioRingActive_) {
+            if (airplayMirrorProd_)
+                airplayMirrorProd_->end(airplayMirrorSession_);
+            airplayAudioRingActive_ = false;
+            airplayAudioPreRollArmed_ = false;
+            airplayAudioPreRoll_.clear();
+            accepted = airplayAudioPcm_.accepted();
+            dropped = airplayAudioPcm_.droppedRing();
+            airplayAudioPcm_.reset();
+            ++airplayMirrorSession_;
+            playing_.store(false);
+            wasActive = true;
+        }
+    }
+    if (!wasActive)
+        return;
+    clearAirplayAudio();
+#if defined(MPX_HAVE_OWENB_RING) && defined(MPX_HAVE_LIBAV)
+    std::shared_ptr<owenb::OwenbPlayer> ob;
+    {
+        std::lock_guard<std::mutex> lockOb(obMu_);
+        ob = ob_;
+    }
+    if (ob)
+        ob->releaseExternalPlay();
+#endif
+    log("media: airplay audio session end (direct OwenbRing accepted=" + std::to_string(accepted) +
+        " dropped=" + std::to_string(dropped) + ")");
 }
 
 void MediaPlayer::endAirplayMirrorSession() {
@@ -6184,6 +6406,21 @@ void MediaPlayer::fillSpelunkrBannerTitle(const std::string& title, const std::s
 #endif
 }
 
+void MediaPlayer::setSpelunkrBannerMeta(owenb_osd::GuideSource source, const std::string& nextTitle, int remainingMin,
+                                        int progressPct, const std::string& clockText) {
+#if defined(MPX_HAVE_OWENB_RING)
+    withObUi([&](owenb_osd::UiBus& ui) {
+        ui.setSpelunkrBannerMeta(source, nextTitle, remainingMin, progressPct, clockText);
+    });
+#else
+    (void)source;
+    (void)nextTitle;
+    (void)remainingMin;
+    (void)progressPct;
+    (void)clockText;
+#endif
+}
+
 void MediaPlayer::beginSpelunkrTune(uint64_t gen, const std::string &dial, const std::string &name) {
 #if defined(MPX_HAVE_OWENB_RING)
     {
@@ -6237,6 +6474,231 @@ void MediaPlayer::adBreakEvent(int ev) {
 #else
     (void)ev;
 #endif
+}
+
+void MediaPlayer::setAirplayAudioState(bool active, const std::string& codec) {
+    if (!active) {
+        {
+            std::lock_guard<std::mutex> lk(airplayMirrorMu_);
+            airplayAudioPreRollArmed_ = false;
+            airplayAudioPreRoll_.clear();
+        }
+        clearAirplayAudio();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(airplayMirrorMu_);
+        if (!airplayAudioRingActive_)
+            airplayAudioPreRollArmed_ = true;
+    }
+    AirplayNowPlayingState snap;
+    {
+        std::lock_guard<std::mutex> lk(airplayAudioMu_);
+        airplayAudio_.active = true;
+        airplayAudio_.paused = false;
+        if (!codec.empty())
+            airplayAudio_.codec = codec;
+        snap = airplayAudio_;
+    }
+#if defined(MPX_HAVE_OWENB_RING)
+    withObUi([snap](owenb_osd::UiBus& ui) { ui.setAirplayAudio(snap); });
+#endif
+}
+
+void MediaPlayer::setAirplayAudioMetadata(const uint8_t* dmap, size_t len) {
+    const AirplayDmapMeta md = parseAirplayDmap(dmap, len);
+    if (!md.any())
+        return;
+    AirplayNowPlayingState snap;
+    bool push = false;
+    {
+        std::lock_guard<std::mutex> lk(airplayAudioMu_);
+        airplayAudio_.title = md.title;
+        airplayAudio_.artist = md.artist;
+        airplayAudio_.album = md.album;
+        snap = airplayAudio_;
+        push = airplayAudio_.active;
+    }
+    log("airplay: audio metadata title=\"" + md.title + "\" artist=\"" + md.artist + "\" album=\"" + md.album + "\"");
+#if defined(MPX_HAVE_OWENB_RING)
+    if (push)
+        withObUi([snap](owenb_osd::UiBus& ui) { ui.setAirplayAudio(snap); });
+#else
+    (void)push;
+#endif
+}
+
+void MediaPlayer::airplayCoverWorker() {
+#if defined(__linux__)
+    pthread_setname_np(pthread_self(), "mpx-ap-cover");
+#endif
+    for (;;) {
+        std::vector<uint8_t> bytes;
+        uint64_t seq = 0;
+        {
+            std::unique_lock<std::mutex> lk(airplayCoverMu_);
+            airplayCoverCv_.wait(lk, [this] { return airplayCoverStop_ || airplayCoverHasJob_; });
+            if (airplayCoverStop_)
+                break;
+            bytes = std::move(airplayCoverPending_);
+            airplayCoverPending_.clear();
+            airplayCoverHasJob_ = false;
+            seq = airplayCoverSeq_;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        AirplayCoverImage im;
+        if (!airplayCoverDecode(bytes.data(), bytes.size(), im)) {
+            log("airplay: cover art decode failed bytes=" + std::to_string(bytes.size()));
+            continue;
+        }
+        const auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        {
+            std::lock_guard<std::mutex> lk(airplayCoverMu_);
+            if (airplayCoverStop_ || seq != airplayCoverSeq_)
+                continue;   // superseded by a newer track or cleared before decode finished
+        }
+        const uint64_t gen = AirplayCoverStore::get().set(std::move(im));
+        log("airplay: cover art decoded gen=" + std::to_string(gen) + " bytes=" + std::to_string(bytes.size()) +
+            " ms=" + std::to_string(ms));
+        AirplayNowPlayingState snap;
+        bool push = false;
+        {
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            airplayAudio_.coverGen = gen;
+            snap = airplayAudio_;
+            push = airplayAudio_.active;
+        }
+#if defined(MPX_HAVE_OWENB_RING)
+        if (push)
+            withObUi([snap](owenb_osd::UiBus& ui) { ui.setAirplayAudio(snap); });
+#else
+        (void)push;
+#endif
+    }
+}
+
+void MediaPlayer::setAirplayAudioCoverArt(const uint8_t* img, size_t len) {
+    if (!img || len == 0) {
+        {
+            std::lock_guard<std::mutex> lk(airplayCoverMu_);
+            ++airplayCoverSeq_;
+            airplayCoverHasJob_ = false;
+            airplayCoverPending_.clear();
+        }
+        AirplayCoverStore::get().clear();
+        AirplayNowPlayingState snap;
+        bool push = false;
+        {
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            airplayAudio_.coverGen = 0;
+            snap = airplayAudio_;
+            push = airplayAudio_.active;
+        }
+#if defined(MPX_HAVE_OWENB_RING)
+        if (push)
+            withObUi([snap](owenb_osd::UiBus& ui) { ui.setAirplayAudio(snap); });
+#else
+        (void)push;
+#endif
+        return;
+    }
+    if (len > kAirplayCoverMaxBytes)
+        return;
+    {
+        std::lock_guard<std::mutex> lk(airplayCoverMu_);
+        if (airplayCoverStop_)
+            return;
+        airplayCoverPending_.assign(img, img + len);
+        ++airplayCoverSeq_;
+        airplayCoverHasJob_ = true;
+        if (!airplayCoverThr_.joinable())
+            airplayCoverThr_ = std::thread([this] { airplayCoverWorker(); });
+    }
+    airplayCoverCv_.notify_one();
+}
+
+void MediaPlayer::setAirplayAudioProgress(uint32_t start, uint32_t curr, uint32_t end) {
+    const AirplayProgress p = parseAirplayProgress(start, curr, end);
+    if (!p.valid)
+        return;
+#if defined(MPX_HAVE_OWENB_RING)
+    const int64_t now = obUiNowMs();
+#else
+    const int64_t now = steadyMs();
+#endif
+    AirplayNowPlayingState snap;
+    bool push = false;
+    {
+        std::lock_guard<std::mutex> lk(airplayAudioMu_);
+        airplayAudio_.progressValid = true;
+        airplayAudio_.elapsedMs = p.elapsedMs;
+        airplayAudio_.durationMs = p.durationMs;
+        airplayAudio_.progressAnchorMs = now;
+        snap = airplayAudio_;
+        push = airplayAudio_.active;
+    }
+#if defined(MPX_HAVE_OWENB_RING)
+    if (push)
+        withObUi([snap](owenb_osd::UiBus& ui) { ui.setAirplayAudio(snap); });
+#else
+    (void)push;
+#endif
+}
+
+void MediaPlayer::toggleAirplayAudioFullArt() {
+    AirplayNowPlayingState snap;
+    bool active = false;
+    {
+        std::lock_guard<std::mutex> lk(airplayAudioMu_);
+        if (!airplayAudio_.active)
+            return;
+        airplayAudio_.fullArt = !airplayAudio_.fullArt;
+        snap = airplayAudio_;
+        active = true;
+    }
+    if (!active)
+        return;
+    log(std::string("airplay: cover art fullscreen=") + (snap.fullArt ? "on" : "off"));
+#if defined(MPX_HAVE_OWENB_RING)
+    withObUi([snap](owenb_osd::UiBus& ui) { ui.setAirplayAudio(snap); });
+#endif
+}
+
+void MediaPlayer::clearAirplayAudio() {
+    {
+        std::lock_guard<std::mutex> lk(airplayCoverMu_);
+        ++airplayCoverSeq_;
+        airplayCoverHasJob_ = false;
+        airplayCoverPending_.clear();
+    }
+    AirplayCoverStore::get().clear();
+    {
+        std::lock_guard<std::mutex> lk(airplayAudioMu_);
+        airplayAudio_.clear();
+    }
+#if defined(MPX_HAVE_OWENB_RING)
+    withObUi([](owenb_osd::UiBus& ui) { ui.clearAirplayAudio(); });
+#endif
+}
+
+int64_t MediaPlayer::adFramePositionMs() const {
+    if (!((playing_.load() || spelunkrHasPicture_.load()) && !paused_.load()))
+        return -1;
+#if defined(MPX_HAVE_OWENB_RING)
+    std::shared_ptr<owenb::OwenbPlayer> ob;
+    {
+        std::lock_guard<std::mutex> lock(obMu_);
+        ob = ob_;
+    }
+    if (ob) {
+        const owenb::CoreStatus cs = ob->coreStatus();
+        if (cs.valid && cs.sessionOk)
+            return static_cast<int64_t>(cs.picsReconstructed);
+        return -1;
+    }
+#endif
+    return adLastPosMs_.load(std::memory_order_acquire);
 }
 
 void MediaPlayer::showSpelunkrError(const std::string& detail, bool landing) {
@@ -6303,17 +6765,40 @@ void MediaPlayer::setSpelunkrGuideOverlay(bool open, int cursor, int viewStart,
 }
 
 void MediaPlayer::setSpelunkrGuideOverlay(bool open, int cursor, int viewStart,
-                                          std::vector<owenb_osd::FormattedGuideRow> rows) {
+                                          std::vector<owenb_osd::FormattedGuideRow> rows,
+                                          std::string clockText) {
     std::vector<owenb_osd::LibraryRow> out;
     out.reserve(rows.size());
     for (auto& g : rows) {
         owenb_osd::LibraryRow r;
         r.text = std::move(g.text);
         r.source = g.source;
+        r.dial = std::move(g.dial);
+        r.channelName = std::move(g.channelName);
+        r.nowTitle = std::move(g.nowTitle);
+        r.nextTitle = std::move(g.nextTitle);
+        r.remainingMin = g.remainingMin;
+        r.progressPct = g.progressPct;
         out.push_back(std::move(r));
     }
-    withObUi([&](owenb_osd::UiBus& ui) { ui.setSpelunkrGuide(open, cursor, viewStart, std::move(out)); });
+    withObUi([&](owenb_osd::UiBus& ui) {
+        ui.setSpelunkrGuide(open, cursor, viewStart, std::move(out), std::move(clockText));
+    });
     setSpelunkrGuideOpen(open);
+}
+
+int MediaPlayer::spelunkrGuidePageRows() const {
+    int rows = 0;
+#ifdef MISTERPLEX_OWENB_RING
+    std::shared_ptr<owenb::OwenbPlayer> ob;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        ob = ob_;
+    }
+    if (ob)
+        rows = ob->ui().guidePageRows();
+#endif
+    return rows > 0 ? rows : misterplex::spelunkr::kSpelunkrGuidePageRows;
 }
 
 // OWENB-P1B 0010: the OB input thread. The core mirrors Main's pads, keys and OSD actions into the input
@@ -6350,6 +6835,11 @@ void MediaPlayer::obMenuState(const std::shared_ptr<owenb::OwenbPlayer>& ob, owe
     s.paused = s.playing && ob->paused();
     s.spelunkrTv = spelunkrTv_.load();
     s.spelunkrGuideOpen = spelunkrGuideOpen_.load();
+    {
+        std::lock_guard<std::mutex> lk(airplayAudioMu_);
+        s.airplayAudioActive = airplayAudio_.active;
+        s.airplayFullArt = airplayAudio_.fullArt;
+    }
     s.positionMs = s.playing ? positionMs_.load() : -1;
     s.durationMs = s.playing ? durationMs() : 0;
     if (ob && s.playing)
@@ -6622,13 +7112,9 @@ void MediaPlayer::obInputLoop() {
             // here (no second reader). If F6 shows input is not polled/bound on some play path
             // (gcast/companion), the fix belongs where this loop is started/bound; this hook follows it.
             if (plexUi_ && !spelunkrTv_.load() && !router.overscanOpen()) {
-                // Browse shell: Menu opens Search (design §6) instead of the Program panel.
-                if (plexUi_->usingShell() && plexUi_->visible() && !ob->active() &&
-                    !router.menu().isOpen() && nav == owenb::ObNav::Menu) {
-                    log("media: OB input menu -> browse-shell search");
-                    plexUi_->postSearch();
-                    continue;
-                }
+                // Unified controller map: Start (ObNav::Menu) always falls through to the
+                // MiSTerPlex sub-menu; X (ObNav::Info) opens Browse Shell Search and Y
+                // (ObNav::Aux) toggles Grid/List (or refreshes Servers).
                 // SPELUNKR owns Up/Down; PlexUI must not take them.
                 const owenb::PlexUiObOp op =
                     owenb::plexUiObNav(nav, plexUi_->visible() && !ob->active(), router.menu().isOpen());
@@ -7396,6 +7882,17 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
             std::lock_guard<std::mutex> lock(mu_);
             title = playbackTitle_;
         }
+        AirplayNowPlayingState apSnap;
+        if (raopIdle) {
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            airplayAudio_.active = true;
+            airplayAudio_.paused = false;
+            apSnap = airplayAudio_;
+        } else {
+            AirplayCoverStore::get().clear();
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            airplayAudio_.clear();
+        }
         const int64_t startMs = req.startMs;
         ob->ui().update([&](owenb_osd::UiModel& m) {   // a new play: Buffering...; a queued toast stays (R6p)
             const std::string idleHint = m.idleHint;
@@ -7406,6 +7903,11 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
             const std::string dial = m.spelunkrDial;
             const std::string channel = m.spelunkrName;
             const std::string bannerTitle = m.spelunkrTitle;
+            const owenb_osd::GuideSource bannerSource = m.spelunkrSource;
+            const std::string bannerNext = m.spelunkrNextTitle;
+            const int bannerRemaining = m.spelunkrRemainingMin;
+            const int bannerProgress = m.spelunkrProgressPct;
+            const std::string bannerClock = m.spelunkrBannerClock;
             const int64_t bannerShow = m.bannerShowUntilMs;
             const int64_t bannerGone = m.bannerGoneMs;
             const bool hadPicture = m.hadPicture;
@@ -7422,7 +7924,8 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
             m.durationMs = durationMs;
             m.positionMs = startMs;
             m.buffering = true;
-            if (raopIdle) {   // cover the latched mp4 until the spectrum's first frame
+            if (raopIdle) {   // AirPlay Audio Now Playing covers the raster until RAOP ends
+                m.airplayAudio = apSnap;
                 m.idle = true;
                 m.idleHint = idleHint;
                 m.idleName = idleName;
@@ -7439,6 +7942,11 @@ bool MediaPlayer::playOwenbRoute(const std::string& urlOrPath, int64_t startOffs
                 m.spelunkrDial = dial;
                 m.spelunkrName = channel;
                 m.spelunkrTitle = bannerTitle;
+                m.spelunkrSource = bannerSource;
+                m.spelunkrNextTitle = bannerNext;
+                m.spelunkrRemainingMin = bannerRemaining;
+                m.spelunkrProgressPct = bannerProgress;
+                m.spelunkrBannerClock = bannerClock;
                 m.bannerShowUntilMs = bannerShow;
                 m.bannerGoneMs = bannerGone;
             }
@@ -7571,6 +8079,8 @@ void MediaPlayer::owenbPlayEnded(uint64_t epoch, uint64_t generation, owenb::End
     log(std::string("media: OB play ended: ") + owenb::toString(r) + (err.empty() ? "" : ": " + err));
     if (playEpoch_.load() != epoch || r == owenb::EndReason::Stopped)
         return;   // stop() reports its own state
+    if (r != owenb::EndReason::NeedsTranscode)
+        clearAirplayAudio();
     // EOF / error / cast teardown without stop(): drop the soft track and the painted caption (not on NeedsTranscode,
     // whose lowered retry re-offers the same track below).
     if (r != owenb::EndReason::NeedsTranscode && subtitleWire_.control().sessionEnded(epoch, playEpoch_.load()))
@@ -7749,6 +8259,24 @@ void MediaPlayer::owenbPauseResume(bool pause) {
         if (!spelunkrTv_.load())
             ob->ui().showBar(obUiNowMs());
     }
+    {
+        const int64_t now = obUiNowMs();
+        AirplayNowPlayingState snap;
+        bool active = false;
+        {
+            std::lock_guard<std::mutex> lk(airplayAudioMu_);
+            if (airplayAudio_.active) {
+                if (pause)
+                    airplayAudio_.elapsedMs = airplayAudio_.liveElapsedMs(now);
+                airplayAudio_.paused = pause;
+                airplayAudio_.progressAnchorMs = now;
+                snap = airplayAudio_;
+                active = true;
+            }
+        }
+        if (active)
+            ob->ui().setAirplayAudio(snap);
+    }
     if (onProgress_)
         onProgress_(pause ? "paused" : "playing", positionMs_.load(), durationMs());
 #else
@@ -7758,6 +8286,7 @@ void MediaPlayer::owenbPauseResume(bool pause) {
 
 void MediaPlayer::stopOwenbPlay() {
     endAirplayMirrorSession();   // no-op unless a mirror session holds the ring
+    endAirplayAudioSession();    // no-op unless a direct RAOP audio session holds the ring
 #if defined(MPX_HAVE_OWENB_RING)
     std::shared_ptr<owenb::OwenbPlayer> ob;
     {

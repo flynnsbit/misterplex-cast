@@ -5,6 +5,7 @@
 
 #include "libmisterplex/spelunkr_guide_format.hpp"
 #include "libmisterplex/ad_break_card.hpp"
+#include "libmisterplex/airplay_now_playing.hpp"
 #include "libmisterplex/osd_menu.hpp"
 #include "libmisterplex/present_bank.hpp"
 #include "libmisterplex/fabric_direct.hpp"
@@ -387,6 +388,13 @@ public:
     bool airplayMirrorActive();   // a ring session is open (the first AU / MirrorStart began it)
     // Decoded RAOP PCM (48k s16le stereo) during an active mirror session -> the same ring. false = dropped.
     bool pushAirplayMirrorPcm(const uint8_t* pcm, size_t len);
+    // Direct RAOP audio-only session on OwenbRing (low-latency PCM + raster-matched black IDR + Now Playing OSD).
+    // Bypasses /raop.wav, airplay_xcode.py, ffprobe, and ffmpeg completely.
+    bool beginAirplayAudioSession();
+    bool pushAirplayAudioPcm(const uint8_t* pcm, size_t len);
+    void flushAirplayAudioPcm();
+    void endAirplayAudioSession();
+    bool airplayAudioRingActive();
     // MEMSTAT: owenb out_ / ready_ depths and the demuxer probe-packet bound. Zeros when no OB play.
     void owenbQueueDepths(unsigned long long& out, unsigned long long& ready, unsigned long long& probe) const;
     void setObPmsState(int state, const std::string& label);
@@ -467,6 +475,8 @@ public:
     void showSpelunkrBanner(const std::string& dial, const std::string& name, const std::string& title,
                            bool tuning = false);
     void fillSpelunkrBannerTitle(const std::string& title, const std::string& name = {});
+    void setSpelunkrBannerMeta(owenb_osd::GuideSource source, const std::string& nextTitle, int remainingMin,
+                               int progressPct, const std::string& clockText);
     void beginSpelunkrTune(uint64_t gen, const std::string &dial, const std::string &name);
     // Gen-matched: a newer tune's pending (different gen) is left alone.
     void clearSpelunkrPending(uint64_t gen);
@@ -475,16 +485,24 @@ public:
     // N14: Pluto ad-pod stand-by card. ev: 0 = relay silent / respawning, 1 = bytes flow again, 2 = clear
     // (the relay's LiveGap). The card also clears on the first position advance after "resumed".
     void adBreakEvent(int ev);
-    // N15: the picture clock the relay watches for a frame stall (media position, ms). -1 while paused / not
-    // playing, so a pause is never an ad pod.
-    int64_t adFramePositionMs() const {
-        return ((playing_.load() || spelunkrHasPicture_.load()) && !paused_.load())
-                   ? adLastPosMs_.load(std::memory_order_acquire)
-                   : -1;
-    }
+    // AirPlay Audio (RAOP) Now Playing screen: album cover art, DMAP metadata, and live song progress.
+    void setAirplayAudioState(bool active, const std::string& codec);
+    void setAirplayAudioMetadata(const uint8_t* dmap, size_t len);
+    void setAirplayAudioCoverArt(const uint8_t* img, size_t len);
+    void setAirplayAudioProgress(uint32_t start, uint32_t curr, uint32_t end);
+    void toggleAirplayAudioFullArt();
+    void clearAirplayAudio();
+    // N15: the picture clock the relay watches for a frame stall / ad-skip drain.
+    // On OwenbRing this reads the FPGA's live RC_PIC reconstructed-frame counter directly
+    // so the Ad Break card waits until buffered DDR frames finish playing out, even while
+    // OwenbPlaySession::readOne() is blocked waiting on the held live relay socket.
+    // Returns -1 while paused, stopped, or when the ring handle is transiently unavailable.
+    int64_t adFramePositionMs() const;
     void setSpelunkrGuideOverlay(bool open, int cursor, int viewStart, std::vector<std::string> lines);
     void setSpelunkrGuideOverlay(bool open, int cursor, int viewStart,
-                                 std::vector<owenb_osd::FormattedGuideRow> rows);
+                                 std::vector<owenb_osd::FormattedGuideRow> rows,
+                                 std::string clockText = {});
+    int spelunkrGuidePageRows() const;
     // E9: Program menu "Safe area" writes OVERSCAN_* . Unset until this runs.
     void setOverscanPersist(std::function<bool(int left, int right, int top, int bottom)> f) {
         overscanPersist_ = std::move(f);
@@ -1008,6 +1026,8 @@ private:
     std::atomic<bool> reopenOverlayNeeded_{false};
     std::atomic<int64_t> spelunkrPendingSinceMs_{0};  // beginSpelunkrTune, overlay clock
     misterplex::AdBreakGate adGate_;           // N14
+    mutable std::mutex airplayAudioMu_;
+    misterplex::AirplayNowPlayingState airplayAudio_;
     std::atomic<int64_t> adLastPosMs_{0};      // N14: last position seen (the "resumed" baseline)
     std::atomic<uint64_t> adReopenEpoch_{0};   // playEpoch awaiting ad-return reopen picture
     std::atomic<uint32_t> adReopenSeekEpoch_{0};  // OwenbPlaySession seekEpoch for ad-return reopen
@@ -1600,8 +1620,20 @@ private:
     uint64_t airplayMirrorSession_ = 1;
     uint32_t airplayMirrorSeq_ = 0;
     bool airplayMirrorActive_ = false;
+    bool airplayAudioRingActive_ = false;
+    bool airplayAudioPreRollArmed_ = false;
+    std::vector<uint8_t> airplayAudioPreRoll_;
     std::mutex airplayMirrorMu_;
     misterplex::gcast::MirrorPcmBridge airplayMirrorPcm_;
+    misterplex::gcast::MirrorPcmBridge airplayAudioPcm_;
+    std::mutex airplayCoverMu_;
+    std::condition_variable airplayCoverCv_;
+    std::vector<uint8_t> airplayCoverPending_;
+    bool airplayCoverHasJob_ = false;
+    bool airplayCoverStop_ = false;
+    uint64_t airplayCoverSeq_ = 0;
+    std::thread airplayCoverThr_;
+    void airplayCoverWorker();
     bool airplayMirrorFirstAu_ = false;
     bool airplayMirrorFirstIdr_ = false;
     unsigned airplayMirrorAuTotal_ = 0;

@@ -15,11 +15,37 @@
 namespace misterplex {
 namespace {
 
-BrowseTitleRow itemToRow(const plexui::PlexItem& it) {
+BrowseTitleRow itemToRow(const plexui::PlexItem& it, bool showGrandparent = false) {
     BrowseTitleRow t;
     t.ratingKey = it.ratingKey;
     t.key = it.key;
     t.title = it.title;
+    if (it.type == "episode") {
+        char code[24] = {};
+        if (it.parentIndex > 0 && it.index > 0)
+            std::snprintf(code, sizeof(code), "S%02dE%02d", it.parentIndex, it.index);
+        else if (it.index > 0)
+            std::snprintf(code, sizeof(code), "E%02d", it.index);
+        if (showGrandparent && !it.grandparentTitle.empty()) {
+            std::string full = it.grandparentTitle;
+            if (code[0]) {
+                full += " · ";
+                full += code;
+            }
+            if (!it.title.empty()) {
+                full += " ";
+                full += it.title;
+            }
+            t.title = std::move(full);
+        } else if (code[0]) {
+            const bool alreadyCoded =
+                it.title.size() >= 3 &&
+                (it.title[0] == 'S' || it.title[0] == 's' || it.title[0] == 'E' || it.title[0] == 'e') &&
+                it.title[1] >= '0' && it.title[1] <= '9';
+            if (!alreadyCoded)
+                t.title = std::string(code) + " · " + it.title;
+        }
+    }
     t.year = it.year;
     t.type = it.type;
     t.summary = it.summary;
@@ -32,24 +58,27 @@ BrowseTitleRow itemToRow(const plexui::PlexItem& it) {
     return t;
 }
 
+std::string hostPortOfUrl(const std::string& url) {
+    auto slash = url.find("://");
+    auto host = slash == std::string::npos ? url : url.substr(slash + 3);
+    const auto cut = host.find('/');
+    if (cut != std::string::npos)
+        host = host.substr(0, cut);
+    return host;
+}
+
+bool isAuthErrorText(const std::string& err) {
+    return err.find("401") != std::string::npos || err.find("403") != std::string::npos ||
+           err.find("refused the token") != std::string::npos ||
+           err.find("Sign in again") != std::string::npos;
+}
+
 BrowseServerRow serverToRow(const plexui::PlexServer& s) {
     BrowseServerRow r;
     r.id = !s.machineIdentifier.empty() ? s.machineIdentifier : s.clientIdentifier;
     r.name = s.name;
-    r.locality = s.offline ? "local" : (plexui::serverLinkLabel(s) == "relay" ? "remote" : plexui::serverLinkLabel(s));
-    if (r.locality == "Connecting..." || r.locality.empty())
-        r.locality = "local";
-    if (r.locality == "Offline")
-        r.locality = "local";
-    r.host = s.baseUrl;
-    const auto slash = r.host.find("://");
-    if (slash != std::string::npos) {
-        auto host = r.host.substr(slash + 3);
-        const auto cut = host.find('/');
-        if (cut != std::string::npos)
-            host = host.substr(0, cut);
-        r.host = host;
-    }
+    r.locality = plexui::serverExpectedLocality(s);
+    r.host = hostPortOfUrl(s.baseUrl);
     if (s.offline) {
         r.status = "—";
         r.ok = false;
@@ -96,6 +125,11 @@ BrowseShellController::BrowseShellController(Config cfg, Hooks hooks)
     model_.search.query.reserve(64);
     for (auto& line : msLines_)
         line.reserve(160);
+    {
+        std::string lpJson;
+        if (disk_.loadLastPagesJson(lpJson))
+            lastPages_ = browseLastPagesFromJson(lpJson);
+    }
     prepareFontsLocked();
 }
 
@@ -692,6 +726,8 @@ void BrowseShellController::logNavTrace(int64_t plxhMs, int64_t plxoMs) {
 #ifndef MUT_NAV_NO_SHELL_NAVTRACE
     if (!navTraceOpen_.exchange(false))
         return;
+    if (!hooks_.log)
+        return;
     NavTrace nt;
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -699,15 +735,23 @@ void BrowseShellController::logNavTrace(int64_t plxhMs, int64_t plxoMs) {
     }
     const int64_t total = plxoMs > 0 ? plxoMs - nt.recvMs : browseShellNowMs() - nt.recvMs;
     char buf[320];
-    std::snprintf(buf, sizeof buf,
-                  "plexui: navtrace id=%llu src=%s recv=%lld post=%lld state=%lld "
-                  "render_start=%lld render_end=%lld plxh=%lld plxo=%lld total=%lld",
-                  static_cast<unsigned long long>(nt.id), nt.src, static_cast<long long>(nt.recvMs),
-                  static_cast<long long>(nt.postMs), static_cast<long long>(nt.stateMs),
-                  static_cast<long long>(nt.renderStartMs), static_cast<long long>(nt.renderEndMs),
-                  static_cast<long long>(plxhMs), static_cast<long long>(plxoMs),
-                  static_cast<long long>(total));
-    logLine(buf);
+    const int n = std::snprintf(
+        buf, sizeof buf,
+        "plexui: navtrace id=%llu src=%s recv=%lld post=%lld state=%lld "
+        "render_start=%lld render_end=%lld plxh=%lld plxo=%lld total=%lld",
+        static_cast<unsigned long long>(nt.id), nt.src, static_cast<long long>(nt.recvMs),
+        static_cast<long long>(nt.postMs), static_cast<long long>(nt.stateMs),
+        static_cast<long long>(nt.renderStartMs), static_cast<long long>(nt.renderEndMs),
+        static_cast<long long>(plxhMs), static_cast<long long>(plxoMs),
+        static_cast<long long>(total));
+    thread_local std::string line;
+    if (line.capacity() < sizeof buf)
+        line.reserve(sizeof buf);
+    if (n > 0)
+        line.assign(buf, static_cast<std::size_t>(std::min<int>(n, static_cast<int>(sizeof buf - 1))));
+    else
+        line.clear();
+    logLine(line);
 #else
     (void)plxhMs;
     (void)plxoMs;
@@ -719,16 +763,24 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
     beginNavTrace(src, recvMs);
     BrowseShellNav nav;
     bool needServers = false, needLibs = false, needTitles = false, needSearch = false, needPlay = false;
-    bool needChildren = false;
+    bool needChildren = false, needRecommended = false, needLastPage = false, needRefreshServers = false;
+    bool saveLastPagesDisk = false;
+    std::string lastPagesJson;
+    BrowseLastPage targetLastPage;
     bool timingLogged = false;
     int pageTarget = -1;
     BrowseTitleRow playItem;
     int64_t playOff = 0;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        if ((op == BrowseOp::Back || op == BrowseOp::Open) &&
+        const bool leavingRealLibrary =
+            (op == BrowseOp::Back || op == BrowseOp::Open) &&
             !cursorKey_.empty() && model_.screen == BrowseShellScreen::Titles &&
-            !model_.childList && !model_.searchResults) {
+            !model_.childList && !model_.searchResults && !model_.recommendedList;
+        if (leavingRealLibrary) {
+            saveLastPageLocked();
+            lastPagesJson = browseLastPagesToJson(lastPages_);
+            saveLastPagesDisk = true;
             auto& saved = cursors_[cursorKey_];
             saved = std::move(model_);
             model_ = {};
@@ -744,8 +796,17 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
         }
         if (op == BrowseOp::Back && model_.screen == BrowseShellScreen::Servers)
             visible_ = false;
-        if (op == BrowseOp::Back && (model_.screen == BrowseShellScreen::Search ||
-                                    (model_.screen == BrowseShellScreen::Titles && model_.searchResults))) {
+        if (op == BrowseOp::Info && model_.screen != BrowseShellScreen::Search) {
+            // Unified controller map: X (BrowseOp::Info) always opens Search.
+            enterSearchLocked();
+            ++contentEpoch_;
+        } else if (op == BrowseOp::ToggleUiSize &&
+                   model_.screen == BrowseShellScreen::Servers && hooks_.get) {
+            model_.status = "Refreshing servers...";
+            ++contentEpoch_;
+            needRefreshServers = true;
+        } else if (op == BrowseOp::Back && (model_.screen == BrowseShellScreen::Search ||
+                                            (model_.screen == BrowseShellScreen::Titles && model_.searchResults))) {
             model_ = std::move(searchOrigin_);
             model_.search.query.clear();
             model_.search.pending = false;
@@ -754,7 +815,8 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
             model_ = std::move(parents_.back());
             parents_.pop_back();
         } else {
-        if (model_.screen == BrowseShellScreen::Titles && !model_.childList && !model_.searchResults) {
+        if (model_.screen == BrowseShellScreen::Titles && !model_.childList &&
+            !model_.searchResults && !model_.recommendedList) {
             int delta = 0;
             if (op == BrowseOp::PageDown)
                 delta = browsePageDelta(layout_, model_.view);
@@ -779,9 +841,32 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
         browseApplyNav(model_, layout_, op, recvMs, &nav);
         if (oldResults != model_.search.results.size())
             ++contentEpoch_;
+        if (leavingRealLibrary && model_.screen == BrowseShellScreen::Libraries) {
+            updateLastPageRowLocked();
+            browseEnsureFocusVisible(model_, layout_);
+        }
         needServers = needServers || nav.wantServers;
         needLibs = nav.wantLibraries;
         needTitles = nav.wantTitles;
+        if (needTitles && !model_.libraries.empty()) {
+            const int li = browseClampIndex(model_.focus, static_cast<int>(model_.libraries.size()));
+            const auto& lib = model_.libraries[static_cast<std::size_t>(li)];
+            if (lib.key == kBrowseLibSearch) {
+                needTitles = false;
+                enterSearchLocked();
+                ++contentEpoch_;
+            } else if (lib.key == kBrowseLibRecommended) {
+                needTitles = false;
+                needRecommended = true;
+            } else if (lib.key == kBrowseLibLastPage) {
+                const auto it = lastPages_.find(server_.machineIdentifier);
+                if (it != lastPages_.end()) {
+                    needTitles = false;
+                    needLastPage = true;
+                    targetLastPage = it->second;
+                }
+            }
+        }
         needSearch = nav.wantSearchFetch;
         if (model_.screen == BrowseShellScreen::Search &&
             model_.search.region == BrowseSearchUi::Region::Field &&
@@ -802,6 +887,12 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
                            ? model_.search.results[static_cast<std::size_t>(nav.playIndex)]
                            : model_.titles[static_cast<std::size_t>(nav.playIndex)];
         if (needPlay) {
+            if (model_.screen == BrowseShellScreen::Titles && !model_.childList &&
+                !model_.searchResults && !model_.recommendedList && !section_.key.empty()) {
+                saveLastPageLocked();
+                lastPagesJson = browseLastPagesToJson(lastPages_);
+                saveLastPagesDisk = true;
+            }
             if (model_.screen == BrowseShellScreen::Detail) {
                 playItem = model_.detail.item;
                 if (model_.detail.button == 0 && model_.detail.inProgress)
@@ -821,6 +912,8 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
         if (navTraceOpen_.load())
             activeNav_.stateMs = browseShellNowMs();
     }
+    if (saveLastPagesDisk)
+        disk_.saveLastPagesJson(lastPagesJson);
     if (op == BrowseOp::Open && hooks_.playing && hooks_.playing() && hooks_.stopPlayback)
         hooks_.stopPlayback();
 
@@ -859,10 +952,18 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
                     model_.status.clear();
             }
         }
+    } else if (needRefreshServers) {
+        requestRepaint(true);
+        serversRefreshPending_.store(true);
+        refreshServersFromNetwork(g);
     } else if (needServers)
         openServers(g, recvMs);
     else if (needLibs)
         openLibraries(g);
+    else if (needRecommended)
+        openRecommended(g);
+    else if (needLastPage)
+        openLastPage(g, targetLastPage);
     else if (needTitles)
         openTitles(g);
     else if (needChildren)
@@ -885,9 +986,10 @@ void BrowseShellController::handleNav(BrowseOp op, int64_t recvMs, const char* a
         }
     }
 
-    requestRepaint(needServers || needLibs || needTitles || needChildren || pageTarget >= 0 ||
+    requestRepaint(needServers || needRefreshServers || needLibs || needTitles || needRecommended ||
+                   needLastPage || needChildren || pageTarget >= 0 ||
                    op == BrowseOp::Back || op == BrowseOp::Open);
-    if (needTitles || needLibs)
+    if (needTitles || needLibs || needRecommended || needLastPage)
         act = "server_titles";
     if (!needServers && !timingLogged)
         logMs(act, recvMs);
@@ -907,7 +1009,12 @@ void BrowseShellController::openServers(uint64_t gen, int64_t recvMs) {
         seeds.push_back(serverToRow(s));
     for (auto& row : cached) {
         for (const auto& seed : seeds) {
-            if (seed.id == row.id || seed.baseUrl == row.baseUrl)
+            // Never stamp a cached remote/shared server with an unverified local conf seed token.
+            const bool sameId = !seed.id.empty() && seed.id == row.id;
+            const bool sameLocalBase =
+                row.locality == "local" && seed.locality == "local" &&
+                !seed.baseUrl.empty() && seed.baseUrl == row.baseUrl;
+            if ((sameId || sameLocalBase) && !seed.token.empty())
                 row.token = seed.token;
         }
     }
@@ -1045,22 +1152,158 @@ void BrowseShellController::refreshServersFromNetwork(uint64_t gen) {
         }
         prepareFontsLocked();
     }
-    if (!disk_.saveServersJson(browseServersToJson(rows, lastUsedId_)))
-        logLine("browse-shell: cannot save server cache");
+    if (!probeCancel()) {
+        if (!disk_.saveServersJson(browseServersToJson(rows, lastUsedId_)))
+            logLine("browse-shell: cannot save server cache");
+    } else {
+        // Re-arm so the next idle turn finishes probing and collapses cleanly.
+        serversRefreshPending_.store(true);
+    }
     requestRepaint();
+}
+
+bool BrowseShellController::refreshServerCredentials(plexui::PlexServer& srv,
+                                                     std::vector<std::string>& alts,
+                                                     const BrowseCancelFn& cancel,
+                                                     int serverFocus) {
+    if (!hooks_.get || cfg_.accountToken.empty() || (cancel && cancel()))
+        return false;
+    fetchCount_.fetch_add(1);
+    const auto r = hooks_.get(plexui::appendToken(
+        "https://plex.tv/api/resources?includeHttps=1&includeRelay=1", cfg_.accountToken),
+        2000, 6000, cancel);
+    if (!r.ok() || (cancel && cancel()))
+        return false;
+    auto account = plexui::parsePlexResources(r.body);
+    plexui::pickServerConnections(account);
+    const std::string wantId = srv.machineIdentifier;
+    const std::string wantHp = hostPortOfUrl(srv.baseUrl);
+    plexui::PlexServer* matched = nullptr;
+    for (auto& a : account) {
+        if (!wantId.empty() && !plexui::isSyntheticLocalServerId(wantId) &&
+            (a.machineIdentifier == wantId || a.clientIdentifier == wantId)) {
+            matched = &a;
+            break;
+        }
+    }
+    if (!matched && !wantHp.empty()) {
+        for (auto& a : account) {
+            if (hostPortOfUrl(a.baseUrl) == wantHp) {
+                matched = &a;
+                break;
+            }
+            for (const auto& c : a.connections) {
+                const std::string chp = !c.address.empty() && !c.port.empty()
+                                            ? (c.address + ":" + c.port)
+                                            : hostPortOfUrl(c.uri);
+                if (chp == wantHp || hostPortOfUrl(c.uri) == wantHp) {
+                    matched = &a;
+                    break;
+                }
+            }
+            if (matched)
+                break;
+        }
+    }
+    if (!matched || matched->accessToken.empty())
+        return false;
+
+    std::vector<plexui::PlexServer> one = {*matched};
+    if (one[0].baseUrl.empty() || !one[0].connections.empty())
+        plexui::resolveServerBases(hooks_.get, one, cancel);
+    if (cancel && cancel())
+        return false;
+    const auto& fresh = one[0];
+    if (!fresh.name.empty())
+        srv.name = fresh.name;
+    if (!fresh.machineIdentifier.empty())
+        srv.machineIdentifier = fresh.machineIdentifier;
+    srv.accessToken = fresh.accessToken;
+    alts = plexui::rankedConnectionBases(fresh);
+    if (!fresh.baseUrl.empty())
+        srv.baseUrl = fresh.baseUrl;
+    else if (srv.baseUrl.empty() && !alts.empty())
+        srv.baseUrl = alts.front();
+
+    const BrowseServerRow updatedRow = serverToRow(fresh);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (serverFocus >= 0 && serverFocus < static_cast<int>(model_.servers.size())) {
+            auto& row = model_.servers[static_cast<std::size_t>(serverFocus)];
+            row.id = updatedRow.id.empty() ? row.id : updatedRow.id;
+            row.name = updatedRow.name.empty() ? row.name : updatedRow.name;
+            row.locality = updatedRow.locality;
+            row.token = srv.accessToken;
+            if (!srv.baseUrl.empty()) {
+                row.baseUrl = srv.baseUrl;
+                row.host = hostPortOfUrl(srv.baseUrl);
+                row.status = "OK";
+                row.ok = true;
+            }
+            if (!alts.empty())
+                row.connectionBases = alts;
+        }
+    }
+    logLine("browse-shell: refreshed credentials server=" + srv.name + " base=" + srv.baseUrl);
+    return !srv.baseUrl.empty() && !srv.accessToken.empty();
+}
+
+void BrowseShellController::saveLastPageLocked() {
+    if (server_.machineIdentifier.empty() || section_.key.empty() || section_.title.empty())
+        return;
+    BrowseLastPage lp;
+    lp.serverId = server_.machineIdentifier;
+    lp.sectionKey = section_.key;
+    lp.sectionTitle = section_.title;
+    lp.sectionType = section_.type;
+    lp.focus = std::max(0, model_.focus);
+    lp.scroll = std::max(0, model_.scroll);
+    lp.view = model_.view;
+    lastPages_[lp.serverId] = std::move(lp);
+}
+
+void BrowseShellController::updateLastPageRowLocked() {
+    const auto it = lastPages_.find(server_.machineIdentifier);
+    if (it == lastPages_.end() || model_.libraries.empty())
+        return;
+    const auto& lp = it->second;
+    BrowseLibraryRow row;
+    row.key = kBrowseLibLastPage;
+    row.title = "Last Page: " + lp.sectionTitle;
+    row.type = "lastpage";
+    row.subtitle = std::string(lp.view == BrowseViewMode::Grid ? "Grid" : "List") +
+                   " · #" + std::to_string(lp.focus + 1);
+    for (auto& lib : model_.libraries) {
+        if (lib.key == kBrowseLibLastPage) {
+            lib = std::move(row);
+            return;
+        }
+    }
+    std::size_t insertAt = 0;
+    if (!model_.libraries.empty() && model_.libraries[0].key == kBrowseLibRecommended)
+        insertAt = 1;
+    model_.libraries.insert(model_.libraries.begin() + static_cast<std::ptrdiff_t>(insertAt),
+                            std::move(row));
+    if (model_.focus >= static_cast<int>(insertAt))
+        ++model_.focus;
+    if (model_.libraryFocus >= static_cast<int>(insertAt))
+        ++model_.libraryFocus;
 }
 
 void BrowseShellController::openLibraries(uint64_t gen) {
     plexui::PlexServer srv;
     std::vector<std::string> alts;
     [[maybe_unused]] int serverFocus = 0;
+    bool needCredRefresh = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (model_.servers.empty())
             return;
         int i = browseClampIndex(model_.focus, static_cast<int>(model_.servers.size()));
 #ifndef MUT_BROWSE_TITLE_PLAY_NOPICTURE
-        if (!browseServerRowUsable(model_.servers[static_cast<std::size_t>(i)])) {
+        // Only jump away from explicitly Offline ("—") servers; allow selecting a connecting
+        // ("…") or unhydrated server so on-demand credential refresh can resolve it immediately.
+        if (model_.servers[static_cast<std::size_t>(i)].status == "—") {
             const int pick = browseFirstUsableServerIndex(model_.servers);
             if (pick >= 0) {
                 i = pick;
@@ -1070,12 +1313,14 @@ void BrowseShellController::openLibraries(uint64_t gen) {
         }
 #endif
         const auto& row = model_.servers[static_cast<std::size_t>(i)];
-        if (row.token.empty() && !cfg_.accountToken.empty()) {
+        if ((row.token.empty() || row.baseUrl.empty()) && !cfg_.accountToken.empty() &&
+            row.status != "—") {
+            needCredRefresh = true;
+        } else if (row.token.empty() && !cfg_.accountToken.empty()) {
             model_.status = "Server credentials unavailable; reopen Browse to refresh";
             ++contentEpoch_;
             return;
-        }
-        if (!browseServerRowUsable(row)) {
+        } else if (!browseServerRowUsable(row)) {
 #ifndef MUT_BROWSE_TITLE_PLAY_NOPICTURE
             model_.status = row.name.empty() ? "Server not reachable" : (row.name + ": no reachable address");
             ++contentEpoch_;
@@ -1092,16 +1337,39 @@ void BrowseShellController::openLibraries(uint64_t gen) {
         model_.serverFocus = i;
         model_.screen = BrowseShellScreen::Loading;
         model_.loadingPct = 20;
-        model_.status = "libraries";
+        model_.status = needCredRefresh ? "connecting" : "libraries";
         model_.serverName = row.name;
         visible_ = true;
     }
     requestRepaint();
     const BrowseCancelFn cancel = cancelFor(gen);
+    bool credRefreshed = false;
+    if (needCredRefresh) {
+        credRefreshed = refreshServerCredentials(srv, alts, cancel, serverFocus);
+        if (!credRefreshed && (srv.baseUrl.empty() || srv.accessToken.empty())) {
+            std::lock_guard<std::mutex> lk(mu_);
+            model_.screen = BrowseShellScreen::Servers;
+            model_.status = cancel() ? "" : "Server credentials unavailable; press Y to refresh";
+            return;
+        }
+    }
     fetchCount_.fetch_add(1);
     std::vector<plexui::PlexSection> sections;
     std::string err;
     bool ok = hooks_.get && plexui::fetchLibrarySections(hooks_.get, srv, cancel, sections, err);
+    // Remote server token mismatch (401/403): fetch fresh shared token from plex.tv once and retry.
+    if (!ok && !credRefreshed && hooks_.get && !cancel() && !cfg_.accountToken.empty() &&
+        isAuthErrorText(err)) {
+        logLine("browse-shell: libraries auth error server=" + srv.name + " status=" + err +
+                " (refreshing plex.tv credentials)");
+        if (refreshServerCredentials(srv, alts, cancel, serverFocus)) {
+            credRefreshed = true;
+            sections.clear();
+            err.clear();
+            fetchCount_.fetch_add(1);
+            ok = plexui::fetchLibrarySections(hooks_.get, srv, cancel, sections, err);
+        }
+    }
 #ifndef MUT_BROWSE_NO_SELECT_RETRY
     // Cheap (b): probe may keep a base that later fails /library/sections. Retry remaining
     // connections (incl. relay) on transport/no-response, then persist the winner.
@@ -1171,7 +1439,7 @@ void BrowseShellController::openLibraries(uint64_t gen) {
         model_.screen = BrowseShellScreen::Servers;
         return;
     }
-    std::vector<BrowseLibraryRow> libs;
+    std::vector<BrowseLibraryRow> realLibs;
     for (const auto& s : sections) {
         if (!movieOrShow(s))
             continue;
@@ -1179,7 +1447,7 @@ void BrowseShellController::openLibraries(uint64_t gen) {
         r.key = s.key;
         r.title = s.title;
         r.type = s.type;
-        libs.push_back(std::move(r));
+        realLibs.push_back(std::move(r));
     }
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -1190,18 +1458,221 @@ void BrowseShellController::openLibraries(uint64_t gen) {
         server_ = srv;
         failedThumbs_.clear();
         thumbRetryAt_ = 0;
+        std::vector<BrowseLibraryRow> libs;
+        int firstRealIdx = 0;
+        if (!realLibs.empty()) {
+            BrowseLibraryRow rec;
+            rec.key = kBrowseLibRecommended;
+            rec.title = "Recommended";
+            rec.type = "recommended";
+            rec.subtitle = "Continue & New";
+            libs.push_back(std::move(rec));
+
+            const auto lpIt = lastPages_.find(srv.machineIdentifier);
+            if (lpIt != lastPages_.end()) {
+                const auto& lp = lpIt->second;
+                const bool exists = std::any_of(realLibs.begin(), realLibs.end(),
+                                                [&](const BrowseLibraryRow& r) { return r.key == lp.sectionKey; });
+                if (exists) {
+                    BrowseLibraryRow lastRow;
+                    lastRow.key = kBrowseLibLastPage;
+                    lastRow.title = "Last Page: " + lp.sectionTitle;
+                    lastRow.type = "lastpage";
+                    lastRow.subtitle = std::string(lp.view == BrowseViewMode::Grid ? "Grid" : "List") +
+                                       " · #" + std::to_string(lp.focus + 1);
+                    libs.push_back(std::move(lastRow));
+                }
+            }
+
+            BrowseLibraryRow srch;
+            srch.key = kBrowseLibSearch;
+            srch.title = "Search";
+            srch.type = "search";
+            srch.subtitle = "All libraries";
+            libs.push_back(std::move(srch));
+
+            firstRealIdx = static_cast<int>(libs.size());
+            for (auto& r : realLibs)
+                libs.push_back(std::move(r));
+        }
         model_.libraries = std::move(libs);
         model_.screen = BrowseShellScreen::Libraries;
         model_.header = "LIBRARIES";
         model_.headerRight = srv.name;
-        model_.focus = 0;
+        model_.focus = firstRealIdx;
         model_.scroll = 0;
+        browseEnsureFocusVisible(model_, layout_);
         model_.loadingPct = 100;
         model_.status = model_.libraries.empty() ? "No movie or TV libraries" : "";
         prepareFontsLocked();
     }
     if (!disk_.saveServersJson(browseServersToJson(snapshot().servers, lastUsedId_)))
         logLine("browse-shell: cannot save last-used server");
+}
+
+void BrowseShellController::openRecommended(uint64_t gen) {
+    plexui::PlexServer srv;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        srv = server_;
+        model_.libraryFocus = browseClampIndex(model_.focus, static_cast<int>(model_.libraries.size()));
+        parents_.clear();
+        cursorKey_.clear();
+        model_.screen = BrowseShellScreen::Loading;
+        model_.loadingPct = 30;
+        model_.libraryName = "Recommended";
+        model_.status = "recommended";
+    }
+    requestRepaint();
+    const BrowseCancelFn cancel = cancelFor(gen);
+    if (!hooks_.get || srv.baseUrl.empty()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        model_.screen = BrowseShellScreen::Libraries;
+        return;
+    }
+
+    std::vector<plexui::PlexItem> cwItems;
+    std::vector<plexui::PlexItem> recentItems;
+    fetchCount_.fetch_add(1);
+    const auto rHubs = hooks_.get(
+        plexui::appendToken(urlNoToken(srv.baseUrl, "/hubs?count=12"), srv.accessToken),
+        4000, 15000, cancel);
+    if (cancel()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        model_.screen = BrowseShellScreen::Libraries;
+        model_.status.clear();
+        return;
+    }
+    if (rHubs.ok()) {
+        auto hubs = plexui::parseHubsHome(rHubs.body);
+        for (const auto& h : hubs) {
+            std::string lo = h.title;
+            for (char& ch : lo)
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            const bool isContinue =
+                lo.find("continue") != std::string::npos || lo.find("on deck") != std::string::npos;
+            for (const auto& it : h.items) {
+                if (it.type != "movie" && it.type != "show" && it.type != "episode")
+                    continue;
+                if (isContinue)
+                    cwItems.push_back(it);
+                else
+                    recentItems.push_back(it);
+            }
+        }
+    }
+    if (cwItems.empty() && recentItems.empty() && !cancel()) {
+        fetchCount_.fetch_add(1);
+        const auto rDeck = hooks_.get(
+            plexui::appendToken(urlNoToken(srv.baseUrl, "/library/onDeck?X-Plex-Container-Size=20"),
+                                srv.accessToken),
+            4000, 12000, cancel);
+        if (rDeck.ok())
+            cwItems = plexui::parseOnDeckItems(rDeck.body);
+        if (!cancel()) {
+            fetchCount_.fetch_add(1);
+            const auto rRec = hooks_.get(
+                plexui::appendToken(urlNoToken(srv.baseUrl, "/library/recentlyAdded?X-Plex-Container-Size=24"),
+                                    srv.accessToken),
+                4000, 12000, cancel);
+            if (rRec.ok())
+                recentItems = plexui::parseLibraryAll(rRec.body);
+        }
+    }
+    if (cancel()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        model_.screen = BrowseShellScreen::Libraries;
+        model_.status.clear();
+        return;
+    }
+
+    std::vector<BrowseTitleRow> titles;
+    std::unordered_map<std::string, bool> seen;
+    constexpr std::size_t kMaxRecommended = 40;
+    auto pushList = [&](const std::vector<plexui::PlexItem>& src) {
+        for (const auto& it : src) {
+            if (titles.size() >= kMaxRecommended)
+                break;
+            if (it.ratingKey.empty() || seen.count(it.ratingKey))
+                continue;
+            if (it.type != "movie" && it.type != "show" && it.type != "episode")
+                continue;
+            seen[it.ratingKey] = true;
+            titles.push_back(itemToRow(it, true));
+        }
+    };
+    pushList(cwItems);
+    pushList(recentItems);
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (cancel()) {
+            model_.screen = BrowseShellScreen::Libraries;
+            return;
+        }
+        section_ = {};
+        model_.titles = std::move(titles);
+        model_.totalTitles = static_cast<int>(model_.titles.size());
+        model_.screen = BrowseShellScreen::Titles;
+        model_.libraryName = "Recommended";
+        model_.header = "RECOMMENDED";
+        model_.headerRight = std::to_string(model_.totalTitles) + " items";
+        model_.focus = 0;
+        model_.scroll = 0;
+        model_.loadingPct = 100;
+        model_.status = model_.titles.empty() ? "Nothing recommended yet" : "";
+        model_.childList = false;
+        model_.searchResults = false;
+        model_.recommendedList = true;
+        prepareFontsLocked();
+    }
+}
+
+void BrowseShellController::openLastPage(uint64_t gen, const BrowseLastPage& lp) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        int targetIdx = -1;
+        for (std::size_t i = 0; i < model_.libraries.size(); ++i) {
+            if (model_.libraries[i].key == lp.sectionKey) {
+                targetIdx = static_cast<int>(i);
+                break;
+            }
+        }
+        if (targetIdx < 0) {
+            model_.status = "Saved library no longer available";
+            ++contentEpoch_;
+            return;
+        }
+        model_.focus = targetIdx;
+        if (!interlaced_)
+            model_.view = lp.view;
+    }
+    openTitles(gen);
+    const BrowseCancelFn cancel = cancelFor(gen);
+    if (cancel())
+        return;
+    while (!cancel()) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (model_.screen != BrowseShellScreen::Titles ||
+                lp.focus < static_cast<int>(model_.titles.size()) ||
+                static_cast<int>(model_.titles.size()) >= model_.totalTitles)
+                break;
+        }
+        if (!prefetchNext(gen, lp.focus))
+            break;
+    }
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!cancel() && model_.screen == BrowseShellScreen::Titles && !model_.titles.empty()) {
+            if (!interlaced_)
+                model_.view = lp.view;
+            model_.focus = browseClampIndex(lp.focus, static_cast<int>(model_.titles.size()));
+            model_.scroll = std::max(0, std::min(lp.scroll, model_.focus));
+            browseEnsureFocusVisible(model_, layout_);
+            ++contentEpoch_;
+        }
+    }
 }
 
 void BrowseShellController::openTitles(uint64_t gen) {
@@ -1310,6 +1781,7 @@ void BrowseShellController::openTitles(uint64_t gen) {
         model_.status = model_.titles.empty() ? "No titles" : "";
         model_.childList = false;
         model_.searchResults = false;
+        model_.recommendedList = false;
         prepareFontsLocked();
     }
 }
@@ -1363,7 +1835,8 @@ bool BrowseShellController::prefetchNext(uint64_t gen, int target) {
         std::lock_guard<std::mutex> lk(mu_);
         if (!visible_ || (model_.screen != BrowseShellScreen::Titles &&
                          !(target >= 0 && model_.screen == BrowseShellScreen::Loading)) || model_.childList ||
-            model_.searchResults || model_.titles.size() >= static_cast<std::size_t>(model_.totalTitles))
+            model_.searchResults || model_.recommendedList ||
+            model_.titles.size() >= static_cast<std::size_t>(model_.totalTitles))
             return false;
         start = static_cast<int>(model_.titles.size());
         // Keep two viewports ahead; catalogs <= kBrowseShellPrefetchAllMax fill
@@ -1580,25 +2053,41 @@ void BrowseShellController::prefetchThumbs(uint64_t gen) {
 }
 
 void BrowseShellController::runSearch(uint64_t gen, bool commit) {
-    std::string q, sectionId, base, token;
+    std::string q, sectionId;
+    plexui::PlexServer srv;
+    int serverFocus = -1;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        if (model_.search.query.empty() || server_.baseUrl.empty())
+        if (model_.search.query.empty())
             return;
         q = model_.search.query;
         sectionId = model_.search.sectionId;
-        base = server_.baseUrl;
-        token = server_.accessToken;
+        srv = server_;
+        if (searchOrigin_.screen == BrowseShellScreen::Servers && !searchOrigin_.servers.empty())
+            serverFocus = browseClampIndex(searchOrigin_.focus, static_cast<int>(searchOrigin_.servers.size()));
+        else
+            serverFocus = model_.serverFocus;
         if (commit && !q.empty()) {
             model_.search.pending = true;
             model_.search.lastChangeMs = browseShellNowMs() - kBrowseShellSearchDebounceMs;
         }
-        if (q.empty() || base.empty())
+        if (q.empty())
             return;
         model_.screen = BrowseShellScreen::Search;
     }
     const BrowseCancelFn cancel = cancelFor(gen);
     if (cancel())
+        return;
+    bool credRefreshed = false;
+    if ((srv.baseUrl.empty() || srv.accessToken.empty()) && !cfg_.accountToken.empty()) {
+        std::vector<std::string> alts;
+        credRefreshed = refreshServerCredentials(srv, alts, cancel, serverFocus);
+        if (credRefreshed) {
+            std::lock_guard<std::mutex> lk(mu_);
+            server_ = srv;
+        }
+    }
+    if (srv.baseUrl.empty() || cancel())
         return;
     for (;;) {
         BrowseSearchUi s;
@@ -1626,7 +2115,20 @@ void BrowseShellController::runSearch(uint64_t gen, bool commit) {
     if (!sectionId.empty())
         path += "&sectionId=" + plexui::urlEncode(sectionId);
     fetchCount_.fetch_add(1);
-    const auto r = hooks_.get(plexui::appendToken(urlNoToken(base, path), token), 4000, 12000, cancel);
+    auto r = hooks_.get(plexui::appendToken(urlNoToken(srv.baseUrl, path), srv.accessToken),
+                        4000, 12000, cancel);
+    if (!cancel() && (r.status == 401 || r.status == 403) && !credRefreshed && !cfg_.accountToken.empty()) {
+        std::vector<std::string> alts;
+        if (refreshServerCredentials(srv, alts, cancel, serverFocus)) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                server_ = srv;
+            }
+            fetchCount_.fetch_add(1);
+            r = hooks_.get(plexui::appendToken(urlNoToken(srv.baseUrl, path), srv.accessToken),
+                           4000, 12000, cancel);
+        }
+    }
     if (cancel())
         return;
     if (!r.ok()) {
@@ -1640,7 +2142,7 @@ void BrowseShellController::runSearch(uint64_t gen, bool commit) {
     std::vector<BrowseTitleRow> rows;
     for (const auto& it : items) {
         if (it.type == "movie" || it.type == "show" || it.type == "episode")
-            rows.push_back(itemToRow(it));
+            rows.push_back(itemToRow(it, true));
     }
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -1657,6 +2159,7 @@ void BrowseShellController::runSearch(uint64_t gen, bool commit) {
         model_.screen = BrowseShellScreen::Titles;
         model_.searchResults = true;
         model_.childList = false;
+        model_.recommendedList = false;
         model_.libraryName = "Search: " + q;
         model_.header.clear();
         model_.headerRight.clear();

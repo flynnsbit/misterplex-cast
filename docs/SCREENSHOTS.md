@@ -11,10 +11,15 @@ Click any image to open the full-size capture.
 | [![Ready screen showing AirPlay and YouTube](screenshots/hdmi/ready-airplay-youtube.png)](screenshots/hdmi/ready-airplay-youtube.png) | [![MiSTer Scripts menu highlighting configure-misterplex](screenshots/hdmi/scripts-list-configure-misterplex.png)](screenshots/hdmi/scripts-list-configure-misterplex.png) | [![Core OSD with Service set to Live TV](screenshots/hdmi/osd-livetv-core.png)](screenshots/hdmi/osd-livetv-core.png) |
 | Flags: `FRIENDLY_NAME`, `GAIRPLAY`, `GYT`, `PLEXTV_LINK`, `IDLE_SCREEN`, `UI_SAFE_MARGIN` | Unified `/media/fat/Scripts/configure-misterplex.sh` entry | Flags: `OSD_CONTROL`, `SPELUNKR` (`Service: Live TV`) |
 
-| AirPlay playback | YouTube playback (`Big Buck Bunny`) | Streaming Guide (480i HDMI capture) |
+| AirPlay video playback | AirPlay audio (cover art & scrubber) | YouTube playback (`Big Buck Bunny`) |
 | --- | --- | --- |
-| [![AirPlay video playback](screenshots/hdmi/airplay-playback.png)](screenshots/hdmi/airplay-playback.png) | [![YouTube Big Buck Bunny playback](screenshots/hdmi/youtube-playback.png)](screenshots/hdmi/youtube-playback.png) | [![Live TV Streaming Guide channel list](screenshots/hdmi/streaming-guide.png)](screenshots/hdmi/streaming-guide.png) |
-| Flags: `GAIRPLAY`, `AIRPLAY_XCODE` / `GCAST_XCODE`, `AIRPLAY_MIRROR`, `REMEMBER_PICTURE` | Flags: `GYT`, `YT_CAST_TITLE`, `YT_VOLUME`, `YT_NEXT_PREV`, `YT_CAPTIONS`, `YT_LIVE` | Flags: `SPELUNKR`, `SPELUNKR_CHANNEL`, `SPELUNKR_BACKWHEN`, `PLUTO_LIVE`, `SPELUNKR_ASPECT` |
+| [![AirPlay video playback](screenshots/hdmi/airplay-playback.png)](screenshots/hdmi/airplay-playback.png) | [![AirPlay audio Now Playing with album cover art](screenshots/hdmi/airplay-audio-coverart.png)](screenshots/hdmi/airplay-audio-coverart.png) | [![YouTube Big Buck Bunny playback](screenshots/hdmi/youtube-playback.png)](screenshots/hdmi/youtube-playback.png) |
+| Flags: `GAIRPLAY`, `AIRPLAY_XCODE` / `GCAST_XCODE`, `AIRPLAY_MIRROR`, `REMEMBER_PICTURE` | Flags: `GAIRPLAY`, `GAIRPLAY_PORT` (pad `A` toggles full-screen art) | Flags: `GYT`, `YT_CAST_TITLE`, `YT_VOLUME`, `YT_NEXT_PREV`, `YT_CAPTIONS`, `YT_LIVE` |
+
+| Live TV Streaming Guide (90s Prevue grid) | Live TV Channel Overlay (`ON AIR` banner) |
+| --- | --- |
+| [![Live TV Streaming Guide 90s Prevue channel grid](screenshots/hdmi/streaming-guide.png)](screenshots/hdmi/streaming-guide.png) | [![Live TV 90s Prevue channel overlay over broadcast](screenshots/hdmi/live-tv-channel-overlay.png)](screenshots/hdmi/live-tv-channel-overlay.png) |
+| Flags: `SPELUNKR`, `SPELUNKR_CHANNEL`, `SPELUNKR_BACKWHEN`, `PLUTO_LIVE`, `SPELUNKR_ASPECT` | Matching 90s Prevue dial plate, `ON AIR` badge, clock, `UP NEXT`, and progress bar |
 
 ## Scripts configurator (`configure-misterplex.sh`)
 

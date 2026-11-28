@@ -4,15 +4,15 @@
 
 MiSTerPlex turns a MiSTer (DE10-Nano) into a Plex, YouTube, AirPlay, and Live TV player. A custom FPGA core, **MiSTerPlex** (`MiSTerPlex.rbf`, built from the PlexOB fork of MiSTer_h264_decoder), decodes the video in hardware. A daemon on the MiSTer's Linux side, **misterplexd**, talks to Plex, YouTube, AirPlay, and Live TV streams.
 
-The core file used to be called `PlexOB.rbf`; it is now `MiSTerPlex.rbf`, installed in `/media/fat/_Utility/` only. To install or update, see **[Quick start (v2.0.0)](#quick-start-v200)** below and the **[install guide](docs/INSTALL.md)**.
+The core file used to be called `PlexOB.rbf`; it is now `MiSTerPlex.rbf`, installed in `/media/fat/_Utility/` only. To install or update, see **[Quick start (v2.1.0)](#quick-start-v210)** below and the **[install guide](docs/INSTALL.md)**.
 
 ## What it does
 
 - **Cast from the Plex app (GDM + Companion, TCP 3005).** On your phone or computer, tap the cast button and pick your MiSTer. Play, pause, seek, skip, change tracks/subtitles, and stop from your phone or web app.
 - **Browse Plex on the TV (`PlexUI`).** Use a controller or keyboard with the on-screen Plex browser: home rows, Continue Watching, server switcher (`plex.tv/link` PIN auth and Plex Home profile switching), libraries, paginated grids (`GRID_PAGE`), A–Z letter jump (`AZ_JUMP`), search, watched badges (`WATCHED_BADGES`), mark watched/unwatched (`MARK_WATCHED`), and a detail page for each title. Renders at **2x scale** (`FONT-2X` + 2x MiSTerPlex logo bar) on **HDMI 720p** (`1280x720`), **HDMI Native 960x480**, and **480p** (`640x480`), and 1x on **480i** / **240p**.
 - **Cast YouTube (Lounge + DIAL, TCP 8008).** Cast from the YouTube app to the MiSTer using the bundled `yt-dlp` onedir (`2026.08.19`) and optional resident Android warm resolver (`yt_warm_helper.py`), with optional captions (`YT_CAPTIONS`), title display (`YT_CAST_TITLE`), volume control (`YT_VOLUME`), queue skip (`YT_NEXT_PREV`), and HLS livestreams (`YT_LIVE`).
-- **AirPlay & Google Cast helper (TCP 7000 + 18781).** Stream video from an iPhone, iPad, or Mac (with screen mirroring **on by default** via `AIRPLAY_MIRROR=1` in the shipped conf; set `AIRPLAY_MIRROR=0` to disable) via the bundled on-card Python + static `ffmpeg`/`ffprobe` helper (`linux/airplay/` and `linux/gcast/`, whose launch wrappers set a `GCONV_PATH` stub so static `ffmpeg`/`ffprobe` handle DVB SDT MPEG-TS streams without aborting), or point `AIRPLAY_XCODE` / `GCAST_XCODE` at a helper on another computer.
-- **Live TV / Spelunkr mode (Pluto TV, Vevo & Back When).** Switch between **Plex** and **Live TV** from the core's **F12** OSD (`Service:` option), with an on-screen Streaming Guide, Back When channels, Vevo music channels, and Pluto TV live HLS channels (`PLUTO_LIVE=1` in the shipped conf), including ad-break slate hold (`misterplex-ad-break.jpg`) and ad-pod path skipping.
+- **AirPlay audio & video + Google Cast helper (TCP 7000 + 18781).** Stream video, screen mirroring (`AIRPLAY_MIRROR=1` in the shipped conf; set `AIRPLAY_MIRROR=0` to disable), or Apple Music / RAOP audio from an iPhone, iPad, Mac, or Windows iTunes/Apple Music — with FairPlay v2 + classic RAOP `ANNOUNCE` support, instant mDNS connect, direct `OwenbRing` PCM audio (no dropouts), and a stacked CRT-friendly Now Playing cover-art screen (pad `A` toggles full-screen art). Uses the bundled on-card Python + static `ffmpeg`/`ffprobe` helper (`linux/airplay/` and `linux/gcast/`), or point `AIRPLAY_XCODE` / `GCAST_XCODE` at a helper on another computer.
+- **Live TV / Spelunkr mode (Pluto TV, Vevo & Back When).** Switch between **Plex** and **Live TV** from the core's **F12** OSD (`Service:` option), with a 1990s Prevue Blue & Gold 2-line Streaming Guide (featured now-playing box, wrapped full titles, local clock, full-page `L`/`R` paging) and matching `ON AIR` Channel Overlay across Spelunkr, Back When, Vevo music, and Pluto TV live HLS channels (`PLUTO_LIVE=1` in the shipped conf), including ad-break slate hold (`misterplex-ad-break.jpg`) and ad-pod path skipping.
 - **Made for CRTs and HDMI.** Supports **15kHz CRT** (`480i` and `240p` via `ANALOG_RASTER` / core OSD), **31kHz VGA** (`480p`), and **HDMI Native** (`1280x720` / `960x480`), RGB / S-Video / Composite analog output, CRT title-safe inset (`UI_SAFE_MARGIN`), per-TV overscan trim (`OVERSCAN_LEFT`/`RIGHT`/`TOP`/`BOTTOM` via Program menu → Safe area), 4:3 / 14:9 / Zoom 4:3 / Stretch / Fit-crop picture modes (`PICTURE_14_9`, `REMEMBER_PICTURE`), and Normal / Large browse text (`UI_SIZE`).
 - **On-screen Program menu, chapters, markers & scrub thumbs.** Pause, skip back/forward (`SKIP_BACK_MS`/`SKIP_FORWARD_MS`), chapter navigation (`CHAPTERS`), Skip Intro / Skip Credits / Up Next (`MARKERS`), seek preview frames (`SCRUB_THUMBS`), and in-play options (`IN_PLAY_OPTIONS`).
 - **Subtitles.** Sidecar and embedded text subtitles (`SRT`, `ASS`, `WebVTT`, `mov_text` via `SOFT_SUBS`) drawn on the overlay band (`SUBTITLE_POSITION=safe|picture`), automatic forced-track pick (`FORCED_SUBS`), per-show track memory (`REMEMBER_TRACKS`), and optional OpenSubtitles.com fallback (`OPENSUBTITLES_API_KEY`).
@@ -60,9 +60,11 @@ The **1 Settings** dialog maps directly to `/media/fat/linux/misterplex.conf` ke
 | [![Plex home rows](docs/screenshots/hdmi/plex-browser-home.png)](docs/screenshots/hdmi/plex-browser-home.png) | **PlexUI Home** — Continue Watching, Recently Added, server/library rail, watched badges, and optional scanline look. Flags: `AMBIENT`, `CRT_LOOK` / `CRT_LOOK_PRESET`, `WATCHED_BADGES`, `HIDE_EMPTY_HUBS`, `UI_SIZE`, `UI_SAFE_MARGIN`. |
 | [![Plex movie library grid](docs/screenshots/hdmi/plex-browser-library.png)](docs/screenshots/hdmi/plex-browser-library.png) | **PlexUI Library grid** — movie library poster grid. Flags: `GRID_PAGE`, `AZ_JUMP`, `FILTER_4_3`, `WATCHED_BADGES`, `UI_SIZE`, `UI_SAFE_MARGIN`. |
 | [![Plex title detail](docs/screenshots/hdmi/plex-browser-title-detail.png)](docs/screenshots/hdmi/plex-browser-title-detail.png) | **PlexUI Title detail** — synopsis, track selection, and play action. Flags: `SETSTREAMS`, `SUBTITLE_LANG`, `FORCED_SUBS`, `REMEMBER_TRACKS`, `MARK_WATCHED`, `UI_SAFE_MARGIN`. |
-| [![AirPlay video playback](docs/screenshots/hdmi/airplay-playback.png)](docs/screenshots/hdmi/airplay-playback.png) | **AirPlay playback** — H.264/AAC stream pushed via the on-card AirPlay helper. Flags: `GAIRPLAY`, `GAIRPLAY_PORT`, `AIRPLAY_XCODE` / `GCAST_XCODE`, `AIRPLAY_MIRROR`, `REMEMBER_PICTURE`. |
+| [![AirPlay video playback](docs/screenshots/hdmi/airplay-playback.png)](docs/screenshots/hdmi/airplay-playback.png) | **AirPlay video playback** — H.264/AAC stream pushed via the on-card AirPlay helper. Flags: `GAIRPLAY`, `GAIRPLAY_PORT`, `AIRPLAY_XCODE` / `GCAST_XCODE`, `AIRPLAY_MIRROR`, `REMEMBER_PICTURE`. |
+| [![AirPlay audio Now Playing with album cover art](docs/screenshots/hdmi/airplay-audio-coverart.png)](docs/screenshots/hdmi/airplay-audio-coverart.png) | **AirPlay audio Now Playing (cover art)** — RAOP audio playback with stacked CRT-friendly album artwork, track/artist/album metadata, and progress scrubber (pad `A` toggles full-screen art). Flags: `GAIRPLAY`, `GAIRPLAY_PORT`. |
 | [![YouTube Big Buck Bunny playback](docs/screenshots/hdmi/youtube-playback.png)](docs/screenshots/hdmi/youtube-playback.png) | **YouTube playback** — YouTube cast resolved via `yt-dlp`. Flags: `GYT`, `GYT_DIAL_PORT`, `YT_CAST_TITLE`, `YT_VOLUME`, `YT_NEXT_PREV`, `YT_CAPTIONS`, `YT_LIVE`, `YT_WARM`, `YT_HD_RETRY`, `YT_RESOLVE_TIMEOUT`. |
-| [![Live TV Streaming Guide channel list](docs/screenshots/hdmi/streaming-guide.png)](docs/screenshots/hdmi/streaming-guide.png) | **Live TV / Spelunkr Streaming Guide** — Back When (`BW`), Vevo, and Pluto live channels (`1061`–`1078`). Flags: `SPELUNKR`, `SPELUNKR_CHANNEL`, `SPELUNKR_BACKWHEN`, `PLUTO_LIVE`, `SPELUNKR_ASPECT`, F12 OSD `Service: Live TV`. |
+| [![Live TV Streaming Guide 90s Prevue channel grid](docs/screenshots/hdmi/streaming-guide.png)](docs/screenshots/hdmi/streaming-guide.png) | **Live TV / Spelunkr Streaming Guide** — 1990s Prevue Blue & Gold 2-line guide with top featured box (wrapped full title, `NEXT:`, remaining time, progress bar), local clock, and full-page paging across Spelunkr (`S`), Back When (`BW`), Vevo, and Pluto live channels. Flags: `SPELUNKR`, `SPELUNKR_CHANNEL`, `SPELUNKR_BACKWHEN`, `PLUTO_LIVE`, `SPELUNKR_ASPECT`, F12 OSD `Service: Live TV`. |
+| [![Live TV 90s Prevue channel overlay over broadcast](docs/screenshots/hdmi/live-tv-channel-overlay.png)](docs/screenshots/hdmi/live-tv-channel-overlay.png) | **Live TV Channel Overlay** — Matching 90s Prevue channel banner shown on channel tune/zap or Info press with gold channel dial plate, service badge, `ON AIR` / `TUNING` indicator, local clock, `UP NEXT`, remaining time, and elapsed progress bar. Flags: `SPELUNKR`, `SPELUNKR_CHANNEL`, `PLUTO_LIVE`. |
 
 ### Core F12 OSD, Program menus, Safe area & Picture modes
 
@@ -99,11 +101,11 @@ See **[docs/SCREENSHOTS.md](docs/SCREENSHOTS.md)** for the full gallery and rema
 
 ## How the install works
 
-A v2.0.0 release ships **one FPGA core**, `MiSTerPlex.rbf` (`BUILD_ID 0x0B112501`, seed 14, md5 `7f048508861967f857a5aacff79bfb6f`), which goes in `/media/fat/_Utility/MiSTerPlex.rbf` only. There is no separate `Plex.rbf` or `PlexOB.rbf`.
+A v2.1.0 release ships **one FPGA core**, `MiSTerPlex.rbf` (`BUILD_ID 0x0B112501`, seed 14, md5 `7f048508861967f857a5aacff79bfb6f`), which goes in `/media/fat/_Utility/MiSTerPlex.rbf` only. There is no separate `Plex.rbf` or `PlexOB.rbf`.
 
 At boot, one line in `/media/fat/linux/user-startup.sh` (`/media/fat/misterplex/bin/misterplexd-boot-rc3.sh "$1" &`) starts `misterplexd` (under `misterplexd_supervise.sh` unless `BOOT_SUPERVISE=0`) and **never loads a core on its own**—the MiSTer stays on its menu until you load **MiSTerPlex** from `_Utility` (or launch via the Scripts menu). You never need to start the daemon yourself.
 
-The v2.0.0 full package (`misterplex-v2.0.0.tar.gz`) includes:
+The v2.1.0 full package (`misterplex-v2.1.0.tar.gz`) includes:
 
 | Payload item | Installed to |
 | --- | --- |
@@ -122,21 +124,21 @@ The v2.0.0 full package (`misterplex-v2.0.0.tar.gz`) includes:
 
 Legacy paths from older pre-releases (`/media/fat/MiSTerPlex.rbf`, old `PlexOB.rbf`, `/media/fat/Scripts/misterplex_setup.sh`, and `/media/fat/misterplex/{licenses,docs,scripts}/`) are cleaned up automatically by the installer and setup.
 
-## Quick start (v2.0.0)
+## Quick start (v2.1.0)
 
 ### Option A: Release tarball (`install-misterplex.sh`)
 
-1. Download `misterplex-v2.0.0.tar.gz` and `SHA256SUMS` (or `MD5SUMS`) from https://github.com/flynnsbit/misterplex-cast/releases, verify the checksum, and unpack it:
+1. Download `misterplex-v2.1.0.tar.gz` and `SHA256SUMS` (or `MD5SUMS`) from https://github.com/flynnsbit/misterplex-cast/releases, verify the checksum, and unpack it:
 
    ```sh
-   tar xzf misterplex-v2.0.0.tar.gz
+   tar xzf misterplex-v2.1.0.tar.gz
    ```
 
 2. Copy the folder to `/tmp` on the MiSTer and run `install-misterplex.sh`:
 
    ```sh
-   scp -r misterplex-v2.0.0 root@<mister-ip>:/tmp/
-   ssh root@<mister-ip> 'cd /tmp/misterplex-v2.0.0 && sh install-misterplex.sh'
+   scp -r misterplex-v2.1.0 root@<mister-ip>:/tmp/
+   ssh root@<mister-ip> 'cd /tmp/misterplex-v2.1.0 && sh install-misterplex.sh'
    ```
 
    `install-misterplex.sh` verifies `SHA256SUMS`, saves `<path>.bak.<stamp>` backups of replaced files (keeping old cores in `/media/fat/misterplex/backup/`), records `.misterplex-created` / `.misterplex-files` manifests for clean uninstall, adds the boot line to `/media/fat/linux/user-startup.sh` once, and preserves any existing `/media/fat/linux/misterplex.conf` (seeding it from `conf/misterplex.conf.example` when missing). Pass `--dry-run` to preview changes without modifying the SD card, or `--reboot` to reboot on completion.
@@ -201,7 +203,7 @@ All 14 CLI flags accepted by `scripts/configure-misterplex.sh` (and `/media/fat/
 | `--subtitles` | `on` \| `off` | `off` | Sets `SUBTITLE_LANG` (default `en` when `on`, or `off`). Every run forces `BURN_SUBS_FIX=0`, `AUTO_BURN=0`, and rewrites `SUBTITLES=burn` to `off`. |
 | `--sub-lang` | language code (`[A-Za-z_-]+`) | `en` (when subtitles `on`) | Sets `SUBTITLE_LANG` when `--subtitles on`. |
 | `--ui-size` | `normal` \| `large` | `normal` | Sets `UI_SIZE` for the on-screen Plex browser. |
-| `--safe-margin` | integer `0`–`20` | `5` | Sets `UI_SAFE_MARGIN` (percent; note `misterplexd` clamps values above `15` to `0`–`15`). |
+| `--safe-margin` | integer `0`–`15` | `5` | Sets `UI_SAFE_MARGIN` (percent, `0`–`15`). |
 | `--name` | string (`[A-Za-z0-9 ._ -]`) | blank (auto `misterplex-<last3>`) | Sets `FRIENDLY_NAME` shown to Plex, YouTube, and AirPlay senders. |
 | `--conf` | file path | `/media/fat/linux/misterplex.conf` | Target configuration file to read/update. |
 | `--example` | file path | auto-located | Path to `misterplex.conf.example` used for `--fresh` or a new file. |
@@ -221,7 +223,7 @@ Ten user-facing `MPX_*` variables provide defaults/overrides for `scripts/config
 | `MPX_SUBTITLES` | `off` | Pre-fills `--subtitles` (`on`/`off`). |
 | `MPX_SUBTITLE_LANG` | `en` | Pre-fills `--sub-lang` (`SUBTITLE_LANG` when subtitles are `on`). |
 | `MPX_UI_SIZE` | `normal` | Pre-fills `--ui-size` (`normal`/`large`). |
-| `MPX_UI_SAFE_MARGIN` | `5` | Pre-fills `--safe-margin` (`0`–`20`; clamped `0`–`15` by `misterplexd`). |
+| `MPX_UI_SAFE_MARGIN` | `5` | Pre-fills `--safe-margin` (`0`–`15`). |
 | `MPX_FRIENDLY_NAME` | empty | Pre-fills `--name` (`FRIENDLY_NAME`). |
 | `MPX_CONF` | `/media/fat/linux/misterplex.conf` | Overrides target config file (`--conf`). |
 | `MPX_CONF_EXAMPLE` | auto-located | Overrides example template path (`--example`). |
@@ -286,7 +288,7 @@ Press **F12** while `MiSTerPlex.rbf` is loaded (settings persist in `/media/fat/
 | --- | --- | --- |
 | `ANALOG_RASTER` | unset (`default`) | `480i`, `240p`, `auto`, or unset (`default`, let core F12 control). |
 | `UI_SIZE` | `normal` / `normal` | Browse UI text size: `normal` or `large` (Pad Y on browse toggles and persists). |
-| `UI_SAFE_MARGIN` | `5` / `5` | Title-safe margin percent (`0`–`15` in `misterplexd`; `configure-misterplex.sh` accepts `0`–`20` and daemon clamps above `15`). |
+| `UI_SAFE_MARGIN` | `5` / `5` | Title-safe margin percent (`0`–`15`). |
 | `OVERSCAN_LEFT`, `OVERSCAN_RIGHT`, `OVERSCAN_TOP`, `OVERSCAN_BOTTOM` | unset / `11`, `11`, `12`, `12` | Per-edge CRT overscan percent (`0`–`25`), edited interactively in **Program menu → Safe area**. |
 | `CRT_LOOK` (`MPX_CRT_LOOK`) | `0` / commented (`off`) | Set `CRT_LOOK=1` to paint an HDMI CRT-look filter on the on-device UI canvas (off by default; does not affect video or analog raster). |
 | `CRT_LOOK_PRESET` (`MPX_CRT_LOOK_PRESET`) | `scanlines` | Preset when `CRT_LOOK=1`: `scanlines`, `scanlines-soft`, `aperture`, or `slot`. |
@@ -379,27 +381,25 @@ Press **F12** while `MiSTerPlex.rbf` is loaded (settings persist in `/media/fat/
 
 `DECODE` (`1280x720`), `TRANSCODE_PROFILE` (`720p`), `WEAK_RES`, `WEAK_BITRATE`, `PRESENT` (`fpga`), `PRESENT_MEM` (`auto`), `STREAM` (`1`), `STREAM_SKIP_RGB` (`auto`), `FFMPEG` apply only to the retired fallback `Plex.rbf` core (not shipped in v2.0.0) or transitional paths.
 
-See [CHANGELOG.md](CHANGELOG.md) for the complete v2.0.0 change list.
+See [CHANGELOG.md](CHANGELOG.md) for the complete v2.1.0, v2.0.1, and v2.0.0 change list.
 
 ## Known issues
 
-- **Static helper `ffmpeg`/`ffprobe` SDT streams require the launch wrapper.** Direct invocations of the static ARM `ffmpeg`/`ffprobe` binaries without `GCONV_PATH` abort (`rc=134`) on DVB SDT-bearing MPEG-TS / HLS streams; `run-airplay-xcode.sh` and `run-gcast-xcode.sh` configure `/tmp/mpx-gconv-stub` (`GCONV_PATH`) automatically (and `misterplexd` already does this for `PLUTO_LIVE`/`YT_LIVE`).
-- **Pluto TV startup & 1066 reopen / service-switch / 960x480 glass status.** With `PLUTO_LIVE=1` (on by default in the shipped conf), v2.0.1 fixes the 55 s `PREFETCH TIMEOUT` progress-poisoning bug and Vevo ad-break → next-video A/V desync; however, an occasional slow first Pluto tune (~30 s after an OSD service switch, or longer if the OSD is left open), a rare 1066 core-reopen black pause (~10.1 s, 1/4 on glass, self-recovering), and unscored `HDMI Native 960x480` 2x browse layout remain known items.
-- **Installer `_Utility` / `_Utilities` cleanup, `uninstall-misterplex.sh` path, & `UI_SAFE_MARGIN` clamp.** `install-misterplex.sh` moves any legacy `/media/fat/MiSTerPlex.rbf` into `/media/fat/misterplex/backup/` (leaving `/media/fat/_Utility/MiSTerPlex.rbf`), migrates legacy `/media/fat/_Utilities/misterplex/` cache/socket files into `/media/fat/misterplex/`, and does not install a standalone `/media/fat/misterplex/bin/uninstall-misterplex.sh` (use **Scripts > configure-misterplex > 4 Uninstall** or `configure-misterplex.sh uninstall`). Old root `PlexOB.rbf` copies from pre-v2 installs may remain visible in the MiSTer Cores menu until removed. `configure-misterplex.sh --safe-margin` accepts `0`–`20` while `misterplexd` clamps values above `15` to `0`–`15`. Running `misterplexd-boot-rc3.sh start` immediately after a fresh install without rebooting may not bring up the daemon until reboot (the installer instructs a reboot).
-- **Unverified optional / hardware items.** Analog CRT & S-Video/composite hardware validation (`docs/screenshots/analog/`), CEA 1080p, `AIRPLAY_MIRROR=1` (on by default in the shipped conf), on-card AirPlay helper live video/HLS on MiSTer hardware, `YT_CAPTIONS=1`, `YT_LIVE=1`, shared-server TV browsing, and the companion/DIAL/AirPlay browser-origin CSRF/CORS guard (`MPX_COMPANION_NO_ORIGIN` / `Origin` checks) await end-to-end TV/glass testing.
-- **Picture subtitles & architecture diagram.** Text subtitles (`SRT`/`ASS`) render on the overlay; picture subtitles (`PGS`/`VobSub`) require opt-in server burn-in (`BURN_SUBS_FIX=1` / `AUTO_BURN=1`). The architecture diagram has not been redrawn for the seed-14 `0x0B112501` core.
-- **Host build / test notes.** `Makefile` unit and `.mutant-check` targets use `$(ROOT)/build/...` absolute paths (pass `$(pwd)/build/<target>` when invoking individual targets), and the Spelunkr auto-video RTL simulation tail requires `iverilog`.
-- **Public `update_all` database pin.** `mister-db/` workflow and `db.json.zip` pin updates follow public release tagging.
+- **Live TV OSD service-switch timing.** Switching between Plex and Live TV via the core F12 **Service** menu typically takes ~6–8 s on a warm card (plus ~8 s for the first Live TV channel tune), and longer if the F12 OSD is left open during the switch.
+- **Picture subtitles (PGS / VobSub).** Text subtitles (`SRT`/`ASS`) render on the overlay; picture subtitles (`PGS`/`VobSub`) require opt-in server burn-in (`BURN_SUBS_FIX=1` / `AUTO_BURN=1`).
+- **Outputs not yet verified on real TVs.** S-Video, composite, analog CRT captures (`docs/screenshots/analog/`), CEA 1080p, and `HDMI Native 960x480` 2x browse layout await real-TV validation.
+- **Optional flags awaiting end-to-end TV testing.** `YT_CAPTIONS=1` and `YT_LIVE=1` (off by default) await end-to-end TV testing.
+- **LAN-only network trust.** Never forward TCP `3005` (companion) or TCP `8008` (DIAL) to the internet or an untrusted network; MiSTerPlex includes a browser-origin CSRF/CORS guard, not user authentication.
 
 ## Source and license
 
-This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored `hps/` client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE), [NOTICE](NOTICE), and [SOURCE.md](SOURCE.md). `MiSTerPlex.rbf` is built from the PlexOB core; its source is in this repository (`fpga/`) and in the release source archive below. The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast. Source revision: 347863a406ba423a8989d19089bfa1d4bf55e04b. Licence texts stay in this repository and in the source archive; the installer does not copy them to the MiSTer. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
+This project is free software under the **GNU General Public License, version 3 or (at your option) any later version** (GPL-3.0-or-later), the same licence as the upstream PlexOB core by owenb321. The vendored `hps/` client library from owenb321 stays under its own MIT licence (packaging/licenses/owenb-h264ring). See [LICENSE](LICENSE), [NOTICE](NOTICE), and [SOURCE.md](SOURCE.md). `MiSTerPlex.rbf` is built from the PlexOB core; its source is in this repository (`fpga/`) and in the release source archive below. The complete corresponding source is this repository, https://github.com/flynnsbit/misterplex-cast. Source revision: 910349bc2b96204f3e7770c6db282ac892791dad. Licence texts stay in this repository and in the source archive; the installer does not copy them to the MiSTer. Source code and releases: https://github.com/flynnsbit/misterplex-cast (downloads: https://github.com/flynnsbit/misterplex-cast/releases).
 
 ### Source code
 
 See [SOURCE.md](SOURCE.md) for the directory layout, licensing policy, and full build instructions for both the ARM daemon and the FPGA bitstream. Each release page carries, next to the install package, the complete corresponding source for that build:
 
-- `misterplex-v2.0.0-source.tar.gz`: release licences, docs, `source/` tarballs (PlexOB RTL and `gcast-ffmpeg` GPL helper sources), and kernel module source.
+- `misterplex-v2.1.0-source.tar.gz`: release licences, docs, `source/` tarballs (PlexOB RTL and `gcast-ffmpeg` GPL helper sources), and kernel module source.
 - The repository source export for the release, buildable with `scripts/repro_arm_build.sh`.
 - Upstream source archives statically linked into `misterplexd`: UxPlay at `4e95a9ec` (patches in `tools/airplay/uxplay-patches/`), FFmpeg 8.1.2, OpenSSL 3.0.15, libplist 2.6.0, and the toolchain source snapshots (Arm GNU Toolchain `13.2.Rel1` (`GCC 13.2.1` / `glibc 2.38`) for `misterplexd` and Ubuntu armhf cross toolchain (`GCC 13.3.0` / `glibc 2.39`) for helper `ffmpeg`/`ffprobe`).
 

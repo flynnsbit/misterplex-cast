@@ -113,9 +113,15 @@ struct UiModel {
     int64_t errorUntilMs = 0;   // T7: 0 = until cleared
     // Spelunkr TV chrome on this overlay (2 s opaque + 0.4 s fade, overlay clock).
     std::string spelunkrDial, spelunkrName, spelunkrTitle;
+    GuideSource spelunkrSource = GuideSource::None;
+    std::string spelunkrNextTitle;
+    int spelunkrRemainingMin = -1;
+    int spelunkrProgressPct = -1;
+    std::string spelunkrBannerClock;
     bool spelunkrTuning = false;
     bool spelunkr = false;
     bool adBreak = false;       // N14: full-screen stand-by card while Pluto's ad pod is dropped
+    misterplex::AirplayNowPlayingState airplayAudio;
     int64_t bannerShowUntilMs = 0;
     int64_t bannerGoneMs = 0;
     void clearSpelunkrBannerFields() {
@@ -123,6 +129,11 @@ struct UiModel {
         spelunkrDial.clear();
         spelunkrName.clear();
         spelunkrTitle.clear();
+        spelunkrSource = GuideSource::None;
+        spelunkrNextTitle.clear();
+        spelunkrRemainingMin = -1;
+        spelunkrProgressPct = -1;
+        spelunkrBannerClock.clear();
         bannerShowUntilMs = 0;
         bannerGoneMs = 0;
     }
@@ -143,6 +154,7 @@ struct UiModel {
     bool spelunkrGuideOpen = false;
     int spelunkrGuideCursor = -1;
     int spelunkrGuideViewStart = 0;
+    std::string spelunkrGuideClock;
     std::vector<LibraryRow> spelunkrGuideRows;
     Menu menu;
     bool idle = false;          // T7: the idle session (no play): the idle card
@@ -187,6 +199,12 @@ struct UiModel {
                 u.spelunkrBanner.dial = spelunkrDial;
                 u.spelunkrBanner.name = spelunkrName;
                 u.spelunkrBanner.title = spelunkrTitle;
+                u.spelunkrBanner.source = spelunkrSource;
+                u.spelunkrBanner.nextTitle = spelunkrNextTitle;
+                u.spelunkrBanner.remainingMin = spelunkrRemainingMin;
+                u.spelunkrBanner.progressPct = spelunkrProgressPct;
+                u.spelunkrBanner.clockText = spelunkrBannerClock;
+                u.spelunkrBanner.tuning = spelunkrTuning;
                 if (!timed || now < bannerShowUntilMs)
                     u.spelunkrBanner.alpha = 255;
                 else {
@@ -198,6 +216,7 @@ struct UiModel {
             u.spelunkrGuide.open = spelunkrGuideOpen && !menu.open && !overscan.open;
             u.spelunkrGuide.cursor = spelunkrGuideCursor;
             u.spelunkrGuide.viewStart = spelunkrGuideViewStart;
+            u.spelunkrGuide.clockText = spelunkrGuideClock;
             u.spelunkrGuide.rows = spelunkrGuideRows;
             if (u.spelunkrGuide.open || menu.open || overscan.open || library.open ||
                 (error != ErrorScreen::None && (errorUntilMs == 0 || now < errorUntilMs)))
@@ -312,6 +331,11 @@ struct UiModel {
         // N14/N15: the ad-break stand-by card replaces the frozen frame (never over a pending tune or an error,
         // both returned above). The rest of the state rides along: planFrame lets menu / library / guide draw over it.
         s.adBreak = adBreak;
+        if (airplayAudio.active && !adBreak) {
+            s.airplayAudio = airplayAudio;
+            s.airplayAudio.elapsedMs = airplayAudio.liveElapsedMs(now);
+            s.idle = false;
+        }
         return s;
     }
 
@@ -331,6 +355,15 @@ struct UiModel {
         for (const auto& t : toasts)
             if (t.untilMs > now)
                 n = std::min(n, t.untilMs);
+        if (airplayAudio.active && !airplayAudio.paused && !airplayAudio.fullArt && airplayAudio.progressValid &&
+            airplayAudio.durationMs > 0 && !adBreak && !pending && error == ErrorScreen::None &&
+            !overscan.open && serviceNotice.empty()) {
+            const int64_t cur = airplayAudio.liveElapsedMs(now);
+            if (cur < airplayAudio.durationMs) {
+                const int64_t rem = 1000 - (cur % 1000);
+                n = std::min(n, now + std::max<int64_t>(50, rem));
+            }
+        }
         if (ambient && idle && !presented && !pending && !buffering && !menu.open && !library.open &&
             error == ErrorScreen::None && !surface && misterplex::ambientEnabled()) {
             const int cards = misterplex::ambientVisibleCount(*ambient);
@@ -390,9 +423,16 @@ public:
     }
     // N14: Pluto ad pod dropped (on) / resumed (off). A new tune, a landing or a failed tune also clear it.
     void setAdBreak(bool on) { update([on](UiModel& m) { m.adBreak = on; }); }
+    void setAirplayAudio(const misterplex::AirplayNowPlayingState& st) {
+        update([st](UiModel& m) { m.airplayAudio = st; });
+    }
+    void clearAirplayAudio() {
+        update([](UiModel& m) { m.airplayAudio.clear(); });
+    }
     void showSpelunkrLanding(const std::string& detail = {}) {
         update([&](UiModel& m) {
             m.adBreak = false;
+            m.airplayAudio.clear();
             // GH#648: a live picture for this tune must not be replaced by the
             // landing. Pending (failed tune/resume) and a leftover banner clock
             // must still fall back to Open the Guide (browse-lane P1-2).
@@ -459,6 +499,7 @@ public:
                         const std::string &name = {}) {
         update([=](UiModel &m) {
             m.adBreak = false;
+            m.airplayAudio.clear();
             m.pending = true;
             m.pendingGen = gen;
             m.pendingLabel = label;
@@ -470,10 +511,25 @@ public:
             m.errorDetail.clear();
             m.errorUntilMs = 0;
             m.buffering = false;
+            const bool sameDial = !dial.empty() && dial == m.spelunkrDial;
+            const std::string prevTitle = sameDial ? m.spelunkrTitle : std::string{};
+            const GuideSource prevSource = sameDial ? m.spelunkrSource : GuideSource::None;
+            const std::string prevNext = sameDial ? m.spelunkrNextTitle : std::string{};
+            const int prevRem = sameDial ? m.spelunkrRemainingMin : -1;
+            const int prevPct = sameDial ? m.spelunkrProgressPct : -1;
+            const std::string prevClock = sameDial ? m.spelunkrBannerClock : std::string{};
             m.clearSpelunkrBannerFields();
             m.spelunkrTuning = !dial.empty();
             m.spelunkrDial = dial;
             m.spelunkrName = name;
+            if (sameDial) {
+                m.spelunkrTitle = prevTitle;
+                m.spelunkrSource = prevSource;
+                m.spelunkrNextTitle = prevNext;
+                m.spelunkrRemainingMin = prevRem;
+                m.spelunkrProgressPct = prevPct;
+                m.spelunkrBannerClock = prevClock;
+            }
         });
     }
     // First HDMI picture of this generation. A newer accept's gen is left alone.
@@ -518,6 +574,7 @@ public:
     void failSpelunkrTune(const std::string& detail) {
         update([&](UiModel& m) {
             m.adBreak = false;
+            m.airplayAudio.clear();
             m.pending = false;
             m.pendingLabel.clear();
             m.buffering = false;
@@ -588,14 +645,29 @@ public:
                 m.spelunkrTitle = title;
         });
     }
+    // Enrich the active channel banner with 90s Prevue broadcast metadata without resetting its hide timer.
+    void setSpelunkrBannerMeta(GuideSource source, const std::string& nextTitle, int remainingMin, int progressPct,
+                               const std::string& clockText) {
+        update([=](UiModel& m) {
+            if (m.spelunkrDial.empty())
+                return;
+            m.spelunkrSource = source;
+            m.spelunkrNextTitle = nextTitle;
+            m.spelunkrRemainingMin = remainingMin;
+            m.spelunkrProgressPct = progressPct;
+            m.spelunkrBannerClock = clockText;
+        });
+    }
     void clearSpelunkrBanner() {
         update([](UiModel& m) { m.clearSpelunkrBannerFields(); });
     }
-    void setSpelunkrGuide(bool open, int cursor, int viewStart, std::vector<LibraryRow> rows) {
-        update([=](UiModel& m) mutable {
+    void setSpelunkrGuide(bool open, int cursor, int viewStart, std::vector<LibraryRow> rows,
+                          std::string clockText = {}) {
+        update([open, cursor, viewStart, rows = std::move(rows), clockText = std::move(clockText)](UiModel& m) mutable {
             m.spelunkrGuideOpen = open;
             m.spelunkrGuideCursor = cursor;
             m.spelunkrGuideViewStart = viewStart;
+            m.spelunkrGuideClock = std::move(clockText);
             m.spelunkrGuideRows = std::move(rows);
         });
     }
@@ -713,6 +785,8 @@ public:
     }
     unsigned canvasW() const { return canvasW_.load(); }
     unsigned canvasH() const { return canvasH_.load(); }
+    void noteGuidePageRows(int n) { guidePageRows_.store(n > 0 ? n : 0); }
+    int guidePageRows() const { return guidePageRows_.load(); }
     void reset() { update([&](UiModel& m) { m = UiModel{}; }); }
 
     UiModel snapshot(uint64_t* gen = nullptr) const {
@@ -744,6 +818,7 @@ private:
     bool serviceFailed_ = false;
     uint64_t gen_ = 0;
     std::atomic<unsigned> canvasW_{0}, canvasH_{0};
+    std::atomic<int> guidePageRows_{0};
 };
 
 struct RendererStats {
@@ -770,6 +845,7 @@ inline bool serviceNoticePainted(const UiModel& m, const UiState& frame) {
 class Renderer {
 public:
     static constexpr int64_t kMinRedrawMs = 125;   // 8 Hz (§6)
+    static constexpr int64_t kGuideMinRedrawMs = 33; // ~30 Hz for snappy Live TV Guide nav/paging
     static constexpr int64_t kPollMs = 2;          // while a flip is pending (§6)
     static constexpr int64_t kAckTimeoutMs = 500;
     static constexpr int64_t kSurfaceMinMs = 16;   // OB port: PlexUI nav, not the 8 Hz OSD cap
@@ -1072,7 +1148,7 @@ inline int64_t Renderer::tick(int64_t now, const UiState& ui) {
         plan_ = PagePlan{};
         refusedHold_ = false;
     }
-    if (ui.surface && !ui.overscan.open && !refusedHold_)
+    if (ui.surface && !ui.overscan.open && !ui.menu.open && !refusedHold_)
         return tickSurface(now, *ui.surface, L, s.gen);
     if (surfMode_) {   // PlexUI closed: off, then the OSD's own plan (idle card / bar) again
         surfMode_ = false;
@@ -1091,8 +1167,9 @@ inline int64_t Renderer::tick(int64_t now, const UiState& ui) {
         ++st_.skippedSameKey;
         return kMinRedrawMs;
     }
-    if (now - lastDrawMs_ < kMinRedrawMs)
-        return lastDrawMs_ + kMinRedrawMs - now;
+    const int64_t minRedraw = (ui.spelunkrGuide.open && !ui.spelunkrStatic) ? kGuideMinRedrawMs : kMinRedrawMs;
+    if (now - lastDrawMs_ < minRedraw)
+        return lastDrawMs_ + minRedraw - now;
     return drawAndShow(now, ui, L, key, s.gen);
 }
 
@@ -1251,9 +1328,15 @@ inline int64_t Renderer::tickSurface(int64_t now, const FullSurface& S, const La
     }
     surfSizeLogged_ = false;
     if (!surfMode_) {   // from the OSD's own pages: off first, then the surface's plan
-        // Same canvas as the idle card: keep the live page. A hide here left
+        // Same full-frame canvas as the idle card: keep the live page. A hide here left
         // Ready covering browse; a free-page show() can sit unacked (GH#27).
-        if (shown_ >= 0 && (!layoutValid_ || layout_.W != S.w || layout_.H != S.h)) {
+        // If the previous OSD frame was a partial/compact band (e.g. Start sub-menu over
+        // Browse), the FPGA descriptor only scans [bandFirst..bandLast] — hide and replan
+        // so the full-screen surface installs a full-height descriptor [0..S.h-1].
+        const bool sameFullBand = layoutValid_ && layout_.W == S.w && layout_.H == S.h &&
+                                  !plan_.compact && plan_.bandFirst == 0 &&
+                                  unsigned(plan_.bandLast) + 1u == S.h;
+        if (shown_ >= 0 && !sameFullBand) {
             ++st_.replans;
             return doHide(now);
         }
@@ -1495,6 +1578,7 @@ private:
                 (!m.serviceNotice.empty() && r_.showing(frame)))
                 bus_.noteServiceShown(m.serviceNotice);
             bus_.noteCanvas(r_.layout().W, r_.layout().H);
+            bus_.noteGuidePageRows(spelunkrGuideVisibleRows(r_.layout()));
             {
                 std::lock_guard<std::mutex> g(mu_);
                 stats_ = r_.stats();

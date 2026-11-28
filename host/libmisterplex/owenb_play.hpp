@@ -164,6 +164,7 @@ public:
     bool mediaPlayActive() const;   // a real OwenbPlaySession, not an external claim
     bool claimExternalPlay(std::string& err);
     void releaseExternalPlay();
+    uint32_t currentRasterWidth() const;
 
     // T6: the overlay. setOsd before start (the next play uses it); ui() lives as long as the
     // player, across plays, so MediaPlayer can post a toast for the next play (R6p's restart).
@@ -200,6 +201,9 @@ public:
     int syncService(bool spelunkr, const unsigned* plexSettings = nullptr);
     // Live PlexOB menu via h264ring status (word 27 echoes); used for service snapshot.
     bool overlayMenuOptions(unsigned out[H264RING_OPT_COUNT]) const;
+    // Live FPGA status block (RC_PIC / STC / ringLevel), safe to poll from another thread
+    // while OwenbPlaySession::readOne() is blocked waiting for network/relay bytes.
+    CoreStatus coreStatus() const;
     // Shared scaler path: Analog Aspect / Aspect Ratio on the ring. Safe from
     // the input thread. No-op when the ring is idle.
     void pumpPicture();

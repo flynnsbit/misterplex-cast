@@ -17,6 +17,10 @@ inline constexpr size_t kMirrorPcmMaxChunk = 16384;   // bytes per ring record (
 
 class MirrorPcmBridge {
 public:
+    // Optional minimum record size (bytes, rounded down to multiple of 4). 0 = push every call (default).
+    // Direct RAOP audio sets 1920 bytes (10 ms @ 48 kHz s16le stereo) to keep records >= 5 ms per h264ring.h.
+    void setMinChunk(size_t bytes) { minChunk_ = bytes & ~static_cast<size_t>(3); }
+
     // Returns the bytes the ring accepted.
     size_t push(h264stream::IAvRecordProducer* prod, bool sessionActive, uint64_t sessionId, const uint8_t* pcm,
                 size_t len) {
@@ -37,6 +41,10 @@ public:
 #else
         size_t usable = buf.size() & ~static_cast<size_t>(3);
 #endif
+        if (minChunk_ > 0 && usable < minChunk_) {
+            carry_.swap(buf);
+            return 0;
+        }
         carry_.assign(buf.begin() + usable, buf.end());
         size_t sent = 0;
         while (sent < usable) {
@@ -73,6 +81,7 @@ public:
 
 private:
     std::vector<uint8_t> carry_;
+    size_t minChunk_ = 0;
     uint64_t accepted_ = 0, droppedInactive_ = 0, droppedRing_ = 0;
 };
 

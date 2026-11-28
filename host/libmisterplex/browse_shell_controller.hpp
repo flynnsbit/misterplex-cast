@@ -119,9 +119,15 @@ private:
     void logNavTrace(int64_t plxhMs, int64_t plxoMs);
     void openServers(uint64_t gen, int64_t recvMs);
     void refreshServersFromNetwork(uint64_t gen);
+    bool refreshServerCredentials(plexui::PlexServer& srv, std::vector<std::string>& alts,
+                                  const BrowseCancelFn& cancel, int serverFocus);
     void openLibraries(uint64_t gen);
     void enterSearchLocked();
     void openTitles(uint64_t gen);
+    void openRecommended(uint64_t gen);
+    void openLastPage(uint64_t gen, const BrowseLastPage& lp);
+    void saveLastPageLocked();
+    void updateLastPageRowLocked();
     void openChildren(uint64_t gen, const BrowseTitleRow& item);
     bool prefetchNext(uint64_t gen, int target = -1);
     void prefetchThumbs(uint64_t gen);
@@ -169,6 +175,7 @@ private:
     std::size_t msHead_ = 0, msSize_ = 0;
     std::string cursorKey_;
     std::unordered_map<std::string, BrowseRenderModel> cursors_;
+    std::unordered_map<std::string, BrowseLastPage> lastPages_;
     std::vector<BrowseRenderModel> parents_;
     BrowseRenderModel searchOrigin_;
     std::unordered_map<std::string, int64_t> failedThumbs_;

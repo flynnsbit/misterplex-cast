@@ -62,6 +62,8 @@ enum class PlaybackCommand : uint8_t {
     GuideTune = 21,
     // Idempotent close (OSD-close-guide, not a toggle). Daemon-only; PLXI cannot send it.
     GuideClose = 22,
+    // Daemon-only AirPlay Audio full-screen album art toggle (pad A / Select). PLXI cannot send it.
+    AirplayArtToggle = 23,
 };
 
 constexpr uint8_t kLegacyMaxInputCommand = static_cast<uint8_t>(PlaybackCommand::Browse);
@@ -381,6 +383,7 @@ inline PlaybackAction mapPlaybackCommand(PlaybackCommand command, bool playing, 
     case PlaybackCommand::GuideToggle:
     case PlaybackCommand::GuideTune:
     case PlaybackCommand::GuideClose:
+    case PlaybackCommand::AirplayArtToggle:
     case PlaybackCommand::None:
         return action;
     }

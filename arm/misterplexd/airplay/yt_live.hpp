@@ -1939,6 +1939,8 @@ private:
                         const bool frozen = probeLive ? msSince(posDryAt) >= adFreezeMs
                                                       : msSince(dryAt) >= kPlutoAdSkipNoProbeCardMs;
                         if (frozen && !adCardDropped) {
+                            std::fprintf(stderr, "misterplexd: pluto adskip drained ms=%lld\n",
+                                         static_cast<long long>(msSince(dryAt)));
                             gapOn = true;
                             gapResumed = false;
                             gapBytes = false;
