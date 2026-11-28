@@ -10,8 +10,8 @@ GCAST_XCODE and other GCAST_* environment names are read-compat aliases for AIRP
       highest-bandwidth in-spec H.264 variant (Baseline/Main/High, level <= 4.1, <=1280x720,
       <=30 fps) is copied, with its AUDIO group when the master names one. AirPlay video with
       no in-spec option (1080p, 60 fps, HEVC, 10-bit, level above 4.1) is refused: HTTP 415
-      and no x264. RAOP (/raop.wav, vcodec none) still builds one spectrum frame with libx264.
-      The video x264 ladder stays in build_cmd for that spectrum frame only.
+      and no x264. RAOP (/raop.wav, vcodec none) stream-copies a tiny static black H.264
+      frame (no showspectrum, no libx264) underneath the Now Playing overlay.
       AIRPLAY_MUT=videofallback (GCAST_MUT is the compat alias) turns the video ladder back on; the unit test must fail then.
       offset_ms= runs -ss before -i (same contract as the lab ladder proxy, so MediaPlayer::seekMs works).
   GET /yt.ts?v=<videoId>[&start_ms=]   YouTube: yt-dlp resolves avc1<=720p30 + m4a, pipes yt-dlp -o - into
@@ -30,7 +30,7 @@ a repeat /ladder.ts of the SAME stream (token path/query ignored, see stream_ide
 of an open its client dropped before the first byte (ADOPT_GRACE_S) instead of starting a second one.
 The on-card helper binds 127.0.0.1:18781. A computer helper uses --bind 0.0.0.0 --port 18780.
 """
-import argparse, base64, calendar, copy, hashlib, hmac, ipaddress, json, os, re, select, signal, socket, ssl, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, calendar, copy, hashlib, hmac, ipaddress, json, os, re, select, signal, socket, ssl, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def _env(primary, legacy=None, default=None):
@@ -735,8 +735,35 @@ def _video_codec(codecs):
             return c
     return ""
 
+# Audio codecs that the helper's mpegts muxer stream-copies cleanly AND
+# misterplexd's static libavcodec decodes and downmixes to 48 kHz stereo natively.
+COPYABLE_ACODECS = frozenset({"aac", "aac_latm", "mp3", "ac3", "eac3", "opus"})
+
+# Low-CPU fallback AAC encode flags for ARM Cortex-A9 (disabling psychoacoustic
+# stereo/noise searches under aac_coder=fast cuts fallback ARM CPU by ~2.4x).
+AAC_FAST_ENC_OPTS = [
+    "-c:a", "aac",
+    "-aac_coder", "fast",
+    "-aac_is", "0",
+    "-aac_pns", "0",
+    "-aac_tns", "0",
+    "-aac_ms", "0",
+    "-ac", "2", "-ar", "48000", "-b:a", "128k",
+]
+
+def audio_copy_codec_ok(acodec):
+    return (acodec or "").strip().lower() in COPYABLE_ACODECS
+
 def _is_aac(codec):
     return (codec or "").strip().lower().startswith("mp4a.40")
+
+def _is_copyable_hls_audio(codec):
+    c = (codec or "").strip().lower()
+    if not c:
+        return False
+    return (c.startswith("mp4a.40")
+            or c in ("mp4a.69", "mp4a.6b", "mp3", "ac-3", "ec-3", "opus")
+            or c.startswith("opus."))
 
 def _parse_res(s):
     if not s or "x" not in s.lower():
@@ -776,20 +803,24 @@ def variant_in_spec(profile, level, w, h, fps):
     return True
 
 def _pick_audio(medias, group):
-    """AUDIO group: prefer mp4a.40.*, then DEFAULT=YES. Returns (media or None, copy_aac)."""
+    """AUDIO group: prefer mp4a.40.*, then other TS-copyable codecs, then DEFAULT=YES.
+    Returns (media or None, is_aac, copy_audio)."""
     group_m = [m for m in medias if m.get("group") == group and m.get("type") == "AUDIO"]
     if not group_m:
-        return None, False
+        return None, False, False
     aac = [m for m in group_m if _is_aac(m.get("codecs") or "")]
+    copyable = [m for m in group_m if _is_copyable_hls_audio(m.get("codecs") or "")]
     # X/Twitter (and some CDNs) omit CODECS on EXT-X-MEDIA. The URI is still the
     # soundtrack; treat a blank codec as AAC so we map the rendition (#236).
     unknown = [m for m in group_m if not (m.get("codecs") or "").strip()]
-    pool = aac or unknown or group_m
+    pool = aac or copyable or unknown or group_m
     defaults = [m for m in pool if m.get("default")]
     chosen = (defaults or pool)[0]
     codecs = chosen.get("codecs") or ""
-    copy_aac = _is_aac(codecs) or not codecs.strip()
-    return chosen, copy_aac
+    blank = not codecs.strip()
+    is_aac = _is_aac(codecs) or blank
+    copy_audio = _is_copyable_hls_audio(codecs) or blank
+    return chosen, is_aac, copy_audio
 
 def plan_hls_master(text, master_url):
     """Parse an HLS master. None when the body is not a master playlist.
@@ -833,18 +864,21 @@ def plan_hls_master(text, master_url):
         profile, level = parsed if parsed else (0, 0)
         audio_codecs = [c for c in codecs if c != vcodec and not c.lower().startswith(("avc1", "hvc1", "hev1", "dvh1", "av01"))]
         group = attrs.get("AUDIO") or ""
-        media, media_aac = _pick_audio(medias, group) if group else (None, False)
+        media, media_aac, media_copy = _pick_audio(medias, group) if group else (None, False, False)
         if media is not None:
             playlist_aac = media_aac
+            playlist_audio_copy = media_copy
             audio_url = urllib.parse.urljoin(master_url, media["uri"]) if media.get("uri") else ""
         else:
             playlist_aac = any(_is_aac(c) for c in audio_codecs)
+            playlist_audio_copy = any(_is_copyable_hls_audio(c) for c in audio_codecs)
             audio_url = ""
         variants.append({
             "variant_url": urllib.parse.urljoin(master_url, uri),
             "audio_url": audio_url or None,
             "playlist_aac": playlist_aac,
-            "copy_audio": playlist_aac,
+            "playlist_audio_copy": playlist_audio_copy,
+            "copy_audio": playlist_audio_copy,
             "w": w, "h": h, "fps": fps, "bw": bw,
             "codec": vcodec,
             "copy": variant_in_spec(profile, level, w, h, fps),
@@ -886,15 +920,13 @@ def direct_log_line(info, copy):
         int(info.get("w") or 0), int(info.get("h") or 0), fps, info.get("vcodec") or "missing", mode)
 
 def _audio_copy_ok(variant, vinfo, ainfo):
-    if not variant.get("playlist_aac"):
-        return False
     if variant.get("audio_url"):
         if ainfo is None:
-            return True
-        return ainfo.get("acodec") == "aac"
+            return bool(variant.get("playlist_audio_copy", variant.get("playlist_aac")))
+        return audio_copy_codec_ok(ainfo.get("acodec"))
     if vinfo is None:
-        return True
-    return bool(vinfo.get("audio")) and vinfo.get("acodec") == "aac"
+        return bool(variant.get("playlist_audio_copy", variant.get("playlist_aac")))
+    return bool(vinfo.get("audio")) and audio_copy_codec_ok(vinfo.get("acodec"))
 
 NOTICE_RESOLUTION = "Video too high resolution for MiSTer (max 720p)"
 NOTICE_FRAMERATE = "Max 30 fps on MiSTer"
@@ -1212,28 +1244,56 @@ def _add_http_input_opts(cmd, url, hdr):
 
 LIVE_HLS_COPY_INPUT_OPTS = ["-fflags", "+nobuffer", "-probesize", "1500000", "-analyzeduration", "1500000"]
 
+# 2-second 1 fps 720x480 Baseline black H.264 MP4 (built from FPGA-verified kRestoreBlackAu).
+# Stream-copied with -c:v copy for audio-only / RAOP playback so the Now Playing overlay owns
+# the screen with zero video filtering or libx264 CPU cost on ARM.
+_BLANK_VIDEO_MP4_ZLIB_B64 = (
+    "eNrtVDtLxEAQnr2ceKKgxYEWh5xwYuMrKmJ5aOEVtgqCCnu3Gy+aNSHZC2hlYeFPsBSs/AmKhYW12FlooY3Y"
+    "2tmds5vIxceJtpLh28zMzrezmZkQAChactezA1cAZEBpXFM0rJnCmzEBjH7huiEAOCKsM/ggxjNA5w0QUGgJ"
+    "+cj67JfhR8kg5qVPt9Fek9v6TuNrNrwXfr7nu3szeIo8aLfEmQxQF7gTyNaJOK8+S84FsykaRcE+166y7cPy"
+    "lXbG6szx3yOhzXiSuYK+W6E7zOGKQ7iwdyw08qHQSZOvWWJRrMB8biXK6Gn4TjGyyXAgqw7aZ4EMWIJzqobW"
+    "phVYOJZdQaPSjvFFBppNfE5g1gUyfznYfIT+TdT33Qt3pE/NRD2My5fqK4GO+nXv6D7S+zwaeHF6tfJV6cfd"
+    "LT9FC4qB1J2Pp614ZUjoAhZWS7wmafEgj7G9KJQ1433cq7ktvrGImjaYVJNbFVxrJUPJKeFkfep5TrLiUTv6"
+    "FEqn0nX1FKg+rHu1RENrdnrcHDcnp9DNWT7HMee2BJLQb9cbDL03J9vFDw+yF0fHMHcy8gdZb9ymSJHi32Aj"
+    "/WGkSJHi1z+MNywK0Tk="
+)
+_BLANK_VIDEO_MP4_BYTES = zlib.decompress(base64.b64decode(_BLANK_VIDEO_MP4_ZLIB_B64))
+_BLANK_VIDEO_MU = threading.Lock()
+
+def ensure_blank_video_mp4():
+    path = os.path.join(tempfile.gettempdir(), "mpx_blank_720x480.mp4")
+    with _BLANK_VIDEO_MU:
+        try:
+            with open(path, "rb") as f:
+                if f.read() == _BLANK_VIDEO_MP4_BYTES:
+                    return path
+        except OSError:
+            pass
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "wb") as f:
+            f.write(_BLANK_VIDEO_MP4_BYTES)
+        os.replace(tmp, path)
+        return path
+
 def build_cmd(ffmpeg, src, w, h, br, off_ms, remux, info, inputs=None, copy_audio=False, fast=True):
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
     audio_only = bool(info) and info.get("vcodec") == "none"
     if audio_only:
-        # RAOP / music: a 30 fps spectrum through x264 saturated an ARM core and dropped
-        # audio, and the decoder kept the last mp4 frame. The shipped helper ffmpeg has
-        # showspectrum, fps, and libx264, and no lavfi demuxer or color source, so the
-        # picture is one spectrum frame per second at the ladder size. That paints over
-        # the latched frame. The graph ends when the audio ends.
+        # RAOP / audio-only: stream-copy a static 1 fps black H.264 MP4 behind the Now Playing
+        # cover art overlay instead of running showspectrum + libx264 (which saturated ARM and
+        # starved /raop.wav at 0.8x realtime). -shortest ends cleanly when the audio stream ends.
+        blank_mp4 = ensure_blank_video_mp4()
+        if src.endswith("/raop.wav"):
+            cmd += ["-re"]
+        cmd += ["-stream_loop", "-1", "-i", blank_mp4]
         if src.endswith("/raop.wav"):
             cmd += ["-probesize", "32768", "-analyzeduration", "0", "-f", "wav"]
         elif off_ms > 0:
             cmd += ["-ss", "%.3f" % (off_ms / 1000.0)]
         _add_http_input_opts(cmd, src, "")
-        cmd += ["-protocol_whitelist", proto_whitelist(src), "-i", src, "-filter_complex",
-                ("[0:a:0]asplit=2[ao][av];[av]showspectrum=s=%dx%d:slide=replace:color=intensity:scale=log,"
-                 "fps=1,format=yuv420p,setsar=1[vo]") % (w, h),
-                "-map", "[vo]", "-map", "[ao]", "-sn", "-dn",
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-                "-profile:v", "baseline", "-level", "3.0", "-bf", "0",
-                "-g", "1", "-keyint_min", "1", "-r", "1", "-pix_fmt", "yuv420p",
-                "-b:v", "32k", "-maxrate", "32k", "-bufsize", "32k"]
+        cmd += ["-protocol_whitelist", proto_whitelist(src), "-i", src,
+                "-map", "0:v:0", "-map", "1:a:0", "-sn", "-dn",
+                "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-shortest"]
         remux, copy_audio = False, False
     inputs = inputs or [(src, "")]
     # A failed probe (SDT / iconv abort, or no info at all) still has to play.
@@ -1277,7 +1337,7 @@ def build_cmd(ffmpeg, src, w, h, br, off_ms, remux, info, inputs=None, copy_audi
     if copy_audio:
         cmd += ["-c:a", "copy"]
     else:
-        cmd += ["-c:a", "aac", "-ac", "2", "-ar", "48000", "-b:a", "128k"]
+        cmd += AAC_FAST_ENC_OPTS
     cmd += ["-f", "mpegts", "-muxdelay", "0", "pipe:1"]
     return cmd
 
@@ -2315,7 +2375,7 @@ class H(BaseHTTPRequestHandler):
                     log(hls_log_line(shown))
                 else:
                     remux = stream_copy_ok(info)
-                    copy_audio = remux and (info or {}).get("acodec") == "aac"
+                    copy_audio = remux and audio_copy_codec_ok((info or {}).get("acodec"))
                     inputs = [(src, fwd_blob)] if fwd_blob else None
                     cmd = build_cmd(self.server.ffmpeg, src, w, h, br, off, remux, info, inputs, copy_audio=copy_audio)
                     log(direct_log_line(info, remux))
